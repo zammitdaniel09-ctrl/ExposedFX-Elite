@@ -1631,7 +1631,6 @@ async def route_title_checker_loop():
         await asyncio.sleep(ROUTE_TITLE_CHECK_INTERVAL_SECONDS)
         try:
             await verify_route_titles_once()
-    asyncio.create_task(route_title_checker_loop())
         except Exception as exc:
             log.warning(f"[route title checker loop failed] {type(exc).__name__}: {exc}")
 
@@ -1671,11 +1670,8 @@ async def main():
     log.info("Deleted-message mirror active: True")
     log.info("Strict exact route title checker active: True")
     log.info("Mirror structure repair active: True")
-    log.info(f"MIRROR_DELETED_MESSAGES={MIRROR_DELETED_MESSAGES}")
-    log.info(f"VERIFY_ROUTE_TITLES={VERIFY_ROUTE_TITLES}")
-    log.info("Deleted-message mirror active: True")
-    log.info("Route title mirror checker active: True")
     await verify_route_titles_once()
+    asyncio.create_task(route_title_checker_loop())
     log.info("Imperium fixed Telegram worker running...")
     asyncio.create_task(stats.loop(client))
     log.info("Weekly stats reporter running for Sunday 00:00 Europe/Malta")

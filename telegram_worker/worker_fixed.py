@@ -824,13 +824,13 @@ async def verify_route_titles_once():
 
 
 
-def safe_log_stats(route, message, text, 'live'):
+def log_stats(route, message, text):
     result = stats.log_message(route, message, text)
     if result:
         log.info(f"[stats logged] {route['name']} {result['status']} {result['pips']} pips")
 
 
-def safe_maybe_post_signal(route, message, text, 'live'):
+def maybe_post_signal(route, message, text):
     parsed = parse_signal(text)
     if not parsed:
         return

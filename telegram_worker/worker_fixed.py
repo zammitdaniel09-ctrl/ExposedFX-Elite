@@ -9,6 +9,7 @@ import hashlib
 from pathlib import Path
 
 import requests
+import telethon
 from telethon import TelegramClient, events, functions
 from telethon.errors import FloodWaitError
 from telethon.tl.types import MessageMediaWebPage
@@ -1418,6 +1419,31 @@ async def on_album(event):
         alert_crash("imperium-telegram-worker:on_album", exc)
 
 
+
+def available_topic_functions():
+    try:
+        names = dir(functions.channels)
+        return sorted(x for x in names if "Forum" in x or "Topic" in x)
+    except Exception:
+        return []
+
+
+def channel_function(name):
+    return getattr(functions.channels, name, None)
+
+
+def log_topic_function_support():
+    available = available_topic_functions()
+    log.info(f"TELETHON_VERSION={getattr(telethon, '__version__', 'unknown')}")
+    log.info(f"Topic function support: {available}")
+
+    if not channel_function("EditForumTopicRequest"):
+        log.warning(
+            "[topic title auto-sync unsupported] Telethon runtime has no EditForumTopicRequest. "
+            "Checker will still detect mismatches and print exact rename instructions."
+        )
+
+
 # STRICT EXACT MIRROR TITLE CHECKER V2
 
 def route_identity(route):
@@ -1447,18 +1473,21 @@ def title_from_entity(entity):
 
 async def get_forum_topic_title(chat_id, topic_id):
     try:
-        res = await client(
-            functions.channels.GetForumTopicsByIDRequest(
-                channel=int(chat_id),
-                topics=[int(topic_id)],
-            )
-        )
+        req_cls = channel_function("GetForumTopicsByIDRequest")
 
-        topics = getattr(res, "topics", None) or []
-        if topics:
-            title = getattr(topics[0], "title", None)
-            if title:
-                return str(title).strip()
+        if req_cls:
+            res = await client(
+                req_cls(
+                    channel=int(chat_id),
+                    topics=[int(topic_id)],
+                )
+            )
+
+            topics = getattr(res, "topics", None) or []
+            if topics:
+                title = getattr(topics[0], "title", None)
+                if title:
+                    return str(title).strip()
 
     except Exception as exc:
         log.info(f"[topic title api fallback] chat={chat_id} topic={topic_id}: {type(exc).__name__}: {exc}")
@@ -1499,8 +1528,17 @@ async def dest_title_for_route(route):
 
 async def sync_destination_topic_title(route, wanted_title):
     try:
+        req_cls = channel_function("EditForumTopicRequest")
+
+        if not req_cls:
+            log.warning(
+                f"[route title manual rename needed] route={route['name']} "
+                f"dest={route['dest_chat']}_{route['dest_topic']} exact_title={wanted_title!r}"
+            )
+            return False
+
         await client(
-            functions.channels.EditForumTopicRequest(
+            req_cls(
                 channel=int(route["dest_chat"]),
                 topic_id=int(route["dest_topic"]),
                 title=str(wanted_title),
@@ -1559,7 +1597,8 @@ async def verify_route_title(route):
             log.warning(
                 f"[route title shared-dest mismatch] route={route['name']} "
                 f"source_title={source_title!r} dest_topic_title={dest_title!r} "
-                f"shared_routes={shared_count}. Auto-sync skipped to avoid renaming a shared topic."
+                f"shared_routes={shared_count}. Auto-sync skipped to avoid renaming a shared topic. "
+                f"Manual decision needed for dest={route['dest_chat']}_{route['dest_topic']}."
             )
             return False
 

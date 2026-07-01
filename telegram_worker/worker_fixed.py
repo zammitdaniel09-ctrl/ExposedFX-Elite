@@ -41,6 +41,19 @@ NO_ROUTE_TEXT_LIMIT = int(os.environ.get("NO_ROUTE_TEXT_LIMIT", "180"))
 COPY_RETRY_ATTEMPTS = int(os.environ.get("COPY_RETRY_ATTEMPTS", "2"))
 COPY_RETRY_SLEEP_CAP_SECONDS = int(os.environ.get("COPY_RETRY_SLEEP_CAP_SECONDS", "120"))
 ROUTE_TITLE_CHECK_INTERVAL_SECONDS = int(os.environ.get("ROUTE_TITLE_CHECK_INTERVAL_SECONDS", "3600"))
+NEW_MIRROR_DEBUG_CHATS_RAW = os.environ.get(
+    "NEW_MIRROR_DEBUG_CHATS",
+    "-1003812195730,-1003371106919,-1003651353503",
+).strip()
+
+NEW_MIRROR_DEBUG_CHATS = {
+    int(x)
+    for x in re.split(r"[,\s]+", NEW_MIRROR_DEBUG_CHATS_RAW)
+    if x.strip()
+}
+
+NEW_MIRROR_STARTUP_PROBE = os.environ.get("NEW_MIRROR_STARTUP_PROBE", "1").strip() == "1"
+
 MIRROR_STRUCTURE_REPAIR = os.environ.get("MIRROR_STRUCTURE_REPAIR", "1").strip() == "1"
 STRICT_ROUTE_TITLE_CHECK = os.environ.get("STRICT_ROUTE_TITLE_CHECK", "0").strip() == "1"
 AUTO_SYNC_TOPIC_TITLES = os.environ.get("AUTO_SYNC_TOPIC_TITLES", "1").strip() == "1"
@@ -1247,6 +1260,72 @@ async def copy_album_with_retry(messages, route):
     return None
 
 
+def route_debug_names(routes):
+    try:
+        return [r.get("name") for r in routes]
+    except Exception:
+        return []
+
+
+async def probe_new_mirror_routes_once():
+    """
+    Startup probe for the 3 new mirror sources.
+    This does not forward old messages.
+    It only proves whether the Railway Telegram account can see each source and what the latest messages are.
+    """
+    if not NEW_MIRROR_STARTUP_PROBE:
+        return
+
+    checked = 0
+
+    for route in ROUTES:
+        if int(route.get("source_chat")) not in NEW_MIRROR_DEBUG_CHATS:
+            continue
+
+        checked += 1
+
+        try:
+            entity = await client.get_entity(route["source_chat"])
+            title = title_from_entity(entity) if "title_from_entity" in globals() else getattr(entity, "title", "") or getattr(entity, "username", "") or ""
+            log.info(
+                f"[new mirror probe access ok] route={route['name']} "
+                f"source={route['source_chat']} title={title!r} "
+                f"dest={route['dest_chat']}_{route['dest_topic']}"
+            )
+
+            latest = await client.get_messages(route["source_chat"], limit=3)
+
+            if not latest:
+                log.warning(f"[new mirror probe empty] route={route['name']} source={route['source_chat']} no latest messages")
+                continue
+
+            for msg in reversed(latest):
+                try:
+                    topic = topic_of(msg, route["source_chat"])
+                    txt = text_of(msg)
+                    matched = routes_for(route["source_chat"], topic, msg)
+
+                    log.info(
+                        f"[new mirror probe latest] route={route['name']} "
+                        f"source={route['source_chat']} msg={getattr(msg, 'id', None)} "
+                        f"topic={topic} media={is_real_media(msg)} "
+                        f"text={txt[:120]!r} matched_routes={route_debug_names(matched)}"
+                    )
+
+                except Exception as exc:
+                    log.warning(f"[new mirror probe latest failed] route={route['name']} msg={getattr(msg, 'id', None)}: {exc}")
+
+        except Exception as exc:
+            log.warning(
+                f"[new mirror probe access failed] route={route.get('name')} "
+                f"source={route.get('source_chat')} dest={route.get('dest_chat')}_{route.get('dest_topic')}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    log.info(f"[new mirror probe done] checked={checked}")
+
+
+
 async def handle_single_message(event, edited=False):
     message = event.message
     chat_id = event.chat_id
@@ -1265,6 +1344,15 @@ async def handle_single_message(event, edited=False):
         return
 
     routes = routes_for(chat_id, topic_id, message)
+
+    if int(chat_id) in NEW_MIRROR_DEBUG_CHATS:
+        log.info(
+            f"[new mirror incoming] chat={chat_id} topic={topic_id} "
+            f"msg={getattr(message, 'id', None)} edited={edited} "
+            f"media={is_real_media(message)} text={text[:160]!r} "
+            f"matched_routes={route_debug_names(routes)}"
+        )
+
     if not routes:
         known = sorted(known_source_topics_for_chat(chat_id))
         log.warning(
@@ -1709,7 +1797,11 @@ async def main():
     log.info("Deleted-message mirror active: True")
     log.info("Strict exact route title checker active: True")
     log.info("Mirror structure repair active: True")
+    log.info(f"NEW_MIRROR_DEBUG_CHATS={sorted(NEW_MIRROR_DEBUG_CHATS)}")
+    log.info(f"NEW_MIRROR_STARTUP_PROBE={NEW_MIRROR_STARTUP_PROBE}")
+    log.info("New mirror forwarding debug active: True")
     await verify_route_titles_once()
+    await probe_new_mirror_routes_once()
     asyncio.create_task(route_title_checker_loop())
     log.info("Imperium fixed Telegram worker running...")
     asyncio.create_task(stats.loop(client))

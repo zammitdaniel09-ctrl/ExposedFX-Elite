@@ -824,13 +824,13 @@ async def verify_route_titles_once():
 
 
 
-def log_stats(route, message, text):
+def safe_log_stats(route, message, text, 'live'):
     result = stats.log_message(route, message, text)
     if result:
         log.info(f"[stats logged] {route['name']} {result['status']} {result['pips']} pips")
 
 
-def maybe_post_signal(route, message, text):
+def safe_maybe_post_signal(route, message, text, 'live'):
     parsed = parse_signal(text)
     if not parsed:
         return
@@ -865,6 +865,33 @@ def maybe_post_signal(route, message, text):
             log.info(f"[signal posted] {route['name']} {parsed['direction']} {parsed['symbol']} -> {res.text}")
     except Exception as exc:
         log.error(f"[signal post failed] {route['name']}: {exc}")
+
+
+def safe_maybe_post_signal(route, message, text, context=""):
+    """
+    Forwarding must never fail because signal parsing/API side logic failed.
+    """
+    try:
+        maybe_post_signal(route, message, text)
+    except Exception as exc:
+        log.warning(
+            f"[signal sidecar skipped] route={route.get('name')} "
+            f"msg={getattr(message, 'id', None)} context={context}: {type(exc).__name__}: {exc}"
+        )
+
+
+def safe_log_stats(route, message, text, context=""):
+    """
+    Forwarding must never fail because stats parsing failed.
+    """
+    try:
+        log_stats(route, message, text)
+    except Exception as exc:
+        log.warning(
+            f"[stats sidecar skipped] route={route.get('name')} "
+            f"msg={getattr(message, 'id', None)} context={context}: {type(exc).__name__}: {exc}"
+        )
+
 
 
 async def send_media_exact(message, route, target_reply, text, entities):
@@ -1388,8 +1415,8 @@ async def forward_polled_new_mirror_message(route, msg, reason):
             remember_dedupe(matched_route, msg, text)
 
             if text:
-                maybe_post_signal(matched_route, msg, text)
-                log_stats(matched_route, msg, text)
+                safe_maybe_post_signal(matched_route, msg, text, reason)
+                safe_log_stats(matched_route, msg, text, reason)
 
             log.info(
                 f"[new mirror poll copied] route={matched_route['name']} "
@@ -1548,8 +1575,8 @@ async def handle_single_message(event, edited=False):
             remember_dedupe(route, message, text)
 
             if text:
-                maybe_post_signal(route, message, text)
-                log_stats(route, message, text)
+                safe_maybe_post_signal(route, message, text, 'live')
+                safe_log_stats(route, message, text, 'live')
 
             direction = "outgoing" if getattr(message, "out", False) else "incoming"
             edit_tag = ":edited" if edited else ""
@@ -1659,8 +1686,8 @@ async def on_album(event):
 
                 if text:
                     remember_dedupe(route, first, text)
-                    maybe_post_signal(route, first, text)
-                    log_stats(route, first, text)
+                    safe_maybe_post_signal(route, first, text, 'album')
+                    safe_log_stats(route, first, text, 'album')
 
                 direction = "outgoing" if getattr(first, "out", False) else "incoming"
                 log.info(f"[album copied:{direction}] {route['name']} items={len(event.messages)}")
@@ -1974,6 +2001,7 @@ async def main():
     log.info(f"NEW_MIRROR_POLL_SECONDS={NEW_MIRROR_POLL_SECONDS}")
     log.info(f"NEW_MIRROR_BACKFILL_ON_START={NEW_MIRROR_BACKFILL_ON_START}")
     log.info("New mirror polling backup active: True")
+    log.info("Forward sidecar isolation active: True")
     await verify_route_titles_once()
     await probe_new_mirror_routes_once()
     asyncio.create_task(route_title_checker_loop())

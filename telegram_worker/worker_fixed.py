@@ -53,6 +53,13 @@ NEW_MIRROR_DEBUG_CHATS = {
 }
 
 NEW_MIRROR_STARTUP_PROBE = os.environ.get("NEW_MIRROR_STARTUP_PROBE", "1").strip() == "1"
+NEW_MIRROR_POLLING_ENABLED = os.environ.get("NEW_MIRROR_POLLING_ENABLED", "1").strip() == "1"
+NEW_MIRROR_POLL_SECONDS = int(os.environ.get("NEW_MIRROR_POLL_SECONDS", "8"))
+NEW_MIRROR_POLL_LIMIT = int(os.environ.get("NEW_MIRROR_POLL_LIMIT", "8"))
+NEW_MIRROR_BACKFILL_ON_START = os.environ.get("NEW_MIRROR_BACKFILL_ON_START", "1").strip() == "1"
+NEW_MIRROR_BACKFILL_LIMIT = int(os.environ.get("NEW_MIRROR_BACKFILL_LIMIT", "3"))
+new_mirror_poll_last_ids = {}
+
 
 MIRROR_STRUCTURE_REPAIR = os.environ.get("MIRROR_STRUCTURE_REPAIR", "1").strip() == "1"
 STRICT_ROUTE_TITLE_CHECK = os.environ.get("STRICT_ROUTE_TITLE_CHECK", "0").strip() == "1"
@@ -1326,6 +1333,169 @@ async def probe_new_mirror_routes_once():
 
 
 
+def new_mirror_routes():
+    return [
+        r for r in ROUTES
+        if int(r.get("source_chat")) in NEW_MIRROR_DEBUG_CHATS
+    ]
+
+
+async def forward_polled_new_mirror_message(route, msg, reason):
+    chat_id = int(route["source_chat"])
+    topic_id = topic_of(msg, chat_id)
+    text = text_of(msg)
+
+    routes = routes_for(chat_id, topic_id, msg)
+
+    if route not in routes:
+        # Keep it safe but still explain what matched.
+        log.info(
+            f"[new mirror poll route check] expected={route['name']} "
+            f"msg={getattr(msg, 'id', None)} topic={topic_id} "
+            f"matched_routes={route_debug_names(routes)}"
+        )
+
+    forwarded_any = False
+
+    for matched_route in routes:
+        if int(matched_route.get("source_chat")) not in NEW_MIRROR_DEBUG_CHATS:
+            continue
+
+        try:
+            if text and is_recent_duplicate(matched_route, msg, text):
+                log.info(
+                    f"[new mirror poll duplicate skipped] route={matched_route['name']} "
+                    f"msg={getattr(msg, 'id', None)} reason={reason}"
+                )
+                continue
+
+            if existing_destination_ids(msg, matched_route):
+                log.info(
+                    f"[new mirror poll already mapped skipped] route={matched_route['name']} "
+                    f"msg={getattr(msg, 'id', None)} reason={reason}"
+                )
+                continue
+
+            sent = await copy_one_with_retry(msg, matched_route, edited=False)
+
+            if not sent:
+                log.warning(
+                    f"[new mirror poll copy returned none] route={matched_route['name']} "
+                    f"msg={getattr(msg, 'id', None)} reason={reason}"
+                )
+                continue
+
+            remember_dedupe(matched_route, msg, text)
+
+            if text:
+                maybe_post_signal(matched_route, msg, text)
+                log_stats(matched_route, msg, text)
+
+            log.info(
+                f"[new mirror poll copied] route={matched_route['name']} "
+                f"source={chat_id}_{topic_id} msg={getattr(msg, 'id', None)} "
+                f"dest={matched_route['dest_chat']}_{matched_route['dest_topic']} reason={reason}"
+            )
+
+            forwarded_any = True
+
+        except Exception as exc:
+            log.exception(
+                f"[new mirror poll copy failed] route={matched_route['name']} "
+                f"source={chat_id}_{topic_id} msg={getattr(msg, 'id', None)} reason={reason}: {exc}"
+            )
+
+    return forwarded_any
+
+
+async def initialise_new_mirror_poll_state():
+    """
+    Sets latest seen ids and optionally backfills last few messages
+    so the user can immediately see the new mirrors working.
+    """
+    if not NEW_MIRROR_POLLING_ENABLED:
+        return
+
+    for route in new_mirror_routes():
+        chat_id = int(route["source_chat"])
+
+        try:
+            latest = await client.get_messages(chat_id, limit=max(1, NEW_MIRROR_BACKFILL_LIMIT))
+
+            if not latest:
+                log.warning(f"[new mirror poll init empty] route={route['name']} source={chat_id}")
+                continue
+
+            latest_sorted = sorted(latest, key=lambda m: int(getattr(m, "id", 0) or 0))
+
+            if NEW_MIRROR_BACKFILL_ON_START:
+                for msg in latest_sorted:
+                    await forward_polled_new_mirror_message(route, msg, "startup_backfill")
+
+            max_id = max(int(getattr(m, "id", 0) or 0) for m in latest_sorted)
+            new_mirror_poll_last_ids[chat_id] = max_id
+
+            log.info(
+                f"[new mirror poll init] route={route['name']} "
+                f"source={chat_id} last_id={max_id} backfill={NEW_MIRROR_BACKFILL_ON_START}"
+            )
+
+        except Exception as exc:
+            log.warning(
+                f"[new mirror poll init failed] route={route.get('name')} source={chat_id}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+
+async def new_mirror_poll_loop():
+    if not NEW_MIRROR_POLLING_ENABLED:
+        return
+
+    await initialise_new_mirror_poll_state()
+
+    if NEW_MIRROR_POLL_SECONDS <= 0:
+        return
+
+    while True:
+        await asyncio.sleep(NEW_MIRROR_POLL_SECONDS)
+
+        for route in new_mirror_routes():
+            chat_id = int(route["source_chat"])
+            last_id = int(new_mirror_poll_last_ids.get(chat_id, 0) or 0)
+
+            try:
+                msgs = await client.get_messages(chat_id, limit=max(1, NEW_MIRROR_POLL_LIMIT))
+
+                if not msgs:
+                    continue
+
+                fresh = [
+                    m for m in msgs
+                    if int(getattr(m, "id", 0) or 0) > last_id
+                ]
+
+                fresh.sort(key=lambda m: int(getattr(m, "id", 0) or 0))
+
+                for msg in fresh:
+                    await forward_polled_new_mirror_message(route, msg, "poll_new")
+
+                max_seen = max(int(getattr(m, "id", 0) or 0) for m in msgs)
+
+                if max_seen > last_id:
+                    new_mirror_poll_last_ids[chat_id] = max_seen
+                    log.info(
+                        f"[new mirror poll heartbeat] route={route['name']} "
+                        f"source={chat_id} last_id={max_seen} fresh={len(fresh)}"
+                    )
+
+            except Exception as exc:
+                log.warning(
+                    f"[new mirror poll loop failed] route={route.get('name')} source={chat_id}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+
+
 async def handle_single_message(event, edited=False):
     message = event.message
     chat_id = event.chat_id
@@ -1800,9 +1970,14 @@ async def main():
     log.info(f"NEW_MIRROR_DEBUG_CHATS={sorted(NEW_MIRROR_DEBUG_CHATS)}")
     log.info(f"NEW_MIRROR_STARTUP_PROBE={NEW_MIRROR_STARTUP_PROBE}")
     log.info("New mirror forwarding debug active: True")
+    log.info(f"NEW_MIRROR_POLLING_ENABLED={NEW_MIRROR_POLLING_ENABLED}")
+    log.info(f"NEW_MIRROR_POLL_SECONDS={NEW_MIRROR_POLL_SECONDS}")
+    log.info(f"NEW_MIRROR_BACKFILL_ON_START={NEW_MIRROR_BACKFILL_ON_START}")
+    log.info("New mirror polling backup active: True")
     await verify_route_titles_once()
     await probe_new_mirror_routes_once()
     asyncio.create_task(route_title_checker_loop())
+    asyncio.create_task(new_mirror_poll_loop())
     log.info("Imperium fixed Telegram worker running...")
     asyncio.create_task(stats.loop(client))
     log.info("Weekly stats reporter running for Sunday 00:00 Europe/Malta")

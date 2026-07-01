@@ -9,7 +9,7 @@ import hashlib
 from pathlib import Path
 
 import requests
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, functions
 from telethon.errors import FloodWaitError
 from telethon.tl.types import MessageMediaWebPage
 
@@ -39,6 +39,10 @@ ENABLE_ALBUM_REUPLOAD_FALLBACK = os.environ.get("ENABLE_ALBUM_REUPLOAD_FALLBACK"
 NO_ROUTE_TEXT_LIMIT = int(os.environ.get("NO_ROUTE_TEXT_LIMIT", "180"))
 COPY_RETRY_ATTEMPTS = int(os.environ.get("COPY_RETRY_ATTEMPTS", "2"))
 COPY_RETRY_SLEEP_CAP_SECONDS = int(os.environ.get("COPY_RETRY_SLEEP_CAP_SECONDS", "120"))
+ROUTE_TITLE_CHECK_INTERVAL_SECONDS = int(os.environ.get("ROUTE_TITLE_CHECK_INTERVAL_SECONDS", "3600"))
+MIRROR_STRUCTURE_REPAIR = os.environ.get("MIRROR_STRUCTURE_REPAIR", "1").strip() == "1"
+STRICT_ROUTE_TITLE_CHECK = os.environ.get("STRICT_ROUTE_TITLE_CHECK", "0").strip() == "1"
+AUTO_SYNC_TOPIC_TITLES = os.environ.get("AUTO_SYNC_TOPIC_TITLES", "1").strip() == "1"
 MIRROR_DELETED_MESSAGES = os.environ.get("MIRROR_DELETED_MESSAGES", "1").strip() == "1"
 VERIFY_ROUTE_TITLES = os.environ.get("VERIFY_ROUTE_TITLES", "1").strip() == "1"
 
@@ -76,6 +80,7 @@ BLOCKED_SENDER_IDS = {
 SOURCE_CHATS = sorted(set(r["source_chat"] for r in ROUTES))
 POSTED_SIGNAL_KEYS = set()
 stats = WeeklyStats(DATA_DIR)
+route_title_status = {}
 
 
 def _clean_b64(value: str) -> str:
@@ -517,6 +522,15 @@ def routes_for(chat_id, topic_id, message=None):
         if same_source_and_destination(route, topic_id):
             log.warning(f"[self-route skipped] {route['name']} {chat_id}_{topic_id}")
             continue
+
+        if STRICT_ROUTE_TITLE_CHECK and route.get("verify_title") and not route_title_status.get(route_identity(route), False):
+            log.warning(
+                f"[route title strict skip] route={route['name']} "
+                f"source={route['source_chat']}_{route.get('source_topic')} "
+                f"dest={route['dest_chat']}_{route['dest_topic']}"
+            )
+            continue
+
         found.append(route)
 
     if found:
@@ -922,6 +936,103 @@ async def ensure_replied_message_copied(message, route, depth=0):
     return False
 
 
+def sent_as_list(sent):
+    if sent is None:
+        return []
+    if isinstance(sent, list):
+        return [x for x in sent if x]
+    return [sent]
+
+
+def sent_ids(sent):
+    ids = []
+    for item in sent_as_list(sent):
+        mid = getattr(item, "id", None)
+        if mid:
+            ids.append(int(mid))
+    return ids
+
+
+def normalise_structure_text(value):
+    return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def mirror_structure_status(source_message, sent, expected_text):
+    items = sent_as_list(sent)
+
+    if not items:
+        return False, "no_sent_message"
+
+    source_has_media = is_real_media(source_message)
+    dest_has_media = any(is_real_media(item) for item in items)
+
+    if source_has_media and not dest_has_media:
+        return False, "missing_media"
+
+    if not source_has_media and dest_has_media:
+        return False, "unexpected_media"
+
+    expected = normalise_structure_text(expected_text)
+    received = normalise_structure_text("\n".join(text_of(item) for item in items if text_of(item)))
+
+    if expected and expected != received:
+        return False, "text_or_caption_mismatch"
+
+    return True, "ok"
+
+
+async def delete_sent_copy(route, sent, reason):
+    ids = sent_ids(sent)
+
+    if not ids:
+        return
+
+    try:
+        await client.delete_messages(route["dest_chat"], ids)
+        log.warning(f"[mirror structure repair] deleted bad copy ids={ids} route={route['name']} reason={reason}")
+    except Exception as exc:
+        log.warning(f"[mirror structure repair delete failed] ids={ids} route={route['name']} reason={reason}: {exc}")
+
+
+async def repair_bad_mirror_structure(message, route, target_reply, text, entities, sent):
+    if not MIRROR_STRUCTURE_REPAIR:
+        return sent
+
+    ok, reason = mirror_structure_status(message, sent, text)
+
+    if ok:
+        return sent
+
+    await delete_sent_copy(route, sent, reason)
+
+    try:
+        if is_real_media(message):
+            repaired = await send_media_exact(message, route, target_reply, text, entities)
+        else:
+            repaired = await client.send_message(
+                route["dest_chat"],
+                text,
+                formatting_entities=entities if text else None,
+                parse_mode=None,
+                reply_to=target_reply,
+                link_preview=True,
+            )
+
+        ok2, reason2 = mirror_structure_status(message, repaired, text)
+
+        if ok2:
+            log.info(f"[mirror structure repair ok] route={route['name']} source_msg={message.id}")
+        else:
+            log.warning(f"[mirror structure repair still bad] route={route['name']} source_msg={message.id} reason={reason2}")
+
+        return repaired
+
+    except Exception as exc:
+        log.warning(f"[mirror structure repair resend failed] route={route['name']} source_msg={message.id}: {exc}")
+        return sent
+
+
+
 async def copy_one(message, route, edited=False, ensure_reply=True):
     if edited:
         await delete_existing_destination(message, route)
@@ -959,6 +1070,7 @@ async def copy_one(message, route, edited=False, ensure_reply=True):
             link_preview=True,
         )
 
+    sent = await repair_bad_mirror_structure(message, route, target_reply, text, entities, sent)
     remember_message(message, sent, route)
     return sent
 
@@ -1306,6 +1418,225 @@ async def on_album(event):
         alert_crash("imperium-telegram-worker:on_album", exc)
 
 
+# STRICT EXACT MIRROR TITLE CHECKER V2
+
+def route_identity(route):
+    return f"{route.get('source_chat')}:{route.get('source_topic')}:{route.get('dest_chat')}:{route.get('dest_topic')}"
+
+
+def route_destination_identity(route):
+    return f"{route.get('dest_chat')}:{route.get('dest_topic')}"
+
+
+def dest_route_count(route):
+    dest = route_destination_identity(route)
+    return sum(1 for r in ROUTES if route_destination_identity(r) == dest)
+
+
+def title_clean_exact(value):
+    return (value or "").strip()
+
+
+def title_from_entity(entity):
+    for attr in ("title", "first_name", "username"):
+        value = getattr(entity, attr, None)
+        if value:
+            return str(value).strip()
+    return ""
+
+
+async def get_forum_topic_title(chat_id, topic_id):
+    try:
+        res = await client(
+            functions.channels.GetForumTopicsByIDRequest(
+                channel=int(chat_id),
+                topics=[int(topic_id)],
+            )
+        )
+
+        topics = getattr(res, "topics", None) or []
+        if topics:
+            title = getattr(topics[0], "title", None)
+            if title:
+                return str(title).strip()
+
+    except Exception as exc:
+        log.info(f"[topic title api fallback] chat={chat_id} topic={topic_id}: {type(exc).__name__}: {exc}")
+
+    try:
+        msg = await client.get_messages(int(chat_id), ids=int(topic_id))
+        if msg:
+            action = getattr(msg, "action", None)
+
+            for attr in ("title", "new_title"):
+                value = getattr(action, attr, None)
+                if value:
+                    return str(value).strip()
+
+            raw = text_of(msg)
+            if raw:
+                return raw.splitlines()[0].strip()
+
+    except Exception as exc:
+        log.warning(f"[topic title fetch failed] chat={chat_id} topic={topic_id}: {exc}")
+
+    return ""
+
+
+async def source_title_for_route(route):
+    if route.get("source_topic") is not None:
+        topic_title = await get_forum_topic_title(route["source_chat"], route["source_topic"])
+        if topic_title:
+            return topic_title
+
+    entity = await client.get_entity(route["source_chat"])
+    return title_from_entity(entity)
+
+
+async def dest_title_for_route(route):
+    return await get_forum_topic_title(route["dest_chat"], route["dest_topic"])
+
+
+async def sync_destination_topic_title(route, wanted_title):
+    try:
+        await client(
+            functions.channels.EditForumTopicRequest(
+                channel=int(route["dest_chat"]),
+                topic_id=int(route["dest_topic"]),
+                title=str(wanted_title),
+            )
+        )
+        log.info(
+            f"[route title auto-sync requested] route={route['name']} "
+            f"dest={route['dest_chat']}_{route['dest_topic']} title={wanted_title!r}"
+        )
+        await asyncio.sleep(1.2)
+        return True
+
+    except Exception as exc:
+        log.warning(
+            f"[route title auto-sync failed] route={route['name']} "
+            f"dest={route['dest_chat']}_{route['dest_topic']} title={wanted_title!r}: {type(exc).__name__}: {exc}"
+        )
+        return False
+
+
+async def verify_route_title(route):
+    """
+    Exact checker:
+    - source group/topic title must equal destination topic title exactly
+    - if destination topic is dedicated to one route, auto-renames it
+    - if destination topic is shared by multiple routes, logs warning and does NOT auto-rename
+    """
+    rid = route_identity(route)
+
+    try:
+        source_title = title_clean_exact(await source_title_for_route(route))
+        dest_title = title_clean_exact(await dest_title_for_route(route))
+
+        if not source_title:
+            route_title_status[rid] = False
+            log.warning(f"[route title exact failed] route={route['name']} missing source title")
+            return False
+
+        if not dest_title:
+            route_title_status[rid] = False
+            log.warning(f"[route title exact failed] route={route['name']} missing destination topic title")
+            return False
+
+        if source_title == dest_title:
+            route_title_status[rid] = True
+            log.info(
+                f"[route title exact ok] route={route['name']} "
+                f"title={source_title!r} dest={route['dest_chat']}_{route['dest_topic']}"
+            )
+            return True
+
+        shared_count = dest_route_count(route)
+
+        if shared_count > 1:
+            route_title_status[rid] = False
+            log.warning(
+                f"[route title shared-dest mismatch] route={route['name']} "
+                f"source_title={source_title!r} dest_topic_title={dest_title!r} "
+                f"shared_routes={shared_count}. Auto-sync skipped to avoid renaming a shared topic."
+            )
+            return False
+
+        log.warning(
+            f"[route title exact mismatch] route={route['name']} "
+            f"source_title={source_title!r} dest_topic_title={dest_title!r}"
+        )
+
+        if AUTO_SYNC_TOPIC_TITLES:
+            synced = await sync_destination_topic_title(route, source_title)
+
+            if synced:
+                refreshed = title_clean_exact(await dest_title_for_route(route))
+
+                if refreshed == source_title:
+                    route_title_status[rid] = True
+                    log.info(
+                        f"[route title auto-sync ok] route={route['name']} "
+                        f"title={source_title!r}"
+                    )
+                    return True
+
+                route_title_status[rid] = False
+                log.warning(
+                    f"[route title auto-sync still mismatch] route={route['name']} "
+                    f"wanted={source_title!r} got={refreshed!r}"
+                )
+                return False
+
+        route_title_status[rid] = False
+        return False
+
+    except Exception as exc:
+        route_title_status[rid] = False
+        log.warning(f"[route title exact check failed] route={route.get('name')}: {type(exc).__name__}: {exc}")
+        return False
+
+
+async def verify_route_titles_once():
+    if not VERIFY_ROUTE_TITLES:
+        return
+
+    checked = 0
+    ok = 0
+    failed = 0
+
+    for route in ROUTES:
+        if not route.get("verify_title"):
+            continue
+
+        checked += 1
+
+        if await verify_route_title(route):
+            ok += 1
+        else:
+            failed += 1
+
+    log.info(f"[route title checker done] checked={checked} exact_ok={ok} failed={failed}")
+
+
+async def route_title_checker_loop():
+    if not VERIFY_ROUTE_TITLES:
+        return
+
+    if ROUTE_TITLE_CHECK_INTERVAL_SECONDS <= 0:
+        return
+
+    while True:
+        await asyncio.sleep(ROUTE_TITLE_CHECK_INTERVAL_SECONDS)
+        try:
+            await verify_route_titles_once()
+    asyncio.create_task(route_title_checker_loop())
+        except Exception as exc:
+            log.warning(f"[route title checker loop failed] {type(exc).__name__}: {exc}")
+
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -1332,6 +1663,14 @@ async def main():
     log.info(f"COPY_RETRY_SLEEP_CAP_SECONDS={COPY_RETRY_SLEEP_CAP_SECONDS}")
     log.info("Exact media/reply copy hardening active: True")
     log.info("Strong edited-message cleanup active: True")
+    log.info(f"MIRROR_DELETED_MESSAGES={MIRROR_DELETED_MESSAGES}")
+    log.info(f"VERIFY_ROUTE_TITLES={VERIFY_ROUTE_TITLES}")
+    log.info(f"AUTO_SYNC_TOPIC_TITLES={AUTO_SYNC_TOPIC_TITLES}")
+    log.info(f"STRICT_ROUTE_TITLE_CHECK={STRICT_ROUTE_TITLE_CHECK}")
+    log.info(f"MIRROR_STRUCTURE_REPAIR={MIRROR_STRUCTURE_REPAIR}")
+    log.info("Deleted-message mirror active: True")
+    log.info("Strict exact route title checker active: True")
+    log.info("Mirror structure repair active: True")
     log.info(f"MIRROR_DELETED_MESSAGES={MIRROR_DELETED_MESSAGES}")
     log.info(f"VERIFY_ROUTE_TITLES={VERIFY_ROUTE_TITLES}")
     log.info("Deleted-message mirror active: True")

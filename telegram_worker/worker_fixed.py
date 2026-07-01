@@ -39,6 +39,8 @@ ENABLE_ALBUM_REUPLOAD_FALLBACK = os.environ.get("ENABLE_ALBUM_REUPLOAD_FALLBACK"
 NO_ROUTE_TEXT_LIMIT = int(os.environ.get("NO_ROUTE_TEXT_LIMIT", "180"))
 COPY_RETRY_ATTEMPTS = int(os.environ.get("COPY_RETRY_ATTEMPTS", "2"))
 COPY_RETRY_SLEEP_CAP_SECONDS = int(os.environ.get("COPY_RETRY_SLEEP_CAP_SECONDS", "120"))
+MIRROR_DELETED_MESSAGES = os.environ.get("MIRROR_DELETED_MESSAGES", "1").strip() == "1"
+VERIFY_ROUTE_TITLES = os.environ.get("VERIFY_ROUTE_TITLES", "1").strip() == "1"
 
 DATA_DIR = Path(os.environ.get("DATA_DIR") or "./data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -625,6 +627,168 @@ def remember_message(src_msg, dst_msg, route):
         save_map()
 
 
+async def delete_mapped_destination_for_source(source_chat, source_msg_id):
+    """
+    Delete mirrored destination copies when the original source message is deleted.
+    Works with old map values: int
+    Works with new map values: list[int]
+    """
+    if not MIRROR_DELETED_MESSAGES:
+        return False
+
+    source_chat = str(source_chat)
+    source_msg_id = str(source_msg_id)
+
+    targets = {}
+    keys_to_remove = []
+
+    for key, value in list(message_map.items()):
+        try:
+            parts = str(key).split(":")
+            if len(parts) != 4:
+                continue
+
+            mapped_source_chat, mapped_source_msg_id, dest_chat, dest_topic = parts
+
+            if mapped_source_chat != source_chat or mapped_source_msg_id != source_msg_id:
+                continue
+
+            ids = mapped_ids_from_value(value)
+            if not ids:
+                continue
+
+            dest_chat_int = int(dest_chat)
+            targets.setdefault(dest_chat_int, [])
+            for mid in ids:
+                if mid not in targets[dest_chat_int]:
+                    targets[dest_chat_int].append(mid)
+
+            keys_to_remove.append(key)
+
+        except Exception as exc:
+            log.warning(f"[delete mirror scan failed] key={key}: {exc}")
+
+    if not targets:
+        log.info(f"[delete mirror] no mapped destination for source={source_chat}:{source_msg_id}")
+        return False
+
+    deleted_any = False
+
+    for dest_chat, ids in targets.items():
+        try:
+            await client.delete_messages(dest_chat, ids)
+            log.info(f"[delete mirror] deleted dest={dest_chat} msgs={ids} for source={source_chat}:{source_msg_id}")
+            deleted_any = True
+        except Exception as exc:
+            log.warning(f"[delete mirror failed] dest={dest_chat} ids={ids} source={source_chat}:{source_msg_id}: {exc}")
+
+    if deleted_any:
+        for key in keys_to_remove:
+            message_map.pop(key, None)
+        save_map()
+
+    return deleted_any
+
+
+def clean_title_exact(value):
+    return (value or "").strip()
+
+
+def clean_title_soft(value):
+    value = (value or "").casefold().strip()
+    value = re.sub(r"[^a-z0-9]+", "", value)
+    return value
+
+
+def title_from_entity(entity):
+    for attr in ("title", "first_name", "username"):
+        value = getattr(entity, attr, None)
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def title_from_topic_message(msg):
+    if not msg:
+        return ""
+
+    action = getattr(msg, "action", None)
+
+    for attr in ("title", "new_title"):
+        value = getattr(action, attr, None)
+        if value:
+            return str(value).strip()
+
+    raw = text_of(msg)
+    if raw:
+        return raw.splitlines()[0].strip()
+
+    return ""
+
+
+async def verify_route_title(route):
+    """
+    Safety checker for mirror routes:
+    compares source group title with destination topic title.
+    It logs mismatch but does NOT block forwarding.
+    """
+    try:
+        source_entity = await client.get_entity(route["source_chat"])
+        source_title = title_from_entity(source_entity)
+
+        topic_msg = await client.get_messages(route["dest_chat"], ids=int(route["dest_topic"]))
+        dest_title = title_from_topic_message(topic_msg)
+
+        source_exact = clean_title_exact(source_title)
+        dest_exact = clean_title_exact(dest_title)
+
+        exact_ok = source_exact == dest_exact
+        soft_ok = clean_title_soft(source_exact) == clean_title_soft(dest_exact)
+
+        if exact_ok:
+            log.info(
+                f"[route title check ok] route={route['name']} "
+                f"source_title={source_exact!r} dest_topic_title={dest_exact!r}"
+            )
+        elif soft_ok:
+            log.warning(
+                f"[route title check soft-ok] route={route['name']} "
+                f"source_title={source_exact!r} dest_topic_title={dest_exact!r}"
+            )
+        else:
+            log.warning(
+                f"[route title check mismatch] route={route['name']} "
+                f"source_title={source_exact!r} dest_topic_title={dest_exact!r} "
+                f"source={route['source_chat']} dest={route['dest_chat']}_{route['dest_topic']}"
+            )
+
+        return exact_ok or soft_ok
+
+    except Exception as exc:
+        log.warning(
+            f"[route title check failed] route={route.get('name')} "
+            f"source={route.get('source_chat')} dest={route.get('dest_chat')}_{route.get('dest_topic')}: {exc}"
+        )
+        return False
+
+
+async def verify_route_titles_once():
+    if not VERIFY_ROUTE_TITLES:
+        return
+
+    checked = 0
+
+    for route in ROUTES:
+        if not route.get("verify_title"):
+            continue
+
+        checked += 1
+        await verify_route_title(route)
+
+    log.info(f"[route title checker done] checked={checked}")
+
+
+
 def log_stats(route, message, text):
     result = stats.log_message(route, message, text)
     if result:
@@ -1048,6 +1212,35 @@ async def on_message_edited(event):
         alert_crash("imperium-telegram-worker:on_message_edited", exc)
 
 
+@client.on(events.MessageDeleted(chats=SOURCE_CHATS))
+async def on_message_deleted(event):
+    if not MIRROR_DELETED_MESSAGES:
+        return
+
+    try:
+        chat_id = getattr(event, "chat_id", None)
+        deleted_ids = list(getattr(event, "deleted_ids", []) or [])
+
+        if not deleted_ids:
+            one_id = getattr(event, "deleted_id", None)
+            if one_id:
+                deleted_ids = [one_id]
+
+        if chat_id is None:
+            log.warning(f"[delete mirror skipped] missing chat_id deleted_ids={deleted_ids}")
+            return
+
+        for msg_id in deleted_ids:
+            try:
+                await delete_mapped_destination_for_source(chat_id, msg_id)
+            except Exception as exc:
+                log.warning(f"[delete mirror item failed] chat={chat_id} msg={msg_id}: {exc}")
+
+    except Exception as exc:
+        log.exception(f"[handler crash:on_message_deleted] chat={getattr(event, 'chat_id', None)}: {exc}")
+        alert_crash("imperium-telegram-worker:on_message_deleted", exc)
+
+
 @client.on(events.Album(chats=SOURCE_CHATS))
 async def on_album(event):
     try:
@@ -1139,6 +1332,11 @@ async def main():
     log.info(f"COPY_RETRY_SLEEP_CAP_SECONDS={COPY_RETRY_SLEEP_CAP_SECONDS}")
     log.info("Exact media/reply copy hardening active: True")
     log.info("Strong edited-message cleanup active: True")
+    log.info(f"MIRROR_DELETED_MESSAGES={MIRROR_DELETED_MESSAGES}")
+    log.info(f"VERIFY_ROUTE_TITLES={VERIFY_ROUTE_TITLES}")
+    log.info("Deleted-message mirror active: True")
+    log.info("Route title mirror checker active: True")
+    await verify_route_titles_once()
     log.info("Imperium fixed Telegram worker running...")
     asyncio.create_task(stats.loop(client))
     log.info("Weekly stats reporter running for Sunday 00:00 Europe/Malta")

@@ -77,7 +77,11 @@ ROUTES = [{'name': 'Triad FX', 'source_chat': -1002817163788, 'source_topic': 89
  {'name': 'Route568 445', 'source_chat': -1003788774930, 'source_topic': 445, 'dest_chat': -1003918958200, 'dest_topic': 568},
  {'name': 'Route568 443', 'source_chat': -1003788774930, 'source_topic': 443, 'dest_chat': -1003918958200, 'dest_topic': 568},
  {'name': 'Route1927 ONLY SOURCE', 'source_chat': -1003803259179, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 1927},
- {'name': 'Route8587 3902184158', 'source_chat': -1003902184158, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 8587}]
+ {'name': 'Route8587 3902184158', 'source_chat': -1003902184158, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 8587},
+ {'name': 'Mirror Route569 3812195730', 'source_chat': -1003812195730, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 569, 'verify_title': True},
+ {'name': 'Mirror Route26898 3371106919', 'source_chat': -1003371106919, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 26898, 'verify_title': True},
+ {'name': 'Mirror Route26892 3651353503', 'source_chat': -1003651353503, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 26892, 'verify_title': True}
+]
 
 if os.environ.get("DISABLE_PROVIDER_ROUTES", "0").strip() == "1":
     ROUTES = []

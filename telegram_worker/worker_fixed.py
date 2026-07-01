@@ -43,7 +43,7 @@ COPY_RETRY_SLEEP_CAP_SECONDS = int(os.environ.get("COPY_RETRY_SLEEP_CAP_SECONDS"
 ROUTE_TITLE_CHECK_INTERVAL_SECONDS = int(os.environ.get("ROUTE_TITLE_CHECK_INTERVAL_SECONDS", "3600"))
 NEW_MIRROR_DEBUG_CHATS_RAW = os.environ.get(
     "NEW_MIRROR_DEBUG_CHATS",
-    "-1003812195730,-1003371106919,-1003651353503,5709850040",
+    "-1003812195730,-1003371106919,-1003651353503,-1003087047858",
 ).strip()
 
 NEW_MIRROR_DEBUG_CHATS = {
@@ -58,6 +58,13 @@ NEW_MIRROR_POLL_SECONDS = int(os.environ.get("NEW_MIRROR_POLL_SECONDS", "8"))
 NEW_MIRROR_POLL_LIMIT = int(os.environ.get("NEW_MIRROR_POLL_LIMIT", "8"))
 NEW_MIRROR_BACKFILL_ON_START = os.environ.get("NEW_MIRROR_BACKFILL_ON_START", "1").strip() == "1"
 NEW_MIRROR_BACKFILL_LIMIT = int(os.environ.get("NEW_MIRROR_BACKFILL_LIMIT", "3"))
+
+NEW_MIRROR_BACKFILL_ONLY_CHATS_RAW = os.environ.get("NEW_MIRROR_BACKFILL_ONLY_CHATS", "").strip()
+NEW_MIRROR_BACKFILL_ONLY_CHATS = {
+    int(x)
+    for x in re.split(r"[,\s]+", NEW_MIRROR_BACKFILL_ONLY_CHATS_RAW)
+    if x.strip()
+} if NEW_MIRROR_BACKFILL_ONLY_CHATS_RAW else set()
 new_mirror_poll_last_ids = {}
 
 
@@ -1455,7 +1462,15 @@ async def initialise_new_mirror_poll_state():
 
             latest_sorted = sorted(latest, key=lambda m: int(getattr(m, "id", 0) or 0))
 
-            if NEW_MIRROR_BACKFILL_ON_START:
+            do_backfill = (
+                NEW_MIRROR_BACKFILL_ON_START
+                and (
+                    not NEW_MIRROR_BACKFILL_ONLY_CHATS
+                    or chat_id in NEW_MIRROR_BACKFILL_ONLY_CHATS
+                )
+            )
+
+            if do_backfill:
                 for msg in latest_sorted:
                     await forward_polled_new_mirror_message(route, msg, "startup_backfill")
 
@@ -1464,7 +1479,7 @@ async def initialise_new_mirror_poll_state():
 
             log.info(
                 f"[new mirror poll init] route={route['name']} "
-                f"source={chat_id} last_id={max_id} backfill={NEW_MIRROR_BACKFILL_ON_START}"
+                f"source={chat_id} last_id={max_id} backfill={do_backfill}"
             )
 
         except Exception as exc:
@@ -2001,6 +2016,7 @@ async def main():
     log.info(f"NEW_MIRROR_POLLING_ENABLED={NEW_MIRROR_POLLING_ENABLED}")
     log.info(f"NEW_MIRROR_POLL_SECONDS={NEW_MIRROR_POLL_SECONDS}")
     log.info(f"NEW_MIRROR_BACKFILL_ON_START={NEW_MIRROR_BACKFILL_ON_START}")
+    log.info(f"NEW_MIRROR_BACKFILL_ONLY_CHATS={sorted(NEW_MIRROR_BACKFILL_ONLY_CHATS)}")
     log.info("New mirror polling backup active: True")
     log.info("Forward sidecar isolation active: True")
     await verify_route_titles_once()

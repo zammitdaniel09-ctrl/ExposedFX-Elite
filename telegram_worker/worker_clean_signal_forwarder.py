@@ -226,7 +226,6 @@ def is_my_formatted_signal(text: str) -> bool:
 
     normal_required = [
         r"(?:buy|sell)\s+point\s*:\s*[-+]?\d",
-        r"layer\s+point\s*:\s*[-+]?\d",
     ]
 
     return all(re.search(pattern, t, re.IGNORECASE) for pattern in normal_required)

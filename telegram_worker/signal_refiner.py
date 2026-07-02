@@ -137,6 +137,32 @@ def all_tps(text: str, parsed: Dict[str, Any]) -> List[float]:
     return out[:8]
 
 
+
+def compact_entry_range(low, high) -> str:
+    """
+    Display entry zone cleanly:
+    4134.75 + 4135 -> 4134.75-35
+    4057 + 4065 -> 4057-65
+    Single entry -> 4065
+    """
+    lo = float(low)
+    hi = float(high)
+
+    if abs(hi - lo) < 0.00001:
+        return price(hi)
+
+    lo_s = price(min(lo, hi))
+    hi_s = price(max(lo, hi))
+
+    # Same large prefix, compact the high side.
+    lo_int = lo_s.split(".", 1)[0]
+    hi_int = hi_s.split(".", 1)[0]
+
+    if len(lo_int) >= 3 and len(hi_int) >= 2 and lo_int[:-2] == hi_int[:-2]:
+        return f"{lo_s}-{hi_int[-2:]}"
+
+    return f"{lo_s}-{hi_s}"
+
 def symbol_family(symbol: str) -> str:
     s = (symbol or "").upper().replace("/", "")
     if s.startswith("XAU") or "GOLD" in s:
@@ -351,7 +377,7 @@ def build_message(sig: Dict[str, Any]) -> str:
     lo = float(sig["entry_low"])
     hi = float(sig["entry_high"])
     sl = float(sig["sl"])
-    tps = [float(x) for x in sig.get("tps", [])][:8]
+    tps = [float(x) for x in sig.get("tps", [])][:4]
     risk = str(sig.get("risk") or "").upper()
 
     if risk not in ("LOW", "MEDIUM", "HIGH"):
@@ -387,23 +413,18 @@ def build_message(sig: Dict[str, Any]) -> str:
 
     elif direction == "BUY":
         heading = f"{ce('UPTREND_CHART')}<b>BUY {symbol} INTRADAY ZONE</b>"
-        entry_lines = [f"• Buy Point : {esc(price(hi))}"]
-        entry_lines.append(f"• Layer Point : {esc(price(layer))}")
+        entry_lines = [f"• Buy Point : {esc(compact_entry_range(lo, hi))}"]
 
     else:
         heading = f"{ce('RED_ALERT')}<b>SELL {symbol} ZONE</b>"
-        entry_lines = [f"• Sell Point : {esc(price(lo))}"]
-        entry_lines.append(f"• Layer Point : {esc(price(layer))}")
+        entry_lines = [f"• Sell Point : {esc(compact_entry_range(lo, hi))}"]
 
     lines = [heading, "", *entry_lines, f"• Stop Loss : {esc(price(sl))}", ""]
 
-    for idx, tp in enumerate(tps, 1):
+    for idx, tp in enumerate(tps[:4], 1):
         lines.append(f"{ce('PIN_SIGNALS')}TP{idx} - {esc(price(tp))}")
 
-    if len(tps) < 8:
-        lines.append(f"{ce('PIN_SIGNALS')}TP{len(tps) + 1} - Open")
-    else:
-        lines.append(f"{ce('PIN_SIGNALS')}TP9 - Open")
+    lines.append(f"{ce('PIN_SIGNALS')}TP5 - Open")
 
     lines += [
         "",

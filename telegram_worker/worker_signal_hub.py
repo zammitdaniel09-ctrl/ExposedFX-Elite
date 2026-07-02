@@ -95,7 +95,9 @@ UPDATE_REPLY_DEDUPE_SECONDS = int(os.environ.get("UPDATE_REPLY_DEDUPE_SECONDS", 
 SIGNAL_LIFECYCLE_FILE = DATA_DIR / "signal_lifecycle.json"
 SIGNAL_CONTENT_DEDUPE_FILE = DATA_DIR / "signal_content_dedupe.json"
 PURGE_DEST_ON_START = os.environ.get("PURGE_DEST_ON_START", "0").strip() == "1"
-PURGE_DEST_LIMIT = int(os.environ.get("PURGE_DEST_LIMIT", "5000"))
+PURGE_DEST_LIMIT = int(os.environ.get("PURGE_DEST_LIMIT", "200000"))
+PURGE_DEST_UNTIL_EMPTY = os.environ.get("PURGE_DEST_UNTIL_EMPTY", "1").strip() == "1"
+PURGE_DEST_SLEEP_SECONDS = float(os.environ.get("PURGE_DEST_SLEEP_SECONDS", "0.35"))
 
 def load_content_dedupe_signatures():
     try:
@@ -2185,9 +2187,16 @@ async def purge_destination_on_start_once():
     deleted = 0
     limit = max(1, int(PURGE_DEST_LIMIT))
 
-    log.warning(f"[incoming purge start] chat={SIGNAL_DEST_CHAT} limit={limit}")
+    log.warning(
+        f"[incoming purge start] chat={SIGNAL_DEST_CHAT} "
+        f"limit={limit} until_empty={PURGE_DEST_UNTIL_EMPTY}"
+    )
 
-    while deleted < limit:
+    while True:
+        if deleted >= limit:
+            log.warning(f"[incoming purge limit reached] chat={SIGNAL_DEST_CHAT} deleted={deleted} limit={limit}")
+            break
+
         batch_limit = min(100, limit - deleted)
 
         try:
@@ -2199,15 +2208,22 @@ async def purge_destination_on_start_once():
         ids = [int(getattr(m, "id", 0) or 0) for m in msgs or [] if getattr(m, "id", None)]
 
         if not ids:
+            log.warning(f"[incoming purge empty] chat={SIGNAL_DEST_CHAT} deleted={deleted}")
             break
 
         try:
             await client.delete_messages(SIGNAL_DEST_CHAT, ids)
             deleted += len(ids)
             log.warning(f"[incoming purge deleted batch] count={len(ids)} total={deleted}")
-            await asyncio.sleep(0.25)
+
+            if PURGE_DEST_SLEEP_SECONDS > 0:
+                await asyncio.sleep(PURGE_DEST_SLEEP_SECONDS)
+
         except Exception as exc:
             log.warning(f"[incoming purge delete failed] count={len(ids)}: {type(exc).__name__}: {exc}")
+            break
+
+        if not PURGE_DEST_UNTIL_EMPTY and deleted >= limit:
             break
 
     log.warning(f"[incoming purge done] chat={SIGNAL_DEST_CHAT} deleted={deleted}")
@@ -2230,6 +2246,7 @@ async def main():
     log.info(f"SEND_SIGNAL_UPDATES={SEND_SIGNAL_UPDATES}")
     log.info(f"CONTENT_DEDUPE_ENABLED={CONTENT_DEDUPE_ENABLED}")
     log.info(f"PURGE_DEST_ON_START={PURGE_DEST_ON_START}")
+    log.info(f"PURGE_DEST_UNTIL_EMPTY={PURGE_DEST_UNTIL_EMPTY}")
     log.info("Actual source topic names active: True")
     log.info(f"DELETE_OLD_SIGNAL_PACKET_ON_EDIT={DELETE_OLD_SIGNAL_PACKET_ON_EDIT}")
     log.info("AI/source replies to the anonymous original copy: True")

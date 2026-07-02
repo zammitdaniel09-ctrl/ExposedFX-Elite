@@ -1752,19 +1752,68 @@ async def send_ai_formatted_signal(message, result, reply_to_id):
 
 async def forward_original(message, text):
     """
-    Forward/copy the original and return the sent message,
-    so the AI format and source can reply to it.
+    Anonymous original copy only.
+
+    Never use Telegram forward_messages here, because forwards can expose
+    the forwarded-from/source header. This sends a fresh copied message instead.
     """
     if not FORWARD_SIGNAL_CANDIDATES:
         return None
-    try:
-        sent = await client.forward_messages(SIGNAL_DEST_CHAT, message)
-        log.info(f"[signal hub original forwarded] msg={message.id} topic={topic_id_of(message)}")
-        return sent
-    except Exception as exc:
-        log.warning(f"Forward original failed, sending text copy instead: {exc}")
-        sent = await client.send_message(SIGNAL_DEST_CHAT, text, parse_mode=None, link_preview=False)
-        return sent
+
+    text = text or ""
+    entities = getattr(message, "entities", None)
+
+    if is_real_signal_media(message):
+        try:
+            sent = await client.send_file(
+                SIGNAL_DEST_CHAT,
+                message.media,
+                caption=text if text else None,
+                formatting_entities=entities if text else None,
+                parse_mode=None,
+            )
+            log.info(f"[signal hub original anonymous media copied] msg={message.id} topic={topic_id_of(message)}")
+            return sent
+        except Exception as exc:
+            log.warning(f"[signal hub original anonymous media direct copy failed] msg={message.id}: {type(exc).__name__}: {exc}")
+
+        cache_dir = DATA_DIR / "ai_original_media_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        downloaded = None
+
+        try:
+            downloaded = await message.download_media(file=str(cache_dir / f"original_{message.id}"))
+            if downloaded:
+                sent = await client.send_file(
+                    SIGNAL_DEST_CHAT,
+                    downloaded,
+                    caption=text if text else None,
+                    formatting_entities=entities if text else None,
+                    parse_mode=None,
+                )
+                log.info(f"[signal hub original anonymous media reuploaded] msg={message.id} topic={topic_id_of(message)}")
+                return sent
+        finally:
+            if downloaded:
+                try:
+                    Path(downloaded).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    if not text:
+        log.info(f"[signal hub original anonymous skipped empty] msg={message.id} topic={topic_id_of(message)}")
+        return None
+
+    sent = await send_message_with_retry(
+        SIGNAL_DEST_CHAT,
+        text,
+        formatting_entities=entities if text else None,
+        parse_mode=None,
+        link_preview=False,
+    )
+
+    log.info(f"[signal hub original anonymous text copied] msg={message.id} topic={topic_id_of(message)}")
+    return sent
 
 
 def is_transient_send_error(exc):
@@ -2094,7 +2143,8 @@ async def main():
     log.info(f"SEND_SIGNAL_UPDATES={SEND_SIGNAL_UPDATES}")
     log.info("Actual source topic names active: True")
     log.info(f"DELETE_OLD_SIGNAL_PACKET_ON_EDIT={DELETE_OLD_SIGNAL_PACKET_ON_EDIT}")
-    log.info("AI/source replies to the forwarded original: True")
+    log.info("AI/source replies to the anonymous original copy: True")
+    log.info("Anonymous original copy mode active: True")
     log.info(f"Universal AI extractor active for any pair")
     log.info(f"Partial signal buffer: {PARTIAL_BUFFER_ENABLED} | window={BUFFER_WINDOW_SECONDS}s | max={BUFFER_MAX_MESSAGES}")
     log.info("Partial buffer strict guard active: True")

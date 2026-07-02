@@ -2194,6 +2194,7 @@ async def main():
     log.info("Mirror structure repair active: True")
     log.info(f"NEW_MIRROR_DEBUG_CHATS={sorted(NEW_MIRROR_DEBUG_CHATS)}")
     log.info(f"Hard blocked sender IDs active: {sorted(BLOCKED_SENDER_IDS)}")
+    log.info("Anonymous raw mirror copy mode active: True")
     log.info(f"BLOCKED_SENDER_CLEANUP_ENABLED={BLOCKED_SENDER_CLEANUP_ENABLED}")
     log.info(f"BLOCKED_SENDER_CLEANUP_DEST_TOPICS={sorted(BLOCKED_SENDER_CLEANUP_DEST_TOPICS)}")
     log.info(f"NEW_MIRROR_DEBUG_DEST_TOPICS={sorted(NEW_MIRROR_DEBUG_DEST_TOPICS)}")

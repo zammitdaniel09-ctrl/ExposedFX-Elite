@@ -25,7 +25,7 @@ DEST_CHAT = int(os.environ.get("CLEAN_FORWARD_DEST_CHAT", "-5144279180"))
 
 # 1 = send as clean copied message, 0 = Telegram forward
 # I recommend 1 so the new group only sees clean signals, no forwarded/source mess.
-COPY_MODE = os.environ.get("CLEAN_FORWARD_COPY_MODE", "1").strip() == "1"
+COPY_MODE = True  # forced anonymous copy mode; never Telegram-forward to final group
 STRICT_ONLY_AI_FORMAT = os.environ.get("STRICT_ONLY_AI_FORMAT", "1").strip() == "1"
 FORWARD_CLEAN_UPDATES = os.environ.get("FORWARD_CLEAN_UPDATES", "0").strip() == "1"
 CLEAN_SEND_RETRY_ATTEMPTS = int(os.environ.get("CLEAN_SEND_RETRY_ATTEMPTS", "2"))
@@ -601,6 +601,7 @@ async def main():
     me = await client.get_me()
     log.info(f"Logged in as {me.first_name} | id={me.id}")
     log.info(f"Source={SOURCE_CHAT} Destination={DEST_CHAT} CopyMode={COPY_MODE}")
+    log.info("Anonymous clean copy mode active: True")
     log.info(f"STRICT_ONLY_AI_FORMAT={STRICT_ONLY_AI_FORMAT}")
     log.info(f"CLEAN_SEND_RETRY_ATTEMPTS={CLEAN_SEND_RETRY_ATTEMPTS}")
     log.info(f"CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS={CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS}")

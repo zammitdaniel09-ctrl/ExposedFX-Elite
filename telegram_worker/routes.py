@@ -98,7 +98,13 @@ ROUTES = [{'name': 'Triad FX', 'source_chat': -1002817163788, 'source_topic': 89
   'source_topic': 20774,
   'dest_chat': -1003918958200,
   'dest_topic': 28840,
-  'verify_title': True}]
+  'verify_title': True},
+ {'name': 'Mirror Route29327 3770573057',
+  'source_chat': -1003770573057,
+  'source_topic': None,
+  'dest_chat': -1003918958200,
+  'dest_topic': 29327,
+  'verify_title': False}]
 
 if os.environ.get("DISABLE_PROVIDER_ROUTES", "0").strip() == "1":
     ROUTES = []

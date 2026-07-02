@@ -97,6 +97,28 @@ SIGNAL_CONTENT_DEDUPE_FILE = DATA_DIR / "signal_content_dedupe.json"
 PURGE_DEST_ON_START = os.environ.get("PURGE_DEST_ON_START", "0").strip() == "1"
 PURGE_DEST_LIMIT = int(os.environ.get("PURGE_DEST_LIMIT", "5000"))
 
+def load_content_dedupe_signatures():
+    try:
+        if SIGNAL_CONTENT_DEDUPE_FILE.exists():
+            data = json.loads(SIGNAL_CONTENT_DEDUPE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [str(x) for x in data if x]
+    except Exception as exc:
+        log.warning(f"[content dedupe load failed] {exc}")
+    return []
+
+
+def save_content_dedupe_signatures():
+    try:
+        if 'sent_content_signatures' not in globals():
+            return
+        tmp = SIGNAL_CONTENT_DEDUPE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(list(sent_content_signatures)[-1200:]), encoding="utf-8")
+        tmp.replace(SIGNAL_CONTENT_DEDUPE_FILE)
+    except Exception as exc:
+        log.warning(f"[content dedupe save failed] {exc}")
+
+
 buffers = defaultdict(lambda: deque(maxlen=BUFFER_MAX_MESSAGES))
 sent_signatures = deque(maxlen=300)
 sent_signature_set = set()

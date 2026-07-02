@@ -43,7 +43,7 @@ COPY_RETRY_SLEEP_CAP_SECONDS = int(os.environ.get("COPY_RETRY_SLEEP_CAP_SECONDS"
 ROUTE_TITLE_CHECK_INTERVAL_SECONDS = int(os.environ.get("ROUTE_TITLE_CHECK_INTERVAL_SECONDS", "3600"))
 NEW_MIRROR_DEBUG_CHATS_RAW = os.environ.get(
     "NEW_MIRROR_DEBUG_CHATS",
-    "-1003812195730,-1003371106919,-1003651353503,-1003087047858",
+    "-1003812195730,-1003371106919,-1003651353503,-1003087047858,-1002817163788",
 ).strip()
 
 NEW_MIRROR_DEBUG_CHATS = {
@@ -65,6 +65,20 @@ NEW_MIRROR_BACKFILL_ONLY_CHATS = {
     for x in re.split(r"[,\s]+", NEW_MIRROR_BACKFILL_ONLY_CHATS_RAW)
     if x.strip()
 } if NEW_MIRROR_BACKFILL_ONLY_CHATS_RAW else set()
+
+NEW_MIRROR_DEBUG_DEST_TOPICS_RAW = os.environ.get("NEW_MIRROR_DEBUG_DEST_TOPICS", "").strip()
+NEW_MIRROR_DEBUG_DEST_TOPICS = {
+    int(x)
+    for x in re.split(r"[,\s]+", NEW_MIRROR_DEBUG_DEST_TOPICS_RAW)
+    if x.strip()
+} if NEW_MIRROR_DEBUG_DEST_TOPICS_RAW else set()
+
+NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS_RAW = os.environ.get("NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS", "").strip()
+NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS = {
+    int(x)
+    for x in re.split(r"[,\s]+", NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS_RAW)
+    if x.strip()
+} if NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS_RAW else set()
 new_mirror_poll_last_ids = {}
 
 
@@ -1368,10 +1382,55 @@ async def probe_new_mirror_routes_once():
 
 
 def new_mirror_routes():
-    return [
-        r for r in ROUTES
-        if int(r.get("source_chat")) in NEW_MIRROR_DEBUG_CHATS
-    ]
+    out = []
+
+    for route in ROUTES:
+        try:
+            source_chat = int(route.get("source_chat"))
+            dest_topic = int(route.get("dest_topic"))
+        except Exception:
+            continue
+
+        if source_chat not in NEW_MIRROR_DEBUG_CHATS:
+            continue
+
+        if NEW_MIRROR_DEBUG_DEST_TOPICS and dest_topic not in NEW_MIRROR_DEBUG_DEST_TOPICS:
+            continue
+
+        out.append(route)
+
+    return out
+
+
+def route_poll_key(route):
+    return f"{int(route.get('source_chat'))}:{route.get('source_topic')}:{int(route.get('dest_topic'))}"
+
+
+async def get_route_poll_messages(route, limit):
+    chat_id = int(route["source_chat"])
+    source_topic = route.get("source_topic")
+    limit = max(1, int(limit))
+
+    if source_topic:
+        try:
+            msgs = await client.get_messages(chat_id, limit=limit, reply_to=int(source_topic))
+            if msgs is not None:
+                try:
+                    count = len(msgs)
+                except Exception:
+                    count = "unknown"
+                log.info(
+                    f"[new mirror topic poll fetch] route={route['name']} "
+                    f"source={chat_id}_{source_topic} limit={limit} count={count}"
+                )
+                return msgs
+        except Exception as exc:
+            log.warning(
+                f"[new mirror topic poll fetch failed] route={route.get('name')} "
+                f"source={chat_id}_{source_topic}: {type(exc).__name__}: {exc}. Falling back to chat latest."
+            )
+
+    return await client.get_messages(chat_id, limit=limit)
 
 
 async def forward_polled_new_mirror_message(route, msg, reason):
@@ -1454,7 +1513,7 @@ async def initialise_new_mirror_poll_state():
         chat_id = int(route["source_chat"])
 
         try:
-            latest = await client.get_messages(chat_id, limit=max(1, NEW_MIRROR_BACKFILL_LIMIT))
+            latest = await get_route_poll_messages(route, NEW_MIRROR_BACKFILL_LIMIT)
 
             if not latest:
                 log.warning(f"[new mirror poll init empty] route={route['name']} source={chat_id}")
@@ -1468,6 +1527,10 @@ async def initialise_new_mirror_poll_state():
                     not NEW_MIRROR_BACKFILL_ONLY_CHATS
                     or chat_id in NEW_MIRROR_BACKFILL_ONLY_CHATS
                 )
+                and (
+                    not NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS
+                    or int(route.get("dest_topic")) in NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS
+                )
             )
 
             if do_backfill:
@@ -1475,7 +1538,7 @@ async def initialise_new_mirror_poll_state():
                     await forward_polled_new_mirror_message(route, msg, "startup_backfill")
 
             max_id = max(int(getattr(m, "id", 0) or 0) for m in latest_sorted)
-            new_mirror_poll_last_ids[chat_id] = max_id
+            new_mirror_poll_last_ids[route_poll_key(route)] = max_id
 
             log.info(
                 f"[new mirror poll init] route={route['name']} "
@@ -1503,10 +1566,10 @@ async def new_mirror_poll_loop():
 
         for route in new_mirror_routes():
             chat_id = int(route["source_chat"])
-            last_id = int(new_mirror_poll_last_ids.get(chat_id, 0) or 0)
+            last_id = int(new_mirror_poll_last_ids.get(route_poll_key(route), 0) or 0)
 
             try:
-                msgs = await client.get_messages(chat_id, limit=max(1, NEW_MIRROR_POLL_LIMIT))
+                msgs = await get_route_poll_messages(route, NEW_MIRROR_POLL_LIMIT)
 
                 if not msgs:
                     continue
@@ -1524,7 +1587,7 @@ async def new_mirror_poll_loop():
                 max_seen = max(int(getattr(m, "id", 0) or 0) for m in msgs)
 
                 if max_seen > last_id:
-                    new_mirror_poll_last_ids[chat_id] = max_seen
+                    new_mirror_poll_last_ids[route_poll_key(route)] = max_seen
                     log.info(
                         f"[new mirror poll heartbeat] route={route['name']} "
                         f"source={chat_id} last_id={max_seen} fresh={len(fresh)}"
@@ -2010,13 +2073,16 @@ async def main():
     log.info("Strict exact route title checker active: True")
     log.info("Mirror structure repair active: True")
     log.info(f"NEW_MIRROR_DEBUG_CHATS={sorted(NEW_MIRROR_DEBUG_CHATS)}")
+    log.info(f"NEW_MIRROR_DEBUG_DEST_TOPICS={sorted(NEW_MIRROR_DEBUG_DEST_TOPICS)}")
     log.info(f"NEW_MIRROR_STARTUP_PROBE={NEW_MIRROR_STARTUP_PROBE}")
     log.info("New mirror forwarding debug active: True")
     log.info("Topic 28464 mirror active: True")
+    log.info("Topic 28840 mirror active: True")
     log.info(f"NEW_MIRROR_POLLING_ENABLED={NEW_MIRROR_POLLING_ENABLED}")
     log.info(f"NEW_MIRROR_POLL_SECONDS={NEW_MIRROR_POLL_SECONDS}")
     log.info(f"NEW_MIRROR_BACKFILL_ON_START={NEW_MIRROR_BACKFILL_ON_START}")
     log.info(f"NEW_MIRROR_BACKFILL_ONLY_CHATS={sorted(NEW_MIRROR_BACKFILL_ONLY_CHATS)}")
+    log.info(f"NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS={sorted(NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS)}")
     log.info("New mirror polling backup active: True")
     log.info("Forward sidecar isolation active: True")
     await verify_route_titles_once()

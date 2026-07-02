@@ -27,6 +27,7 @@ DEST_CHAT = int(os.environ.get("CLEAN_FORWARD_DEST_CHAT", "-5144279180"))
 # I recommend 1 so the new group only sees clean signals, no forwarded/source mess.
 COPY_MODE = os.environ.get("CLEAN_FORWARD_COPY_MODE", "1").strip() == "1"
 STRICT_ONLY_AI_FORMAT = os.environ.get("STRICT_ONLY_AI_FORMAT", "1").strip() == "1"
+FORWARD_CLEAN_UPDATES = os.environ.get("FORWARD_CLEAN_UPDATES", "0").strip() == "1"
 CLEAN_SEND_RETRY_ATTEMPTS = int(os.environ.get("CLEAN_SEND_RETRY_ATTEMPTS", "2"))
 CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS = int(os.environ.get("CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS", "60"))
 
@@ -466,6 +467,10 @@ async def on_message(event):
         key = map_key(message.id)
 
         if is_clean_signal_update(text):
+            if not FORWARD_CLEAN_UPDATES:
+                log.info(f"[SKIP UPDATE DISABLED] msg={message.id} text={text[:80]!r}")
+                return
+
             reply_to = clean_reply_target(message)
             if not reply_to:
                 log.info(f"[SKIP UPDATE NO MAP] msg={message.id} text={text[:80]!r}")
@@ -549,6 +554,10 @@ async def on_message_edited(event):
             await delete_existing_clean_copy_for_edit(message.id)
 
         if is_clean_signal_update(text):
+            if not FORWARD_CLEAN_UPDATES:
+                log.info(f"[SKIP UPDATE EDIT DISABLED] msg={message.id} text={text[:80]!r}")
+                return
+
             sent = await copy_clean_update_message(message, edited=True)
             if sent:
                 log.info(f"[MIRRORED CLEAN UPDATE EDIT] msg={message.id}")
@@ -597,7 +606,7 @@ async def main():
     log.info(f"CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS={CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS}")
     log.info("Clean formatted signal forwarder running...")
     log.info("Delete sync from incoming group to final group: True")
-    log.info("Clean signal update mirror active: True")
+    log.info(f"Clean signal update mirror active: {FORWARD_CLEAN_UPDATES}")
     log.info("Clean signal edit mirror active: True")
     await client.run_until_disconnected()
 

@@ -9,6 +9,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 from telethon import events
+from telethon.tl import functions
 
 from telegram_worker.worker_fixed import client, stats
 from telegram_worker.admin_features import ADMIN_CHAT, admin_startup, admin_loop, handle_admin_command
@@ -76,6 +77,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 SIGNAL_PACKET_MAP_FILE = DATA_DIR / "signal_packet_map.json"
 DELETE_OLD_SIGNAL_PACKET_ON_EDIT = os.environ.get("DELETE_OLD_SIGNAL_PACKET_ON_EDIT", "1").strip() == "1"
 SEND_SOURCE_LINE = os.environ.get("SEND_SOURCE_LINE", "1").strip() == "1"
+SEND_SIGNAL_UPDATES = os.environ.get("SEND_SIGNAL_UPDATES", "0").strip() == "1"
 DROP_LINK_ONLY = os.environ.get("DROP_LINK_ONLY", "1").strip() == "1"
 LINK_ONLY_RE = re.compile(r"^(?:https?://|t\.me/|www\.)\S+$", re.IGNORECASE)
 
@@ -83,7 +85,7 @@ FORWARD_SIGNAL_CANDIDATES = os.environ.get("FORWARD_SIGNAL_CANDIDATES", "1").str
 PARTIAL_BUFFER_ENABLED = os.environ.get("PARTIAL_SIGNAL_BUFFER", "1").strip() == "1"
 BUFFER_WINDOW_SECONDS = int(os.environ.get("SIGNAL_BUFFER_SECONDS", "600"))
 BUFFER_MAX_MESSAGES = int(os.environ.get("SIGNAL_BUFFER_MAX_MESSAGES", "8"))
-DEFAULT_ALLOWED_TOPICS = "23,430,28,2,31,35,11,363,25,29,33,20,362,17,34,22,9,36,10,14,4,16,13,12,8,7,6,5,3,15,567,568,569,570,1927,8587,26892,26898,28464"
+DEFAULT_ALLOWED_TOPICS = "23,430,28,2,31,35,11,363,25,29,33,20,362,17,34,22,9,36,10,14,4,16,13,12,8,7,6,5,3,15,567,568,569,570,1927,8587,26892,26898,28464,28840"
 ALLOWED_SOURCE_TOPICS = topic_set_from_env("ALLOWED_SOURCE_TOPICS", DEFAULT_ALLOWED_TOPICS)
 CONTENT_DEDUPE_ENABLED = os.environ.get("CONTENT_DEDUPE_ENABLED", "0").strip() == "1"
 SIGNAL_SEND_RETRY_ATTEMPTS = int(os.environ.get("SIGNAL_SEND_RETRY_ATTEMPTS", "2"))
@@ -147,6 +149,7 @@ def rebuild_last_active_signal_by_topic(lifecycle):
 
 active_signal_lifecycle = load_signal_lifecycle()
 last_active_signal_by_topic = rebuild_last_active_signal_by_topic(active_signal_lifecycle)
+topic_title_cache = {}
 
 TOPIC_NAMES = {
     2: "Triad FX",
@@ -248,7 +251,63 @@ def topic_id_of(message):
 def topic_label(topic_id):
     if topic_id is None:
         return "Main Chat"
-    return TOPIC_NAMES.get(int(topic_id), f"Topic {topic_id}")
+
+    try:
+        tid = int(topic_id)
+    except Exception:
+        return f"Topic {topic_id}"
+
+    cached = topic_title_cache.get(tid)
+    if cached:
+        return cached
+
+    return TOPIC_NAMES.get(tid, f"Topic {tid}")
+
+
+async def resolve_topic_title_from_telegram(topic_id):
+    try:
+        tid = int(topic_id)
+    except Exception:
+        return None
+
+    # Try direct forum topic API if this Telethon runtime supports it.
+    try:
+        req_cls = getattr(functions.channels, "GetForumTopicsByIDRequest", None)
+        if req_cls:
+            res = await client(req_cls(channel=int(SIGNAL_SOURCE_CHAT), topics=[tid]))
+            topics = getattr(res, "topics", None) or []
+            if topics:
+                title = getattr(topics[0], "title", None)
+                if title:
+                    return str(title).strip()
+    except Exception as exc:
+        log.info(f"[topic title api fallback] topic={tid}: {type(exc).__name__}: {exc}")
+
+    # Fallback: forum topic id normally points to the topic starter service message.
+    try:
+        msg = await client.get_messages(SIGNAL_SOURCE_CHAT, ids=tid)
+        action = getattr(msg, "action", None)
+        title = getattr(action, "title", None) or getattr(msg, "title", None)
+        if title:
+            return str(title).strip()
+    except Exception as exc:
+        log.info(f"[topic title message fallback failed] topic={tid}: {type(exc).__name__}: {exc}")
+
+    return None
+
+
+async def preload_topic_titles_once():
+    loaded = 0
+
+    for tid in sorted(ALLOWED_SOURCE_TOPICS):
+        title = await resolve_topic_title_from_telegram(tid)
+
+        if title:
+            topic_title_cache[int(tid)] = title
+            loaded += 1
+            log.info(f"[topic title cached] topic={tid} title={title!r}")
+
+    log.info(f"[topic title cache done] loaded={loaded}")
 
 
 def should_skip(message):
@@ -1339,7 +1398,7 @@ async def maybe_send_lifecycle_update(message, key, text):
 
 def source_name_for(message):
     topic_id = topic_id_of(message)
-    return f"ExposedFX | {topic_label(topic_id)}"
+    return topic_label(topic_id)
 
 
 def buffer_key(message):
@@ -1956,15 +2015,19 @@ async def on_signal_hub_message(event):
             log.info("[signal hub skipped] promo/spam filter")
             return
 
-        # Management updates must be handled before new-signal extraction/buffering.
-        # Otherwise TP/pips replies can be skipped as "not signal-like".
-        if await maybe_send_lifecycle_update(message, key, text):
-            return
-        if await maybe_send_signal_update_reply(message, key, text):
+        # Management updates are now suppressed by default.
+        # User wants only: original signal + AI formatted signal + source line.
+        is_update_text = is_any_signal_update_text(text)
+
+        if is_update_text and not SEND_SIGNAL_UPDATES:
+            log.info(f"[signal update suppressed] key={key} msg={message.id} text={text[:100]!r}")
             return
 
-        # If it is clearly an update but no target was found, do NOT let it enter extraction/buffer.
-        if is_any_signal_update_text(text):
+        if is_update_text and SEND_SIGNAL_UPDATES:
+            if await maybe_send_lifecycle_update(message, key, text):
+                return
+            if await maybe_send_signal_update_reply(message, key, text):
+                return
             log.info(f"[signal update unmatched] recognized update but no AI target key={key} msg={message.id} text={text[:100]!r}")
             return
 
@@ -2026,7 +2089,10 @@ async def main():
     log.info(f"Signal hub source: {SIGNAL_SOURCE_CHAT} | source channel id: {source_channel_id()}")
     log.info(f"Signal hub destination: {SIGNAL_DEST_CHAT}")
     log.info(f"Allowed topics: {sorted(ALLOWED_SOURCE_TOPICS)}")
+    await preload_topic_titles_once()
     log.info(f"Forward original only after confirmed signal: {FORWARD_SIGNAL_CANDIDATES}")
+    log.info(f"SEND_SIGNAL_UPDATES={SEND_SIGNAL_UPDATES}")
+    log.info("Actual source topic names active: True")
     log.info(f"DELETE_OLD_SIGNAL_PACKET_ON_EDIT={DELETE_OLD_SIGNAL_PACKET_ON_EDIT}")
     log.info("AI/source replies to the forwarded original: True")
     log.info(f"Universal AI extractor active for any pair")
@@ -2052,6 +2118,7 @@ async def main():
     log.info("AI formatted media signal active: True")
     log.info("New mirror AI topics active: True")
     log.info("Topic 28464 AI route active: True")
+    log.info("Topic 28840 AI route active: True")
     log.info("Signal lifecycle tracking active: True")
     log.info("Provider profiles active: True")
     log.info("Promo filter active: True")

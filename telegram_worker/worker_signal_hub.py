@@ -87,18 +87,21 @@ BUFFER_WINDOW_SECONDS = int(os.environ.get("SIGNAL_BUFFER_SECONDS", "600"))
 BUFFER_MAX_MESSAGES = int(os.environ.get("SIGNAL_BUFFER_MAX_MESSAGES", "8"))
 DEFAULT_ALLOWED_TOPICS = "23,430,28,2,31,35,11,363,25,29,33,20,362,17,34,22,9,36,10,14,4,16,13,12,8,7,6,5,3,15,567,568,569,570,1927,8587,26892,26898,28464,28840"
 ALLOWED_SOURCE_TOPICS = topic_set_from_env("ALLOWED_SOURCE_TOPICS", DEFAULT_ALLOWED_TOPICS)
-CONTENT_DEDUPE_ENABLED = os.environ.get("CONTENT_DEDUPE_ENABLED", "0").strip() == "1"
+CONTENT_DEDUPE_ENABLED = os.environ.get("CONTENT_DEDUPE_ENABLED", "1").strip() == "1"
 SIGNAL_SEND_RETRY_ATTEMPTS = int(os.environ.get("SIGNAL_SEND_RETRY_ATTEMPTS", "2"))
 SIGNAL_SEND_RETRY_SLEEP_CAP_SECONDS = int(os.environ.get("SIGNAL_SEND_RETRY_SLEEP_CAP_SECONDS", "120"))
 AI_FORMATTED_SIGNAL_WITH_MEDIA = os.environ.get("AI_FORMATTED_SIGNAL_WITH_MEDIA", "1").strip() == "1"
 UPDATE_REPLY_DEDUPE_SECONDS = int(os.environ.get("UPDATE_REPLY_DEDUPE_SECONDS", "21600"))
 SIGNAL_LIFECYCLE_FILE = DATA_DIR / "signal_lifecycle.json"
+SIGNAL_CONTENT_DEDUPE_FILE = DATA_DIR / "signal_content_dedupe.json"
+PURGE_DEST_ON_START = os.environ.get("PURGE_DEST_ON_START", "0").strip() == "1"
+PURGE_DEST_LIMIT = int(os.environ.get("PURGE_DEST_LIMIT", "5000"))
 
 buffers = defaultdict(lambda: deque(maxlen=BUFFER_MAX_MESSAGES))
 sent_signatures = deque(maxlen=300)
 sent_signature_set = set()
-sent_content_signatures = deque(maxlen=600)
-sent_content_signature_set = set()
+sent_content_signatures = deque(load_content_dedupe_signatures(), maxlen=1200)
+sent_content_signature_set = set(sent_content_signatures)
 update_reply_dedupe = {}
 last_signal_context = {}
 
@@ -145,6 +148,27 @@ def rebuild_last_active_signal_by_topic(lifecycle):
         out[topic] = rec
 
     return out
+
+
+
+def load_content_dedupe_signatures():
+    try:
+        if SIGNAL_CONTENT_DEDUPE_FILE.exists():
+            data = json.loads(SIGNAL_CONTENT_DEDUPE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [str(x) for x in data if x]
+    except Exception as exc:
+        log.warning(f"[content dedupe load failed] {exc}")
+    return []
+
+
+def save_content_dedupe_signatures():
+    try:
+        tmp = SIGNAL_CONTENT_DEDUPE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(list(sent_content_signatures)[-1200:]), encoding="utf-8")
+        tmp.replace(SIGNAL_CONTENT_DEDUPE_FILE)
+    except Exception as exc:
+        log.warning(f"[content dedupe save failed] {exc}")
 
 
 active_signal_lifecycle = load_signal_lifecycle()
@@ -1655,6 +1679,7 @@ def looks_like_partial_signal_piece(text: str) -> bool:
 def remember_content_signature(sig):
     if sig in sent_content_signature_set:
         return False
+
     sent_content_signature_set.add(sig)
     sent_content_signatures.append(sig)
 
@@ -1662,6 +1687,7 @@ def remember_content_signature(sig):
         sent_content_signature_set.clear()
         sent_content_signature_set.update(sent_content_signatures)
 
+    save_content_dedupe_signatures()
     return True
 
 
@@ -2127,6 +2153,44 @@ async def on_admin_message(event):
         log.error(f"[admin command failed] {exc}")
 
 
+
+
+async def purge_destination_on_start_once():
+    if not PURGE_DEST_ON_START:
+        log.info("[incoming purge] disabled")
+        return
+
+    deleted = 0
+    limit = max(1, int(PURGE_DEST_LIMIT))
+
+    log.warning(f"[incoming purge start] chat={SIGNAL_DEST_CHAT} limit={limit}")
+
+    while deleted < limit:
+        batch_limit = min(100, limit - deleted)
+
+        try:
+            msgs = await client.get_messages(SIGNAL_DEST_CHAT, limit=batch_limit)
+        except Exception as exc:
+            log.warning(f"[incoming purge fetch failed] chat={SIGNAL_DEST_CHAT}: {type(exc).__name__}: {exc}")
+            break
+
+        ids = [int(getattr(m, "id", 0) or 0) for m in msgs or [] if getattr(m, "id", None)]
+
+        if not ids:
+            break
+
+        try:
+            await client.delete_messages(SIGNAL_DEST_CHAT, ids)
+            deleted += len(ids)
+            log.warning(f"[incoming purge deleted batch] count={len(ids)} total={deleted}")
+            await asyncio.sleep(0.25)
+        except Exception as exc:
+            log.warning(f"[incoming purge delete failed] count={len(ids)}: {type(exc).__name__}: {exc}")
+            break
+
+    log.warning(f"[incoming purge done] chat={SIGNAL_DEST_CHAT} deleted={deleted}")
+
+
 async def main():
     await start_runtime_guard("exposedfx-ai-signal-formatter", log)
     await client.connect()
@@ -2138,9 +2202,12 @@ async def main():
     log.info(f"Signal hub source: {SIGNAL_SOURCE_CHAT} | source channel id: {source_channel_id()}")
     log.info(f"Signal hub destination: {SIGNAL_DEST_CHAT}")
     log.info(f"Allowed topics: {sorted(ALLOWED_SOURCE_TOPICS)}")
+    await purge_destination_on_start_once()
     await preload_topic_titles_once()
     log.info(f"Forward original only after confirmed signal: {FORWARD_SIGNAL_CANDIDATES}")
     log.info(f"SEND_SIGNAL_UPDATES={SEND_SIGNAL_UPDATES}")
+    log.info(f"CONTENT_DEDUPE_ENABLED={CONTENT_DEDUPE_ENABLED}")
+    log.info(f"PURGE_DEST_ON_START={PURGE_DEST_ON_START}")
     log.info("Actual source topic names active: True")
     log.info(f"DELETE_OLD_SIGNAL_PACKET_ON_EDIT={DELETE_OLD_SIGNAL_PACKET_ON_EDIT}")
     log.info("AI/source replies to the anonymous original copy: True")

@@ -112,6 +112,13 @@ BLOCKED_DEST_TOPICS = {
 }
 
 
+IGNORED_SOURCE_CHATS_RAW = os.environ.get("IGNORED_SOURCE_CHATS", "-1003852763875").strip()
+IGNORED_SOURCE_CHATS = {
+    int(x)
+    for x in re.split(r"[,\\s]+", IGNORED_SOURCE_CHATS_RAW)
+    if x.strip()
+}
+
 BLOCKED_SENDER_IDS_RAW = os.environ.get("BLOCKED_SENDER_IDS", "7556281143").strip()
 BLOCKED_SENDER_IDS = {
     int(x)
@@ -128,7 +135,7 @@ BLOCKED_SENDER_CLEANUP_DEST_TOPICS = {
     if x.strip()
 } if BLOCKED_SENDER_CLEANUP_DEST_TOPICS_RAW else set()
 
-SOURCE_CHATS = sorted(set(r["source_chat"] for r in ROUTES))
+SOURCE_CHATS = sorted({r["source_chat"] for r in ROUTES if int(r.get("source_chat")) not in IGNORED_SOURCE_CHATS})
 POSTED_SIGNAL_KEYS = set()
 stats = WeeklyStats(DATA_DIR)
 route_title_status = {}
@@ -578,6 +585,13 @@ def is_blocked_destination(route):
 
 
 def routes_for(chat_id, topic_id, message=None):
+    try:
+        if int(chat_id) in IGNORED_SOURCE_CHATS:
+            log.warning(f"[ignored source chat] source={chat_id}_{topic_id} msg={getattr(message, 'id', None)}")
+            return []
+    except Exception:
+        pass
+
     found = []
     for route in ROUTES:
         if route["source_chat"] != chat_id:
@@ -1433,6 +1447,9 @@ def new_mirror_routes():
         except Exception:
             continue
 
+        if source_chat in IGNORED_SOURCE_CHATS:
+            continue
+
         if source_chat not in NEW_MIRROR_DEBUG_CHATS:
             continue
 
@@ -2176,6 +2193,7 @@ async def main():
     log.info(f"CROSS_SOURCE_DEDUP_DEST_TOPICS={sorted(CROSS_SOURCE_DEDUP_DEST_TOPICS)}")
     log.info(f"BLOCKED_DEST_CHAT={BLOCKED_DEST_CHAT} BLOCKED_DEST_TOPICS={sorted(BLOCKED_DEST_TOPICS)}")
     log.info(f"BLOCKED_SENDER_IDS={sorted(BLOCKED_SENDER_IDS)}")
+    log.info(f"Ignored source chats active: {sorted(IGNORED_SOURCE_CHATS)}")
     log.info(f"PROCESS_GROUPED_MESSAGES_IN_NEW_HANDLER={PROCESS_GROUPED_MESSAGES_IN_NEW_HANDLER}")
     log.info(f"ENABLE_ALBUM_HANDLER={ENABLE_ALBUM_HANDLER}")
     log.info(f"ENABLE_ROUTE_FALLBACK_ALL_MESSAGES={ENABLE_ROUTE_FALLBACK_ALL_MESSAGES}")

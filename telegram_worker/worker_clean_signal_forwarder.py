@@ -28,6 +28,7 @@ DEST_CHAT = int(os.environ.get("CLEAN_FORWARD_DEST_CHAT", "-5144279180"))
 COPY_MODE = True  # forced anonymous copy mode; never Telegram-forward to final group
 STRICT_ONLY_AI_FORMAT = os.environ.get("STRICT_ONLY_AI_FORMAT", "1").strip() == "1"
 FORWARD_CLEAN_UPDATES = os.environ.get("FORWARD_CLEAN_UPDATES", "0").strip() == "1"
+CLEAN_DELETE_SYNC_ENABLED = os.environ.get("CLEAN_DELETE_SYNC_ENABLED", "0").strip() == "1"
 CLEAN_SEND_RETRY_ATTEMPTS = int(os.environ.get("CLEAN_SEND_RETRY_ATTEMPTS", "2"))
 CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS = int(os.environ.get("CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS", "60"))
 
@@ -582,6 +583,10 @@ async def on_message_edited(event):
 
 @client.on(events.MessageDeleted(chats=SOURCE_CHAT))
 async def on_deleted(event):
+    if not CLEAN_DELETE_SYNC_ENABLED:
+        log.info(f"[clean delete sync disabled] skipped_deleted_ids={getattr(event, 'deleted_ids', [])}")
+        return
+
     try:
         for source_msg_id in getattr(event, "deleted_ids", []) or []:
             await delete_clean_copy_by_source_id(source_msg_id)
@@ -602,6 +607,7 @@ async def main():
     log.info(f"Logged in as {me.first_name} | id={me.id}")
     log.info(f"Source={SOURCE_CHAT} Destination={DEST_CHAT} CopyMode={COPY_MODE}")
     log.info("Anonymous clean copy mode active: True")
+    log.info(f"CLEAN_DELETE_SYNC_ENABLED={CLEAN_DELETE_SYNC_ENABLED}")
     log.info(f"STRICT_ONLY_AI_FORMAT={STRICT_ONLY_AI_FORMAT}")
     log.info(f"CLEAN_SEND_RETRY_ATTEMPTS={CLEAN_SEND_RETRY_ATTEMPTS}")
     log.info(f"CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS={CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS}")

@@ -446,6 +446,29 @@ def is_blocked_sender(message):
     return bool(ids & BLOCKED_SENDER_IDS)
 
 
+def should_hard_block_sender(message, context="", route=None):
+    ids = sender_ids_for_message(message)
+    matched = sorted(ids & BLOCKED_SENDER_IDS)
+
+    if not matched:
+        return False
+
+    route_name = route.get("name") if isinstance(route, dict) else None
+    route_dest = (
+        f"{route.get('dest_chat')}_{route.get('dest_topic')}"
+        if isinstance(route, dict)
+        else None
+    )
+
+    log.warning(
+        f"[blocked sender hard stop] blocked_ids={matched} "
+        f"all_sender_ids={sorted(ids)} msg={getattr(message, 'id', None)} "
+        f"context={context} route={route_name} dest={route_dest}"
+    )
+
+    return True
+
+
 def known_source_topics_for_chat(chat_id):
     return {
         int(r["source_topic"])
@@ -989,6 +1012,9 @@ async def ensure_replied_message_copied(message, route, depth=0):
             if not parent:
                 continue
 
+            if should_hard_block_sender(parent, "reply_parent", route):
+                continue
+
             await copy_one(parent, route, edited=False, ensure_reply=False)
             log.info(
                 f"[reply parent copied] route={route['name']} "
@@ -1103,6 +1129,9 @@ async def repair_bad_mirror_structure(message, route, target_reply, text, entiti
 
 
 async def copy_one(message, route, edited=False, ensure_reply=True):
+    if should_hard_block_sender(message, "copy_one", route):
+        return None
+
     if edited:
         await delete_existing_destination(message, route)
 
@@ -1145,6 +1174,10 @@ async def copy_one(message, route, edited=False, ensure_reply=True):
 
 
 async def copy_album(messages, route):
+    for item in messages:
+        if should_hard_block_sender(item, "album", route):
+            return None
+
     first = messages[0]
     await ensure_replied_message_copied(first, route)
     target_reply = reply_target(first, route)
@@ -1438,6 +1471,9 @@ async def forward_polled_new_mirror_message(route, msg, reason):
     topic_id = topic_of(msg, chat_id)
     text = text_of(msg)
 
+    if should_hard_block_sender(msg, f"poll_{reason}", route):
+        return False
+
     routes = routes_for(chat_id, topic_id, msg)
 
     if route not in routes:
@@ -1607,8 +1643,7 @@ async def handle_single_message(event, edited=False):
     topic_id = topic_of(message, chat_id)
     text = text_of(message)
 
-    if is_blocked_sender(message):
-        log.warning(f"[blocked sender] ids={sorted(sender_ids_for_message(message))} msg={getattr(message, 'id', None)}")
+    if should_hard_block_sender(message, "live_handler"):
         return
 
     if is_promo_text(text, topic_id):
@@ -2073,6 +2108,7 @@ async def main():
     log.info("Strict exact route title checker active: True")
     log.info("Mirror structure repair active: True")
     log.info(f"NEW_MIRROR_DEBUG_CHATS={sorted(NEW_MIRROR_DEBUG_CHATS)}")
+    log.info(f"Hard blocked sender IDs active: {sorted(BLOCKED_SENDER_IDS)}")
     log.info(f"NEW_MIRROR_DEBUG_DEST_TOPICS={sorted(NEW_MIRROR_DEBUG_DEST_TOPICS)}")
     log.info(f"NEW_MIRROR_STARTUP_PROBE={NEW_MIRROR_STARTUP_PROBE}")
     log.info("New mirror forwarding debug active: True")

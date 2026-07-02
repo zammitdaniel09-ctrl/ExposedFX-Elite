@@ -119,6 +119,15 @@ BLOCKED_SENDER_IDS = {
     if x.strip()
 }
 
+BLOCKED_SENDER_CLEANUP_ENABLED = os.environ.get("BLOCKED_SENDER_CLEANUP_ENABLED", "1").strip() == "1"
+BLOCKED_SENDER_CLEANUP_LIMIT = int(os.environ.get("BLOCKED_SENDER_CLEANUP_LIMIT", "300"))
+BLOCKED_SENDER_CLEANUP_DEST_TOPICS_RAW = os.environ.get("BLOCKED_SENDER_CLEANUP_DEST_TOPICS", "28840").strip()
+BLOCKED_SENDER_CLEANUP_DEST_TOPICS = {
+    int(x)
+    for x in re.split(r"[,\\s]+", BLOCKED_SENDER_CLEANUP_DEST_TOPICS_RAW)
+    if x.strip()
+} if BLOCKED_SENDER_CLEANUP_DEST_TOPICS_RAW else set()
+
 SOURCE_CHATS = sorted(set(r["source_chat"] for r in ROUTES))
 POSTED_SIGNAL_KEYS = set()
 stats = WeeklyStats(DATA_DIR)
@@ -1466,6 +1475,82 @@ async def get_route_poll_messages(route, limit):
     return await client.get_messages(chat_id, limit=limit)
 
 
+
+
+async def cleanup_existing_blocked_sender_copies_once():
+    """
+    Deletes already-mapped destination copies for blocked senders.
+    This cleans old copies made before the hard block existed.
+    """
+    if not BLOCKED_SENDER_CLEANUP_ENABLED:
+        log.info("[blocked sender cleanup] disabled")
+        return
+
+    checked = 0
+    blocked_seen = 0
+    deleted_total = 0
+
+    for route in ROUTES:
+        try:
+            dest_topic = int(route.get("dest_topic"))
+        except Exception:
+            continue
+
+        if BLOCKED_SENDER_CLEANUP_DEST_TOPICS and dest_topic not in BLOCKED_SENDER_CLEANUP_DEST_TOPICS:
+            continue
+
+        try:
+            msgs = await get_route_poll_messages(route, BLOCKED_SENDER_CLEANUP_LIMIT)
+        except Exception as exc:
+            log.warning(
+                f"[blocked sender cleanup fetch failed] route={route.get('name')} "
+                f"dest={route.get('dest_chat')}_{route.get('dest_topic')}: {type(exc).__name__}: {exc}"
+            )
+            continue
+
+        for msg in msgs or []:
+            checked += 1
+
+            if not should_hard_block_sender(msg, "startup_cleanup_scan", route):
+                continue
+
+            blocked_seen += 1
+
+            ids, keys_to_remove = all_existing_destination_ids_for_source(msg, route)
+
+            if not ids:
+                log.info(
+                    f"[blocked sender cleanup no mapped copy] route={route.get('name')} "
+                    f"source_msg={getattr(msg, 'id', None)}"
+                )
+                continue
+
+            try:
+                await client.delete_messages(route["dest_chat"], ids)
+
+                for key in keys_to_remove:
+                    message_map.pop(key, None)
+
+                save_map()
+                deleted_total += len(ids)
+
+                log.warning(
+                    f"[blocked sender cleanup deleted] route={route.get('name')} "
+                    f"source_msg={getattr(msg, 'id', None)} dest_ids={ids}"
+                )
+
+            except Exception as exc:
+                log.warning(
+                    f"[blocked sender cleanup delete failed] route={route.get('name')} "
+                    f"source_msg={getattr(msg, 'id', None)} dest_ids={ids}: {type(exc).__name__}: {exc}"
+                )
+
+    log.info(
+        f"[blocked sender cleanup done] checked={checked} "
+        f"blocked_seen={blocked_seen} deleted={deleted_total}"
+    )
+
+
 async def forward_polled_new_mirror_message(route, msg, reason):
     chat_id = int(route["source_chat"])
     topic_id = topic_of(msg, chat_id)
@@ -2109,6 +2194,8 @@ async def main():
     log.info("Mirror structure repair active: True")
     log.info(f"NEW_MIRROR_DEBUG_CHATS={sorted(NEW_MIRROR_DEBUG_CHATS)}")
     log.info(f"Hard blocked sender IDs active: {sorted(BLOCKED_SENDER_IDS)}")
+    log.info(f"BLOCKED_SENDER_CLEANUP_ENABLED={BLOCKED_SENDER_CLEANUP_ENABLED}")
+    log.info(f"BLOCKED_SENDER_CLEANUP_DEST_TOPICS={sorted(BLOCKED_SENDER_CLEANUP_DEST_TOPICS)}")
     log.info(f"NEW_MIRROR_DEBUG_DEST_TOPICS={sorted(NEW_MIRROR_DEBUG_DEST_TOPICS)}")
     log.info(f"NEW_MIRROR_STARTUP_PROBE={NEW_MIRROR_STARTUP_PROBE}")
     log.info("New mirror forwarding debug active: True")
@@ -2124,6 +2211,7 @@ async def main():
     await verify_route_titles_once()
     await probe_new_mirror_routes_once()
     asyncio.create_task(route_title_checker_loop())
+    await cleanup_existing_blocked_sender_copies_once()
     asyncio.create_task(new_mirror_poll_loop())
     log.info("Imperium fixed Telegram worker running...")
     asyncio.create_task(stats.loop(client))

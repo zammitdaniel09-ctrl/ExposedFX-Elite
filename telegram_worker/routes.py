@@ -25,7 +25,6 @@ ROUTES = [{'name': 'Triad FX', 'source_chat': -1002817163788, 'source_topic': 89
  {'name': 'MANJOX TRADES', 'source_chat': -1003887896696, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 31},
  {'name': 'BOLZEGHA VIP', 'source_chat': -1002900239477, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 35},
  {'name': 'ELX Premium', 'source_chat': -1003393003521, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 36},
- {'name': 'GotMeKayed', 'source_chat': -1001971304203, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 33},
  {'name': 'KEY / ALCHEMIST 1', 'source_chat': -1003681070311, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 28},
  {'name': 'KEY / ALCHEMIST 2', 'source_chat': -1003951604481, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 28},
  {'name': 'MSC Premium', 'source_chat': -1003909296106, 'source_topic': None, 'dest_chat': -1003918958200, 'dest_topic': 34},

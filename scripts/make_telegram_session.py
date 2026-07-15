@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import PasswordHashInvalidError, SessionPasswordNeededError
 
 
 async def main():
@@ -36,7 +36,8 @@ async def main():
     print("=" * 70)
     print(f"Creating NEW Telegram session for: {name}")
     print("Use the SAME Telegram account that has access to the groups.")
-    print("Phone format example: +35699123456")
+    print("You may be asked for: phone number, Telegram login code, then your Telegram 2FA password.")
+    print("The 2FA password is your normal Telegram password, NOT the one-time login code.")
     print("=" * 70)
 
     client = TelegramClient(str(session_base), api_id, api_hash)
@@ -53,8 +54,22 @@ async def main():
         try:
             await client.sign_in(phone=phone, code=code)
         except SessionPasswordNeededError:
-            password = getpass.getpass("Telegram 2FA password: ")
-            await client.sign_in(password=password)
+            signed_in = False
+            for attempt in range(1, 6):
+                password = getpass.getpass(
+                    f"Telegram 2FA password (attempt {attempt}/5; hidden while typing): "
+                )
+                try:
+                    await client.sign_in(password=password)
+                    signed_in = True
+                    break
+                except PasswordHashInvalidError:
+                    print("Incorrect Telegram 2FA password. Try again.")
+
+            if not signed_in:
+                raise SystemExit(
+                    "Telegram 2FA password was incorrect 5 times. Reset or confirm it in Telegram, then rerun."
+                )
 
     me = await client.get_me()
     print(f"Logged in as: {getattr(me, 'first_name', '')} | id={getattr(me, 'id', '')}")

@@ -600,14 +600,56 @@ def extract_sl_distance_units(text: str) -> Optional[float]:
     return None
 
 
+
+def explicit_bracket_sl_price(symbol: str, direction: str, entry_mid: float, text: str) -> Optional[float]:
+    """
+    Exact bracket SL wins:
+    SL 10 PIPS (4160) -> 4160
+    """
+    raw = clean(text)
+
+    patterns = [
+        rf"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS|STOP)\b\s*(?:TO|AT)?\s*[:@\-]?\s*\d+(?:\.\d+)?\s*(?:PIP|PIPS|POINT|POINTS)\s*\(\s*({PRICE_RE})\s*\)",
+        rf"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS|STOP)\b[^\n]{{0,50}}\(\s*({PRICE_RE})\s*\)",
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, raw, flags=re.I)
+        if not m:
+            continue
+
+        try:
+            value = float(m.group(1))
+        except Exception:
+            continue
+
+        fam = symbol_family(symbol)
+
+        if fam == "GOLD" and value < 1000:
+            continue
+
+        if entry_mid and abs(value - float(entry_mid)) / float(entry_mid) > 0.25:
+            continue
+
+        if direction == "BUY" and value >= float(entry_mid):
+            continue
+
+        if direction == "SELL" and value <= float(entry_mid):
+            continue
+
+        return value
+
+    return None
+
+
 def convert_distance_sl_if_needed(symbol: str, direction: str, entry_mid: float, sl_value: float, text: str) -> float:
     """
-    Converts distance-style SL into chart price.
+    Convert distance-style SL into chart price.
 
-    Gold rule:
-    10 pips = $1
-    40 pips = $4
-    100 pips = $10
+    Gold:
+    10 pips = $1.
+    For zones, caller passes correct risk-side entry:
+    BUY uses bottom of zone, SELL uses top of zone.
     """
     raw = clean(text)
     entry_mid = float(entry_mid)
@@ -616,14 +658,21 @@ def convert_distance_sl_if_needed(symbol: str, direction: str, entry_mid: float,
     distance_units = extract_sl_distance_units(raw)
 
     if distance_units is None:
-        # If SL is already a chart price close to entry, keep it.
         return sl_value
+
+    explicit = explicit_bracket_sl_price(symbol, direction, entry_mid, raw)
+    if explicit is not None:
+        log.info(f"[explicit bracket sl used] distance={distance_units} explicit_sl={explicit}")
+        return float(explicit)
 
     distance = float(distance_units) * pip_value_for_symbol(symbol)
 
     if direction == "BUY":
         return entry_mid - distance
+
     return entry_mid + distance
+
+
 
 def invalid_tp_for_direction(direction: str, entry: float, tp: float) -> bool:
     if direction == "BUY":
@@ -834,32 +883,41 @@ def fallback_step(symbol: str, entry: float, sl: float) -> float:
 
 
 def estimate_tps(symbol: str, direction: str, entry: float, sl: float, tps: list[float], tp_open: bool = False) -> list[float]:
-    cleaned = [float(x) for x in tps if x is not None]
+    """
+    Provider TPs first.
+    If provider gives no TP prices, create fake RR targets as real prices:
+    TP1 = 1:1, TP2 = 2:1, TP3 = 3:1, TP4 = 4:1.
+    """
+    cleaned = []
+
+    for x in tps or []:
+        if x is None:
+            continue
+
+        try:
+            v = float(x)
+        except Exception:
+            continue
+
+        if v not in cleaned:
+            cleaned.append(v)
+
+    if cleaned:
+        return cleaned[:8]
+
+    if not tp_open and not AUTO_TP_IF_MISSING:
+        return []
+
     entry = float(entry)
     sl = float(sl)
     sign = 1 if direction == "BUY" else -1
     risk_distance = abs(entry - sl)
 
-    if len(cleaned) >= 8:
-        return cleaned[:8]
+    if risk_distance <= 0:
+        risk_distance = fallback_step(symbol, entry, sl)
 
-    if not cleaned:
-        if not tp_open:
-            return []
-        multipliers = [0.5, 1, 2, 3, 4, 5, 6, 7]
-        return [entry + sign * risk_distance * r for r in multipliers]
+    return [entry + sign * risk_distance * rr for rr in (1, 2, 3, 4)]
 
-    out = cleaned[:]
-    if len(cleaned) >= 2:
-        step = abs(cleaned[-1] - cleaned[-2])
-    else:
-        step = abs(cleaned[0] - entry)
-    if step <= 0:
-        step = fallback_step(symbol, entry, sl)
-
-    while len(out) < 8:
-        out.append(out[-1] + sign * step)
-    return out[:8]
 
 
 def direction_from_text(text: str) -> Optional[str]:
@@ -1196,6 +1254,43 @@ def reasonable_tp_price(symbol: str, entry_mid: float, tp: float) -> bool:
     return True
 
 
+
+def clean_tp_body_for_numbers(line: str) -> str:
+    """
+    Keeps provider TP prices:
+    TP 4137 -> 4137
+    TP #1: 4105 -> 4105
+    TP1 4150 -> 4150
+    TP 50 pips -> 50 pips
+    """
+    body = str(line or "").upper().strip()
+
+    body = re.sub(r"\bTAKE\s*PROFIT\b", "TP", body, flags=re.I)
+    body = re.sub(r"\bTARGET\b", "TP", body, flags=re.I)
+    body = re.sub(r"\bTP\s*#?\s*(?:[1-9]|1[0-9]|20)\b\s*[:.@_\-]?\s*", " ", body, flags=re.I)
+    body = re.sub(r"\bTP\b\s*#?\s*[:.@_\-]?\s*", " ", body, flags=re.I)
+
+    return body.strip()
+
+
+def has_explicit_numeric_tp(text: str) -> bool:
+    for line in clean(text).splitlines():
+        u = line.upper().strip()
+
+        if not re.search(r"\b(?:TP|TARGET|TAKE\s*PROFIT)\b", u):
+            continue
+
+        body = clean_tp_body_for_numbers(u)
+
+        if "OPEN" in body and not re.search(rf"\b{PRICE_RE}\b", body):
+            continue
+
+        if re.search(rf"\b{PRICE_RE}\b", body):
+            return True
+
+    return False
+
+
 def extract_tps_contextual(text: str, symbol: str, direction: str, entry_mid: float) -> tuple[list[float], bool]:
     vals: list[float] = []
     tp_open = False
@@ -1203,18 +1298,17 @@ def extract_tps_contextual(text: str, symbol: str, direction: str, entry_mid: fl
 
     for line in clean(text).splitlines():
         u = line.upper().strip()
-        if not re.search(r"\b(?:TP\s*#?\s*\d*|TARGET\s*#?\s*\d*|TAKE\s*PROFIT\s*#?\s*\d*)\b", u):
+
+        if not re.search(r"\b(?:TP|TARGET|TAKE\s*PROFIT)\b", u):
             continue
 
-        if re.search(r"\bOPEN\b", u):
+        body = clean_tp_body_for_numbers(u)
+
+        if re.search(r"\bOPEN\b", body):
             tp_open = True
 
-        # Ignore obvious time-only phrases, e.g. "Tp: scalp dump 5:00".
-        if re.search(r"\b\d{1,2}:\d{2}\b", u) and not re.search(r"\b\d{3,7}(?:\.\d+)?\b", u):
+        if re.search(r"\b\d{1,2}:\d{2}\b", body) and not re.search(r"\b\d{3,7}(?:\.\d+)?\b", body):
             continue
-
-        body = re.sub(r"\b(?:TP\s*#?\s*\d*|TARGET\s*#?\s*\d*|TAKE\s*PROFIT\s*#?\s*\d*)\b", "", u, flags=re.I)
-        body = re.sub(r"^[\s:#@\-\._]+", "", body)
 
         if "SAME AS ABOVE" in body:
             continue
@@ -1224,24 +1318,35 @@ def extract_tps_contextual(text: str, symbol: str, direction: str, entry_mid: fl
             continue
 
         if re.search(r"\b(PIP|PIPS|POINT|POINTS)\b", body):
-            distance_units = float(nums[-1])
+            try:
+                distance_units = float(nums[-1])
+            except Exception:
+                continue
+
             tp = float(entry_mid) + sign * distance_units * pip_value_for_symbol(symbol)
+
             if not invalid_tp_for_direction(direction, entry_mid, tp) and reasonable_tp_price(symbol, entry_mid, tp):
-                vals.append(tp)
+                if tp not in vals:
+                    vals.append(tp)
+
             continue
 
-        # Normal price TP line. For "Tp:4508-4511-4520", collect all TP prices.
         for n in nums:
-            tp = float(n)
+            try:
+                tp = float(n)
+            except Exception:
+                continue
+
             if invalid_tp_for_direction(direction, entry_mid, tp):
                 continue
+
             if not reasonable_tp_price(symbol, entry_mid, tp):
                 continue
+
             if tp not in vals:
                 vals.append(tp)
 
     return vals, tp_open
-
 
 
 
@@ -1313,25 +1418,20 @@ def regex_extract(text: str) -> Optional[Dict[str, Any]]:
 
     order_type = order_type_from_text(raw, direction)
 
-    sl = convert_distance_sl_if_needed(symbol, direction, mid, sl, raw)
+    sl_ref = validation_entry_ref(direction, entry_low, entry_high)
+    sl = convert_distance_sl_if_needed(symbol, direction, sl_ref, sl, raw)
     sl = repair_obvious_sl_typo(symbol, direction, entry_low, entry_high, sl, raw)
 
     tp_ref = tp_entry_ref(direction, entry_low, entry_high)
     tps, tp_open = extract_tps_contextual(raw, symbol, direction, tp_ref)
 
     if not tps and not tp_open:
-        if AUTO_TP_IF_MISSING:
-            tp_open = True
-        else:
-            return None
+        tp_open = True
 
     tps = [tp for tp in tps if not invalid_tp_for_direction(direction, tp_ref, float(tp))]
 
     if not tps and not tp_open:
-        if AUTO_TP_IF_MISSING:
-            tp_open = True
-        else:
-            return None
+        tp_open = True
 
     if not validate_signal_sanity(symbol, direction, order_type, entry_low, entry_high, sl, tps, tp_open, raw):
         return None
@@ -1344,7 +1444,7 @@ def regex_extract(text: str) -> Optional[Dict[str, Any]]:
         "entry_low": entry_low,
         "entry_high": entry_high,
         "sl": float(sl),
-        "tps": estimate_tps(symbol, direction, tp_ref, sl, tps, tp_open),
+        "tps": estimate_tps(symbol, direction, validation_entry_ref(direction, entry_low, entry_high), sl, tps, tp_open),
         "tp_open": True,
         "risk": risk_from_text(raw, symbol, mid, sl),
         "layer_point": estimate_layer(direction, entry_low, entry_high, sl),
@@ -1435,13 +1535,13 @@ def claude_extract(text: str) -> Optional[Dict[str, Any]]:
     system = (
         "Extract an actionable trading signal from messy Telegram text. Return JSON only. "
         "Accept any market: forex, metals, crypto, indices. "
-        "A complete signal needs direction, entry, and stop loss. If no TP is provided, treat it as TP open so targets can be estimated. "
+        "A complete signal needs direction, entry, and stop loss. If no TP prices are provided, return tps=[] and tp_open=true so the system can create RR targets. Never invent provider TP prices. "
         "If stop loss or take profit is written as pip distance, keep the numeric pip distance and the system will convert it. "
         "For XAUUSD/GOLD, 10 pips equals 1 dollar, so 40 pips equals 4 dollars and 100 pips equals 10 dollars. "
         "Expand shorthand ranges such as 4498-96 as 4498 to 4496, not 4498 to 96. "
         "Do not use SL or TP prices as entry when entry is missing. Ignore R1/R2 labels as entries. "
         "Use latest/current stop loss if several are shown. "
-        "For TP open with no numbers, return tps=[] and tp_open=true. "
+        "For TP open or missing TP prices, return tps=[] and tp_open=true. Never hallucinate TP prices from the provider. "
         "Do not decide risk unless the text explicitly says low risk, medium risk, high risk, higher risk, risky, or very high. Otherwise leave risk empty so the system calculates risk dynamically by pair. "
         "Return: is_signal, symbol, direction, order_type, entry_low, entry_high, sl, tps, tp_open, risk. order_type must be SELL_STOP for sells below/sell stop/break below, BUY_STOP for buys above/buy stop/break above, LIMIT for buy limit/sell limit, otherwise MARKET_OR_ZONE."
     )
@@ -1514,13 +1614,15 @@ def claude_extract(text: str) -> Optional[Dict[str, Any]]:
 
             tp_open = bool(obj.get("tp_open", False)) or regex_open or "OPEN" in clean(text).upper()
 
-            if not tps and not tp_open:
-                if AUTO_TP_IF_MISSING:
-                    tp_open = True
-                else:
-                    continue
+            if not has_explicit_numeric_tp(text):
+                tps = []
+                tp_open = True
 
-            sl = convert_distance_sl_if_needed(symbol, direction, mid, sl, text)
+            if not tps and not tp_open:
+                tp_open = True
+
+            sl_ref = validation_entry_ref(direction, entry_low, entry_high)
+            sl = convert_distance_sl_if_needed(symbol, direction, sl_ref, sl, text)
             sl = repair_obvious_sl_typo(symbol, direction, entry_low, entry_high, sl, text)
             tps = [tp for tp in tps if not invalid_tp_for_direction(direction, tp_ref, float(tp))]
 
@@ -1543,7 +1645,7 @@ def claude_extract(text: str) -> Optional[Dict[str, Any]]:
                 "entry_low": entry_low,
                 "entry_high": entry_high,
                 "sl": sl,
-                "tps": estimate_tps(symbol, direction, tp_ref, sl, tps, tp_open),
+                "tps": estimate_tps(symbol, direction, validation_entry_ref(direction, entry_low, entry_high), sl, tps, tp_open),
                 "tp_open": True,
                 "risk": risk,
                 "layer_point": estimate_layer(direction, entry_low, entry_high, sl),

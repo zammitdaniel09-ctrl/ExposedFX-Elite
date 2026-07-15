@@ -1047,24 +1047,27 @@ def norm_price_for_dedupe(symbol, value):
 
 
 def content_signature_for(result, key):
+    """
+    Strict ExposedFX incoming dedupe:
+    do NOT include topic/provider key, so the same signal cannot appear twice
+    even if it arrives from different providers/topics.
+    """
     parsed = result.get("parsed") or {}
 
-    symbol = str(parsed.get("symbol", ""))
-    direction = str(parsed.get("direction", ""))
-    order_type = str(parsed.get("order_type", ""))
+    symbol = str(parsed.get("symbol", "")).upper().replace("/", "")
+    direction = str(parsed.get("direction", "")).upper()
 
     tps = parsed.get("tps") or []
-    tp_key = ",".join(norm_price_for_dedupe(symbol, x) for x in tps[:3])
+    tp_key = ",".join(norm_price_for_dedupe(symbol, x) for x in tps[:4])
 
     parts = [
-        str(key),
         symbol,
         direction,
-        order_type,
         norm_price_for_dedupe(symbol, parsed.get("entry_low", 0)),
         norm_price_for_dedupe(symbol, parsed.get("entry_high", 0)),
         norm_price_for_dedupe(symbol, parsed.get("sl", 0)),
         tp_key,
+        "TP_OPEN" if parsed.get("tp_open") else "",
     ]
 
     return hashlib.sha256("|".join(parts).encode("utf-8", errors="ignore")).hexdigest()
@@ -1949,9 +1952,10 @@ async def send_full_signal(message, result, key, original_text, forward_raw=True
         log.info("[signal hub skipped] duplicate signal packet")
         return False
 
-    if CONTENT_DEDUPE_ENABLED and content_sig in sent_content_signature_set:
-        log.info("[signal hub skipped] duplicate content signal")
-        return False
+    if CONTENT_DEDUPE_ENABLED:
+        if not remember_content_signature(content_sig):
+            log.info("[signal hub skipped] duplicate content signal")
+            return False
 
     try:
         await delete_existing_signal_packet(message, key)
@@ -1982,8 +1986,6 @@ async def send_full_signal(message, result, key, original_text, forward_raw=True
         remember_signal_packet(message, key, sent_messages)
         remember_lifecycle(message, key, result, sent_messages)
         remember_signature(sig)
-        if CONTENT_DEDUPE_ENABLED:
-            remember_content_signature(content_sig)
         remember_last_signal_context(key, result)
 
     except Exception as exc:
@@ -1999,6 +2001,9 @@ async def send_full_signal(message, result, key, original_text, forward_raw=True
             sent_content_signatures.remove(content_sig)
         except Exception:
             pass
+
+        if CONTENT_DEDUPE_ENABLED:
+            save_content_dedupe_signatures()
 
         log.exception(f"[signal hub packet send failed] {exc}")
         return False

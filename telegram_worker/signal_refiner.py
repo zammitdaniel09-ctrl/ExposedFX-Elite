@@ -142,6 +142,8 @@ def compact_entry_range(low, high) -> str:
     """
     Display entry zone cleanly:
     4134.75 + 4135 -> 4134.75-35
+    4161 + 4162.50 -> 4161-62.5
+    4100 + 4100.25 -> 4100-00.25
     4057 + 4065 -> 4057-65
     Single entry -> 4065
     """
@@ -154,14 +156,19 @@ def compact_entry_range(low, high) -> str:
     lo_s = price(min(lo, hi))
     hi_s = price(max(lo, hi))
 
-    # Same large prefix, compact the high side.
     lo_int = lo_s.split(".", 1)[0]
     hi_int = hi_s.split(".", 1)[0]
 
     if len(lo_int) >= 3 and len(hi_int) >= 2 and lo_int[:-2] == hi_int[:-2]:
+        prefix = hi_int[:-2]
+
+        if hi_s.startswith(prefix):
+            return f"{lo_s}-{hi_s[len(prefix):]}"
+
         return f"{lo_s}-{hi_int[-2:]}"
 
     return f"{lo_s}-{hi_s}"
+
 
 def symbol_family(symbol: str) -> str:
     s = (symbol or "").upper().replace("/", "")
@@ -421,10 +428,13 @@ def build_message(sig: Dict[str, Any]) -> str:
 
     lines = [heading, "", *entry_lines, f"• Stop Loss : {esc(price(sl))}", ""]
 
-    for idx, tp in enumerate(tps[:4], 1):
+    shown_tps = tps[:4]
+
+    for idx, tp in enumerate(shown_tps, 1):
         lines.append(f"{ce('PIN_SIGNALS')}TP{idx} - {esc(price(tp))}")
 
-    lines.append(f"{ce('PIN_SIGNALS')}TP5 - Open")
+    open_idx = min(len(shown_tps) + 1, 5)
+    lines.append(f"{ce('PIN_SIGNALS')}TP{open_idx} - Open")
 
     lines += [
         "",

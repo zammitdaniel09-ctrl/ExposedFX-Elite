@@ -100,10 +100,7 @@ def clean_b64(value: str) -> str:
 
 
 def combined_session_blob() -> str:
-    direct = clean_b64(os.environ.get("SESSION_B64", ""))
-    if direct:
-        return direct
-
+    # Prefer chunked fresh session variables over old direct SESSION_B64.
     count_raw = os.environ.get("SESSION_B64_CHUNKS", "").strip()
     if count_raw:
         count = int(count_raw)
@@ -126,6 +123,10 @@ def combined_session_blob() -> str:
 
     if chunks:
         return "".join(chunks)
+
+    direct = clean_b64(os.environ.get("SESSION_B64", ""))
+    if direct:
+        return direct
 
     raise RuntimeError("No SESSION_B64 / SESSION_B64_1 variables found")
 

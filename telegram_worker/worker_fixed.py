@@ -146,10 +146,7 @@ def _clean_b64(value: str) -> str:
 
 
 def combined_login_blob():
-    direct = _clean_b64(os.environ.get("SESSION_B64", ""))
-    if direct:
-        return direct, "SESSION_B64"
-
+    # Prefer chunked fresh session variables over old direct SESSION_B64.
     count_raw = os.environ.get("SESSION_B64_CHUNKS", "").strip()
     if count_raw:
         try:
@@ -175,6 +172,11 @@ def combined_login_blob():
 
     if chunks:
         return "".join(chunks), f"{len(chunks)} chunks"
+
+    direct = _clean_b64(os.environ.get("SESSION_B64", ""))
+    if direct:
+        return direct, "SESSION_B64"
+
     return "", "none"
 
 

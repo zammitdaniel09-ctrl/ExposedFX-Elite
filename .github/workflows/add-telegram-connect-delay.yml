@@ -1,0 +1,64 @@
+name: Add Telegram connect delay
+
+on:
+  push:
+    paths:
+      - '.github/workflows/add-telegram-connect-delay.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch raw worker startup delay
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('telegram_worker/worker_fixed.py')
+          text = path.read_text(encoding='utf-8-sig')
+
+          setting_anchor = 'NEW_MIRROR_BACKFILL_LIMIT = int(os.environ.get("NEW_MIRROR_BACKFILL_LIMIT", "3"))\n'
+          setting_line = 'TELEGRAM_CONNECT_DELAY_SECONDS = int(os.environ.get("TELEGRAM_CONNECT_DELAY_SECONDS", "90"))\n'
+          if setting_line not in text:
+              if setting_anchor not in text:
+                  raise SystemExit('setting anchor not found')
+              text = text.replace(setting_anchor, setting_anchor + setting_line, 1)
+
+          old = '''async def main():
+    await start_runtime_guard("imperium-telegram-worker", log)
+    await client.connect()
+'''
+          new = '''async def main():
+    await start_runtime_guard("imperium-telegram-worker", log)
+    if TELEGRAM_CONNECT_DELAY_SECONDS > 0:
+        log.info(f"Telegram connect delay active: {TELEGRAM_CONNECT_DELAY_SECONDS}s")
+        await asyncio.sleep(TELEGRAM_CONNECT_DELAY_SECONDS)
+    await client.connect()
+'''
+          if new not in text:
+              if old not in text:
+                  raise SystemExit('main anchor not found')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          python -m py_compile telegram_worker/worker_fixed.py
+          rm -f .github/workflows/add-telegram-connect-delay.yml
+
+      - name: Commit
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add telegram_worker/worker_fixed.py .github/workflows/add-telegram-connect-delay.yml
+          git commit -m 'Delay Telegram connect during Railway deploys'
+          git push origin HEAD:main

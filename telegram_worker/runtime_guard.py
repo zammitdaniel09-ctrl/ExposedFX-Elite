@@ -1,4 +1,3 @@
-
 import asyncio
 import json
 import os
@@ -46,10 +45,10 @@ async def start_runtime_guard(service_name: str, log=None):
     """
     Local singleton/heartbeat guard.
 
-    Note:
     This prevents duplicate loops inside one container and creates heartbeat files.
-    It cannot fully stop Railway from briefly running two separate containers during a deployment.
-    For Telegram sessions, still keep 1 replica and pause before regenerating sessions.
+    Railway can briefly overlap old and new containers during deployment, so the raw
+    Telegram worker waits before connecting. This gives the old container time to stop
+    before the new container uses the same Telegram authorization key.
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -73,6 +72,15 @@ async def start_runtime_guard(service_name: str, log=None):
             pass
 
     lock_file.write_text(str(os.getpid()), encoding="utf-8")
+
+    default_delay = "90" if service_name == "imperium-telegram-worker" else "0"
+    connect_delay = max(0, int(os.environ.get("TELEGRAM_CONNECT_DELAY_SECONDS", default_delay)))
+    if connect_delay:
+        if log:
+            log.info(
+                f"Telegram deployment overlap protection active: waiting {connect_delay}s before connect"
+            )
+        await asyncio.sleep(connect_delay)
 
     async def heartbeat_loop():
         while True:

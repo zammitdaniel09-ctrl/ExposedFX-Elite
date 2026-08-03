@@ -2099,6 +2099,187 @@ def is_any_signal_update_text(text: str) -> bool:
     return False
 
 
+
+def looks_like_split_signal_continuation(text: str) -> bool:
+    """
+    Allows structural entry/SL/TP lines to complete an existing buffered
+    signal before the management-update classifier can suppress them.
+
+    Examples accepted:
+    SL 4064
+    Stop loss 20 pips
+    TP1 4055
+    Entry 4058-4060
+    4058-4060
+
+    Examples rejected:
+    TP1 HIT
+    RUNNING 50 PIPS
+    SL TO BE
+    MOVE SL TO 4055
+    CLOSE NOW
+    """
+
+    raw = (text or "").strip()
+    if not raw:
+        return False
+
+    t = update_match_text(raw)
+
+    management_pattern = (
+        r"\b("
+        r"HIT|DONE|REACHED|TOUCHED|RUNNING|"
+        r"CLOSE|CLOSED|CANCEL|CANCELLED|"
+        r"BREAKEVEN|BREAK\s*EVEN|BE\s+HIT|"
+        r"MOVE|MOVED|UPDATE|UPDATED|"
+        r"SECURE|SECURED|BANKED|"
+        r"PROFIT|PROFITS"
+        r")\b"
+    )
+
+    if re.search(management_pattern, t):
+        return False
+
+    level_re = r"(?:\d{3,7}(?:\.\d+)?|\d{1,2}\.\d{3,7})"
+
+    # Absolute stop-loss level.
+    if re.search(
+        rf"\b(?:SL|S/L|STOP|STOPLOSS|STOP\s*LOSS)\b"
+        rf"\s*[:@\-]?\s*{level_re}\b",
+        t,
+    ):
+        return True
+
+    # Distance-based stop loss, for example: Stop loss 20 pips.
+    if re.search(
+        r"\b(?:SL|S/L|STOP|STOPLOSS|STOP\s*LOSS)\b"
+        r"\s*[:@\-]?\s*\d{1,4}(?:\.\d+)?\s*(?:PIP|PIPS|POINT|POINTS)\b",
+        t,
+    ):
+        return True
+
+    # TP price line. TP1 followed only by an emoji will not match.
+    if re.search(
+        rf"\b(?:TP\s*#?\s*\d*|TARGET\s*#?\s*\d*|"
+        rf"TAKE\s*PROFIT\s*#?\s*\d*)\b"
+        rf"\s*[:@\-]?\s*{level_re}\b",
+        t,
+    ):
+        return True
+
+    # Entry or zone line.
+    if re.search(
+        rf"\b(?:ENTRY|ENTRIES|ENTER|ENTERING|ZONE|AREA)\b"
+        rf"[^\n]{{0,50}}{PRICE_RE}",
+        t,
+    ):
+        return True
+
+    # Bare price range.
+    if re.search(
+        rf"^\s*{PRICE_RE}\s*(?:-|:|/)\s*{PRICE_RE}\s*$",
+        raw.upper(),
+        re.MULTILINE,
+    ):
+        return True
+
+    return False
+
+
+async def try_signal_before_update_gate(message, key, text, source_name):
+    """
+    Important ordering rule:
+
+    1. Try every complete signal before classifying it as an update.
+    2. When this topic already has a partial signal buffered, allow a
+       structural entry/SL/TP continuation to complete it.
+    3. Leave real management updates to the existing update classifier.
+    """
+
+    standalone_text = apply_provider_profile(
+        apply_same_as_above_context(key, text),
+        topic_id_of(message),
+    )
+
+    result = extract_and_format(
+        standalone_text,
+        source_name,
+        message.id,
+    )
+
+    if result:
+        log.info(
+            f"[signal hub pre-update complete] "
+            f"msg={message.id} topic={topic_id_of(message)}"
+        )
+
+        await send_full_signal(
+            message,
+            result,
+            key,
+            text,
+            forward_raw=True,
+        )
+        return True
+
+    if not PARTIAL_BUFFER_ENABLED:
+        return False
+
+    trim_buffer(key)
+
+    if not buffers[key]:
+        return False
+
+    if not looks_like_split_signal_continuation(text):
+        return False
+
+    buffers[key].append({
+        "ts": time.time(),
+        "id": message.id,
+        "text": text,
+        "message": message,
+    })
+
+    combined = apply_provider_profile(
+        apply_same_as_above_context(key, combined_text_for(key)),
+        topic_id_of(message),
+    )
+
+    result = extract_and_format(
+        combined,
+        source_name,
+        message.id,
+    )
+
+    if result:
+        raw_msg = first_buffer_message(key) or message
+
+        log.info(
+            f"[signal hub split completed before update] "
+            f"msg={message.id} topic={topic_id_of(message)} "
+            f"pieces={len(buffers[key])}"
+        )
+
+        await send_full_signal(
+            raw_msg,
+            result,
+            key,
+            message_text(raw_msg).strip(),
+            forward_raw=True,
+        )
+    else:
+        log.info(
+            f"[signal hub waiting] split continuation stored "
+            f"key={key} topic={topic_id_of(message)} "
+            f"size={len(buffers[key])}"
+        )
+
+    # The continuation has been consumed by the signal buffer. Do not allow
+    # the management-update gate to suppress or reinterpret it.
+    return True
+
+
+
 @client.on(events.NewMessage())
 @client.on(events.MessageEdited())
 async def on_signal_hub_message(event):
@@ -2117,6 +2298,16 @@ async def on_signal_hub_message(event):
 
         if is_promo_text(text, topic_id_of(message)):
             log.info("[signal hub skipped] promo/spam filter")
+            return
+
+        # Complete setups and structural split-signal continuations must be
+        # processed before the management-update classifier.
+        if await try_signal_before_update_gate(
+            message,
+            key,
+            text,
+            source_name,
+        ):
             return
 
         # Management updates are now suppressed by default.

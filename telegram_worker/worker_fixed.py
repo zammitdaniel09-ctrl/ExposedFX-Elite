@@ -58,6 +58,9 @@ NEW_MIRROR_POLL_SECONDS = int(os.environ.get("NEW_MIRROR_POLL_SECONDS", "8"))
 NEW_MIRROR_POLL_LIMIT = int(os.environ.get("NEW_MIRROR_POLL_LIMIT", "8"))
 NEW_MIRROR_BACKFILL_ON_START = os.environ.get("NEW_MIRROR_BACKFILL_ON_START", "1").strip() == "1"
 NEW_MIRROR_BACKFILL_LIMIT = int(os.environ.get("NEW_MIRROR_BACKFILL_LIMIT", "3"))
+NEW_MIRROR_BACKFILL_ALL_ON_START = os.environ.get(
+    "NEW_MIRROR_BACKFILL_ALL_ON_START", "0"
+).strip() == "1"
 
 NEW_MIRROR_BACKFILL_ONLY_CHATS_RAW = os.environ.get("NEW_MIRROR_BACKFILL_ONLY_CHATS", "").strip()
 NEW_MIRROR_BACKFILL_ONLY_CHATS = {
@@ -1641,6 +1644,59 @@ async def forward_polled_new_mirror_message(route, msg, reason):
     return forwarded_any
 
 
+
+async def backfill_entire_new_mirror_route(route):
+    """
+    Stream the complete available Telegram history oldest -> newest.
+
+    This avoids loading a massive channel into RAM and avoids an arbitrary
+    NEW_MIRROR_BACKFILL_LIMIT when a true full-history backfill is requested.
+    """
+    chat_id = int(route["source_chat"])
+    source_topic = route.get("source_topic")
+
+    kwargs = {"reverse": True}
+
+    if source_topic is not None:
+        kwargs["reply_to"] = int(source_topic)
+
+    count = 0
+    max_id = 0
+
+    log.info(
+        f"[new mirror full backfill start] route={route['name']} "
+        f"source={chat_id}_{source_topic} "
+        f"dest={route['dest_chat']}_{route['dest_topic']}"
+    )
+
+    async for msg in client.iter_messages(chat_id, **kwargs):
+        mid = int(getattr(msg, "id", 0) or 0)
+
+        if mid > max_id:
+            max_id = mid
+
+        await forward_polled_new_mirror_message(
+            route,
+            msg,
+            "startup_backfill_all",
+        )
+
+        count += 1
+
+        if count % 500 == 0:
+            log.info(
+                f"[new mirror full backfill progress] "
+                f"route={route['name']} count={count} last_id={max_id}"
+            )
+
+    log.info(
+        f"[new mirror full backfill done] "
+        f"route={route['name']} count={count} last_id={max_id}"
+    )
+
+    return count, max_id
+
+
 async def initialise_new_mirror_poll_state():
     """
     Sets latest seen ids and optionally backfills last few messages
@@ -1653,6 +1709,31 @@ async def initialise_new_mirror_poll_state():
         chat_id = int(route["source_chat"])
 
         try:
+            do_backfill = (
+                NEW_MIRROR_BACKFILL_ON_START
+                and (
+                    not NEW_MIRROR_BACKFILL_ONLY_CHATS
+                    or chat_id in NEW_MIRROR_BACKFILL_ONLY_CHATS
+                )
+                and (
+                    not NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS
+                    or int(route.get("dest_topic")) in NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS
+                )
+            )
+
+            if do_backfill and NEW_MIRROR_BACKFILL_ALL_ON_START:
+                count, max_id = await backfill_entire_new_mirror_route(route)
+
+                if max_id:
+                    new_mirror_poll_last_ids[route_poll_key(route)] = max_id
+
+                log.info(
+                    f"[new mirror poll init] route={route['name']} "
+                    f"source={chat_id} last_id={max_id} "
+                    f"backfill=True all_history=True count={count}"
+                )
+                continue
+
             latest = await get_route_poll_messages(route, NEW_MIRROR_BACKFILL_LIMIT)
 
             if not latest:

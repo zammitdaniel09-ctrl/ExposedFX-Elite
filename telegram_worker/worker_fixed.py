@@ -966,6 +966,20 @@ def safe_log_stats(route, message, text, context=""):
 
 
 
+
+def route_send_as_peer(route):
+    """
+    For privacy routes, send as the destination Telegram group/channel itself.
+
+    IMPORTANT:
+    There is intentionally NO visible-account fallback.
+    If Telegram rejects send_as, the route fails closed.
+    """
+    if route.get("anonymous_send_as"):
+        return int(route["dest_chat"])
+    return None
+
+
 async def send_media_exact(message, route, target_reply, text, entities):
     """
     Robust media copier:
@@ -981,6 +995,7 @@ async def send_media_exact(message, route, target_reply, text, entities):
             formatting_entities=entities if text else None,
             parse_mode=None,
             reply_to=target_reply,
+            send_as=route_send_as_peer(route),
         )
     except Exception as exc:
         log.warning(f"[media direct copy failed] msg={message.id} route={route['name']}: {exc}")
@@ -1001,6 +1016,7 @@ async def send_media_exact(message, route, target_reply, text, entities):
             formatting_entities=entities if text else None,
             parse_mode=None,
             reply_to=target_reply,
+            send_as=route_send_as_peer(route),
         )
 
         return sent
@@ -1014,6 +1030,11 @@ async def send_media_exact(message, route, target_reply, text, entities):
 
 
 async def ensure_replied_message_copied(message, route, depth=0):
+    if route.get("live_only") and not route.get("copy_reply_parent", False):
+        # A brand-new message may reply to an old source message.
+        # Do NOT import that old parent into a no-history route.
+        return False
+
     """
     If source message replies to another source message and that parent was not copied yet,
     copy the parent first, then this message can reply to the correct destination message.
@@ -1139,6 +1160,7 @@ async def repair_bad_mirror_structure(message, route, target_reply, text, entiti
                 parse_mode=None,
                 reply_to=target_reply,
                 link_preview=True,
+                send_as=route_send_as_peer(route),
             )
 
         ok2, reason2 = mirror_structure_status(message, repaired, text)
@@ -1194,6 +1216,7 @@ async def copy_one(message, route, edited=False, ensure_reply=True):
             parse_mode=None,
             reply_to=target_reply,
             link_preview=True,
+            send_as=route_send_as_peer(route),
         )
 
     sent = await repair_bad_mirror_structure(message, route, target_reply, text, entities, sent)
@@ -1242,6 +1265,7 @@ async def copy_album(messages, route):
             formatting_entities=caption_entities,
             parse_mode=None,
             reply_to=target_reply,
+            send_as=route_send_as_peer(route),
         )
     except Exception as exc:
         log.warning(f"[album direct copy failed] {route['name']} first_msg={getattr(first, 'id', None)}: {exc}")
@@ -1274,6 +1298,7 @@ async def copy_album(messages, route):
                 formatting_entities=caption_entities,
                 parse_mode=None,
                 reply_to=target_reply,
+                send_as=route_send_as_peer(route),
             )
 
             log.info(f"[album fallback reupload ok] {route['name']} items={len(downloaded_files)}")
@@ -1860,6 +1885,13 @@ async def handle_single_message(event, edited=False):
 
     for route in routes:
         try:
+            if edited and route.get("live_only") and not existing_destination_ids(message, route):
+                log.info(
+                    f"[live-only old edit skipped] route={route['name']} "
+                    f"source={chat_id}_{topic_id} msg={message.id}"
+                )
+                continue
+
             if not edited and is_recent_duplicate(route, message, text):
                 log.info(f"[duplicate skipped] {route['name']} source={chat_id}_{topic_id} msg={message.id}")
                 continue

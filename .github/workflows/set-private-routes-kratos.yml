@@ -1,3 +1,4 @@
+# second push intentionally triggers this already-installed workflow
 name: Set private routes to send as Kratos
 
 on:
@@ -32,7 +33,6 @@ jobs:
               'Private Hub567 To 5632',
           }
 
-          # Make route configuration explicit: these five must send as Kratos.
           routes_path = Path('telegram_worker/routes.py')
           routes_text = routes_path.read_text(encoding='utf-8-sig')
           tree = ast.parse(routes_text)
@@ -64,8 +64,6 @@ jobs:
           )
           routes_path.write_text(routes_output, encoding='utf-8')
 
-          # Fail-safe in the sender too: every live_only private route sends as
-          # the logged-in Telegram account (KratosFX), never via send_as.
           worker_path = Path('telegram_worker/worker_fixed.py')
           worker = worker_path.read_text(encoding='utf-8-sig')
 

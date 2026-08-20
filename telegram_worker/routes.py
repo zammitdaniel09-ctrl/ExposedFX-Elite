@@ -427,35 +427,16 @@ ROUTES = [{'name': 'Triad FX',
   'verify_title': False,
   'anonymous_send_as': False,
   'live_only': True,
+  'copy_reply_parent': False},
+ {'name': 'Private Live 2521699926 To 5762',
+  'source_chat': -1002521699926,
+  'source_topic': None,
+  'dest_chat': -1003852763875,
+  'dest_topic': 5762,
+  'verify_title': False,
+  'anonymous_send_as': False,
+  'live_only': True,
   'copy_reply_parent': False}]
-
-# Requested private mirror: copy as KratosFX, backfill only the latest 20
-# messages on startup, then continue live. These environment overrides affect
-# only the current process; the worker reads them after importing this module.
-ROUTES.append({
-    'name': 'Private Live 2521699926 To 5762',
-    'source_chat': -1002521699926,
-    'source_topic': None,
-    'dest_chat': -1003852763875,
-    'dest_topic': 5762,
-    'verify_title': False,
-    'anonymous_send_as': False,
-    'live_only': True,
-    'copy_reply_parent': False,
-})
-
-os.environ['NEW_MIRROR_BACKFILL_ON_START'] = '1'
-os.environ['NEW_MIRROR_BACKFILL_ALL_ON_START'] = '0'
-os.environ['NEW_MIRROR_BACKFILL_LIMIT'] = '20'
-os.environ['NEW_MIRROR_BACKFILL_ONLY_CHATS'] = '-1002521699926'
-os.environ['NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS'] = '5762'
-
-for _name, _value in (
-    ('NEW_MIRROR_DEBUG_CHATS', '-1002521699926'),
-    ('NEW_MIRROR_DEBUG_DEST_TOPICS', '5762'),
-):
-    _raw = (os.environ.get(_name) or '').strip()
-    os.environ[_name] = f'{_raw},{_value}' if _raw else _value
 
 if os.environ.get("DISABLE_PROVIDER_ROUTES", "0").strip() == "1":
     ROUTES = []

@@ -1,0 +1,121 @@
+name: Set private routes to send as Kratos
+
+on:
+  push:
+    paths:
+      - '.github/workflows/set-private-routes-kratos.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Disable anonymous send-as for live-only private routes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import ast
+          import pprint
+          from pathlib import Path
+
+          route_names = {
+              'Mirror Hub29452 To 2524',
+              'Private Live 3651353503 To 5551',
+              'Private Hub568 To 5632',
+              'Private Hub569 To 5632',
+              'Private Hub567 To 5632',
+          }
+
+          # Make route configuration explicit: these five must send as Kratos.
+          routes_path = Path('telegram_worker/routes.py')
+          routes_text = routes_path.read_text(encoding='utf-8-sig')
+          tree = ast.parse(routes_text)
+          routes = None
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'ROUTES' for t in node.targets):
+                  routes = ast.literal_eval(node.value)
+                  break
+          if routes is None:
+              raise SystemExit('Could not read ROUTES')
+
+          found = set()
+          for route in routes:
+              if route.get('name') in route_names:
+                  route['anonymous_send_as'] = False
+                  found.add(route['name'])
+
+          missing = route_names - found
+          if missing:
+              raise SystemExit(f'Missing expected routes: {sorted(missing)}')
+
+          routes_output = (
+              'import os\n\n'
+              '# telegram_worker/routes.py\n'
+              '# source_topic=None means all messages from that source.\n\n'
+              'ROUTES = ' + pprint.pformat(routes, width=120, sort_dicts=False) + '\n\n'
+              'if os.environ.get("DISABLE_PROVIDER_ROUTES", "0").strip() == "1":\n'
+              '    ROUTES = []\n'
+          )
+          routes_path.write_text(routes_output, encoding='utf-8')
+
+          # Fail-safe in the sender too: every live_only private route sends as
+          # the logged-in Telegram account (KratosFX), never via send_as.
+          worker_path = Path('telegram_worker/worker_fixed.py')
+          worker = worker_path.read_text(encoding='utf-8-sig')
+
+          old = '''def route_send_as_peer(route):
+    """
+    For privacy routes, send as the destination Telegram group/channel itself.
+
+    IMPORTANT:
+    There is intentionally NO visible-account fallback.
+    If Telegram rejects send_as, the route fails closed.
+    """
+    if route.get("anonymous_send_as"):
+        return int(route["dest_chat"])
+    return None
+'''
+
+          new = '''def route_send_as_peer(route):
+    """Choose the Telegram send-as peer for a route.
+
+    Private live-only routes deliberately send as the logged-in KratosFX
+    account. This avoids Telegram send_as permission failures while preserving
+    copied-message behaviour (no Forwarded From source label).
+    """
+    if route.get("live_only"):
+        return None
+    if route.get("anonymous_send_as"):
+        return int(route["dest_chat"])
+    return None
+'''
+
+          if new not in worker:
+              if old not in worker:
+                  raise SystemExit('Could not locate route_send_as_peer block')
+              worker = worker.replace(old, new, 1)
+
+          worker_path.write_text(worker, encoding='utf-8')
+
+          print('KRATOS_SEND_ENABLED=True')
+          print('LIVE_ONLY_ROUTES=5')
+          print('NO_HISTORY_LOGIC_UNCHANGED=True')
+          PY
+
+          python -m py_compile telegram_worker/routes.py telegram_worker/worker_fixed.py
+
+      - name: Commit Kratos sender change
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add telegram_worker/routes.py telegram_worker/worker_fixed.py .github/workflows/set-private-routes-kratos.yml
+          git rm .github/workflows/set-private-routes-kratos.yml
+          git commit -m 'Send private live routes as Kratos'
+          git push origin HEAD:main

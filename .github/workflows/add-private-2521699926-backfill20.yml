@@ -1,3 +1,4 @@
+# trigger installed workflow
 name: Add private 2521699926 forwarding with backfill 20
 
 on:
@@ -36,7 +37,6 @@ jobs:
           if routes is None:
               raise SystemExit('Could not read ROUTES')
 
-          # Keep exactly one copy of this requested route.
           routes = [
               r for r in routes
               if not (
@@ -81,9 +81,7 @@ jobs:
           replacement = r'''async def initialise_private_live_poll_state():
     routes = private_live_routes()
 
-    log.info(
-        f"[private live init start] routes={len(routes)}"
-    )
+    log.info(f"[private live init start] routes={len(routes)}")
 
     for route in routes:
         key = route_poll_key(route)
@@ -93,86 +91,41 @@ jobs:
             fetch_limit = max(20, backfill_count)
             messages = await get_route_poll_messages(route, fetch_limit)
 
-            ordered = sorted(
-                messages,
-                key=lambda m: int(getattr(m, "id", 0) or 0),
-            )
-
-            latest_id = max(
-                [int(getattr(msg, "id", 0) or 0) for msg in ordered] or [0]
-            )
+            ordered = sorted(messages, key=lambda m: int(getattr(m, "id", 0) or 0))
+            latest_id = max([int(getattr(msg, "id", 0) or 0) for msg in ordered] or [0])
 
             if backfill_count > 0:
-                marker_key = str(
-                    route.get("startup_backfill_key")
-                    or f"{route['source_chat']}_{route.get('source_topic')}_{route['dest_chat']}_{route['dest_topic']}_{backfill_count}"
-                )
+                marker_key = str(route.get("startup_backfill_key") or f"{route['source_chat']}_{route.get('source_topic')}_{route['dest_chat']}_{route['dest_topic']}_{backfill_count}")
                 safe_marker = re.sub(r"[^A-Za-z0-9_.-]+", "_", marker_key)
                 marker = DATA_DIR / f"private_startup_backfill_{safe_marker}.done"
 
                 if not marker.exists():
                     batch = ordered[-backfill_count:]
-                    log.info(
-                        f"[PRIVATE STARTUP BACKFILL BEGIN] route={route['name']} "
-                        f"requested={backfill_count} found={len(batch)}"
-                    )
-
+                    log.info(f"[PRIVATE STARTUP BACKFILL BEGIN] route={route['name']} requested={backfill_count} found={len(batch)}")
                     copied = 0
                     skipped = 0
                     for msg in batch:
                         mid = int(getattr(msg, "id", 0) or 0)
-
                         if existing_destination_ids(msg, route):
                             skipped += 1
-                            log.info(
-                                f"[private startup backfill already copied] "
-                                f"route={route['name']} msg={mid}"
-                            )
+                            log.info(f"[private startup backfill already copied] route={route['name']} msg={mid}")
                             continue
-
                         text = text_of(msg)
-                        await copy_one(
-                            msg,
-                            route,
-                            edited=False,
-                            ensure_reply=False,
-                        )
+                        await copy_one(msg, route, edited=False, ensure_reply=False)
                         if text:
                             remember_dedupe(route, msg, text)
                         copied += 1
-                        log.info(
-                            f"[PRIVATE STARTUP BACKFILL COPIED] route={route['name']} "
-                            f"msg={mid} dest={route['dest_chat']}_{route['dest_topic']}"
-                        )
-
-                    marker.write_text(
-                        f"done copied={copied} skipped={skipped} latest_id={latest_id}\n",
-                        encoding="utf-8",
-                    )
-                    log.info(
-                        f"[PRIVATE STARTUP BACKFILL DONE] route={route['name']} "
-                        f"copied={copied} skipped={skipped} marker={marker.name}"
-                    )
+                        log.info(f"[PRIVATE STARTUP BACKFILL COPIED] route={route['name']} msg={mid} dest={route['dest_chat']}_{route['dest_topic']}")
+                    marker.write_text(f"done copied={copied} skipped={skipped} latest_id={latest_id}\n", encoding="utf-8")
+                    log.info(f"[PRIVATE STARTUP BACKFILL DONE] route={route['name']} copied={copied} skipped={skipped} marker={marker.name}")
                 else:
-                    log.info(
-                        f"[private startup backfill already done] route={route['name']} "
-                        f"marker={marker.name}"
-                    )
+                    log.info(f"[private startup backfill already done] route={route['name']} marker={marker.name}")
 
             PRIVATE_LIVE_POLL_LAST_IDS[key] = latest_id
-
-            log.info(
-                f"[private live init] route={route['name']} "
-                f"source={route['source_chat']}_{route.get('source_topic')} "
-                f"dest={route['dest_chat']}_{route['dest_topic']} "
-                f"last_id={latest_id} startup_backfill={backfill_count}"
-            )
+            log.info(f"[private live init] route={route['name']} source={route['source_chat']}_{route.get('source_topic')} dest={route['dest_chat']}_{route['dest_topic']} last_id={latest_id} startup_backfill={backfill_count}")
 
         except Exception as exc:
-            log.exception(
-                f"[private live init failed] route={route.get('name')}: "
-                f"{type(exc).__name__}: {exc}"
-            )
+            log.exception(f"[private live init failed] route={route.get('name')}: {type(exc).__name__}: {exc}")
 '''
 
           worker = worker[:start] + replacement + worker[end:]

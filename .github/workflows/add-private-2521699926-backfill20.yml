@@ -1,0 +1,197 @@
+name: Add private 2521699926 forwarding with backfill 20
+
+on:
+  push:
+    paths:
+      - '.github/workflows/add-private-2521699926-backfill20.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add route and one-time last-20 backfill support
+        shell: bash
+        run: |
+          python - <<'PY'
+          import ast
+          import pprint
+          import re
+          from pathlib import Path
+
+          routes_path = Path('telegram_worker/routes.py')
+          text = routes_path.read_text(encoding='utf-8-sig')
+          tree = ast.parse(text)
+          routes = None
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'ROUTES' for t in node.targets):
+                  routes = ast.literal_eval(node.value)
+                  break
+          if routes is None:
+              raise SystemExit('Could not read ROUTES')
+
+          # Keep exactly one copy of this requested route.
+          routes = [
+              r for r in routes
+              if not (
+                  int(r.get('source_chat', 0)) == -1002521699926
+                  and int(r.get('dest_chat', 0)) == -1003852763875
+                  and int(r.get('dest_topic', 0)) == 5762
+              )
+          ]
+
+          routes.append({
+              'name': 'Private Live 2521699926 To 5762',
+              'source_chat': -1002521699926,
+              'source_topic': None,
+              'dest_chat': -1003852763875,
+              'dest_topic': 5762,
+              'verify_title': False,
+              'anonymous_send_as': False,
+              'live_only': True,
+              'copy_reply_parent': False,
+              'startup_backfill_count': 20,
+              'startup_backfill_key': '2521699926_to_5762_v1',
+          })
+
+          routes_out = (
+              'import os\n\n'
+              '# telegram_worker/routes.py\n'
+              '# source_topic=None means all messages from that source.\n\n'
+              'ROUTES = ' + pprint.pformat(routes, width=120, sort_dicts=False) + '\n\n'
+              'if os.environ.get("DISABLE_PROVIDER_ROUTES", "0").strip() == "1":\n'
+              '    ROUTES = []\n'
+          )
+          routes_path.write_text(routes_out, encoding='utf-8')
+
+          worker_path = Path('telegram_worker/worker_fixed.py')
+          worker = worker_path.read_text(encoding='utf-8-sig')
+
+          start = worker.find('async def initialise_private_live_poll_state():')
+          end = worker.find('\n\nasync def private_live_route_poll_loop():', start)
+          if start < 0 or end < 0:
+              raise SystemExit('Could not locate private live initializer')
+
+          replacement = r'''async def initialise_private_live_poll_state():
+    routes = private_live_routes()
+
+    log.info(
+        f"[private live init start] routes={len(routes)}"
+    )
+
+    for route in routes:
+        key = route_poll_key(route)
+
+        try:
+            backfill_count = max(0, int(route.get("startup_backfill_count", 0) or 0))
+            fetch_limit = max(20, backfill_count)
+            messages = await get_route_poll_messages(route, fetch_limit)
+
+            ordered = sorted(
+                messages,
+                key=lambda m: int(getattr(m, "id", 0) or 0),
+            )
+
+            latest_id = max(
+                [int(getattr(msg, "id", 0) or 0) for msg in ordered] or [0]
+            )
+
+            if backfill_count > 0:
+                marker_key = str(
+                    route.get("startup_backfill_key")
+                    or f"{route['source_chat']}_{route.get('source_topic')}_{route['dest_chat']}_{route['dest_topic']}_{backfill_count}"
+                )
+                safe_marker = re.sub(r"[^A-Za-z0-9_.-]+", "_", marker_key)
+                marker = DATA_DIR / f"private_startup_backfill_{safe_marker}.done"
+
+                if not marker.exists():
+                    batch = ordered[-backfill_count:]
+                    log.info(
+                        f"[PRIVATE STARTUP BACKFILL BEGIN] route={route['name']} "
+                        f"requested={backfill_count} found={len(batch)}"
+                    )
+
+                    copied = 0
+                    skipped = 0
+                    for msg in batch:
+                        mid = int(getattr(msg, "id", 0) or 0)
+
+                        if existing_destination_ids(msg, route):
+                            skipped += 1
+                            log.info(
+                                f"[private startup backfill already copied] "
+                                f"route={route['name']} msg={mid}"
+                            )
+                            continue
+
+                        text = text_of(msg)
+                        await copy_one(
+                            msg,
+                            route,
+                            edited=False,
+                            ensure_reply=False,
+                        )
+                        if text:
+                            remember_dedupe(route, msg, text)
+                        copied += 1
+                        log.info(
+                            f"[PRIVATE STARTUP BACKFILL COPIED] route={route['name']} "
+                            f"msg={mid} dest={route['dest_chat']}_{route['dest_topic']}"
+                        )
+
+                    marker.write_text(
+                        f"done copied={copied} skipped={skipped} latest_id={latest_id}\n",
+                        encoding="utf-8",
+                    )
+                    log.info(
+                        f"[PRIVATE STARTUP BACKFILL DONE] route={route['name']} "
+                        f"copied={copied} skipped={skipped} marker={marker.name}"
+                    )
+                else:
+                    log.info(
+                        f"[private startup backfill already done] route={route['name']} "
+                        f"marker={marker.name}"
+                    )
+
+            PRIVATE_LIVE_POLL_LAST_IDS[key] = latest_id
+
+            log.info(
+                f"[private live init] route={route['name']} "
+                f"source={route['source_chat']}_{route.get('source_topic')} "
+                f"dest={route['dest_chat']}_{route['dest_topic']} "
+                f"last_id={latest_id} startup_backfill={backfill_count}"
+            )
+
+        except Exception as exc:
+            log.exception(
+                f"[private live init failed] route={route.get('name')}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+'''
+
+          worker = worker[:start] + replacement + worker[end:]
+          worker_path.write_text(worker, encoding='utf-8')
+
+          print('NEW_ROUTE=-1002521699926 -> -1003852763875_5762')
+          print('STARTUP_BACKFILL_COUNT=20')
+          print('SEND_AS_KRATOS=True')
+          print('LIVE_FORWARDING=True')
+          PY
+
+          python -m py_compile telegram_worker/routes.py telegram_worker/worker_fixed.py
+
+      - name: Commit route and worker changes
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add telegram_worker/routes.py telegram_worker/worker_fixed.py .github/workflows/add-private-2521699926-backfill20.yml
+          git rm .github/workflows/add-private-2521699926-backfill20.yml
+          git commit -m 'Add 2521699926 private route with last 20 backfill'
+          git push origin HEAD:main

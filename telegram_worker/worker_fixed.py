@@ -84,6 +84,10 @@ NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS = {
 } if NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS_RAW else set()
 new_mirror_poll_last_ids = {}
 
+# Dedicated state for live-only private routes.
+PRIVATE_LIVE_POLL_LAST_IDS = {}
+
+
 
 MIRROR_STRUCTURE_REPAIR = os.environ.get("MIRROR_STRUCTURE_REPAIR", "1").strip() == "1"
 STRICT_ROUTE_TITLE_CHECK = os.environ.get("STRICT_ROUTE_TITLE_CHECK", "0").strip() == "1"
@@ -1798,6 +1802,198 @@ async def initialise_new_mirror_poll_state():
             )
 
 
+
+def private_live_routes():
+    """
+    Routes marked live_only get a dedicated polling backup.
+
+    This intentionally ignores NEW_MIRROR_DEBUG_* filters because those
+    filters were causing private destination routes to disappear from
+    polling.
+
+    No history is forwarded: startup records the current latest message
+    ID and only messages arriving afterwards are eligible.
+    """
+    return [
+        route
+        for route in ROUTES
+        if route.get("live_only")
+    ]
+
+
+async def initialise_private_live_poll_state():
+    routes = private_live_routes()
+
+    log.info(
+        f"[private live init start] routes={len(routes)} "
+        f"backfill=False"
+    )
+
+    for route in routes:
+        key = route_poll_key(route)
+
+        try:
+            # Fetch enough to determine the CURRENT newest message only.
+            # Nothing is copied during initialization.
+            messages = await get_route_poll_messages(route, 20)
+
+            latest_id = 0
+
+            for msg in messages:
+                try:
+                    mid = int(getattr(msg, "id", 0) or 0)
+                except Exception:
+                    mid = 0
+
+                latest_id = max(latest_id, mid)
+
+            PRIVATE_LIVE_POLL_LAST_IDS[key] = latest_id
+
+            log.info(
+                f"[private live init] route={route['name']} "
+                f"source={route['source_chat']}_{route.get('source_topic')} "
+                f"dest={route['dest_chat']}_{route['dest_topic']} "
+                f"last_id={latest_id} NO_HISTORY=True"
+            )
+
+        except Exception as exc:
+            log.exception(
+                f"[private live init failed] route={route.get('name')}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+
+async def private_live_route_poll_loop():
+    """
+    Exact-route polling for private live-only mirrors.
+
+    Important:
+    get_route_poll_messages(route, ...) already knows the exact source
+    topic. We therefore DO NOT run the fetched message back through
+    topic_of()/routes_for(), which is where Telegram forum messages were
+    being reduced to topic=None.
+    """
+    await initialise_private_live_poll_state()
+
+    routes = private_live_routes()
+
+    log.info(
+        f"[private live poller ready] routes={len(routes)} "
+        f"interval=5s NO_HISTORY=True"
+    )
+
+    while True:
+        for route in routes:
+            key = route_poll_key(route)
+
+            try:
+                messages = await get_route_poll_messages(route, 100)
+
+                last_id = int(
+                    PRIVATE_LIVE_POLL_LAST_IDS.get(key, 0) or 0
+                )
+
+                newer = []
+
+                for msg in messages:
+                    try:
+                        mid = int(getattr(msg, "id", 0) or 0)
+                    except Exception:
+                        mid = 0
+
+                    if mid > last_id:
+                        newer.append(msg)
+
+                newer.sort(
+                    key=lambda msg: int(
+                        getattr(msg, "id", 0) or 0
+                    )
+                )
+
+                for msg in newer:
+                    mid = int(getattr(msg, "id", 0) or 0)
+
+                    # If the normal Telegram NewMessage handler already
+                    # forwarded it, do not make a second copy.
+                    if existing_destination_ids(msg, route):
+                        PRIVATE_LIVE_POLL_LAST_IDS[key] = max(
+                            int(PRIVATE_LIVE_POLL_LAST_IDS.get(key, 0) or 0),
+                            mid,
+                        )
+
+                        log.info(
+                            f"[private live already copied] "
+                            f"route={route['name']} msg={mid}"
+                        )
+                        continue
+
+                    text = text_of(msg)
+
+                    if text and is_recent_duplicate(route, msg, text):
+                        PRIVATE_LIVE_POLL_LAST_IDS[key] = max(
+                            int(PRIVATE_LIVE_POLL_LAST_IDS.get(key, 0) or 0),
+                            mid,
+                        )
+
+                        log.info(
+                            f"[private live duplicate skipped] "
+                            f"route={route['name']} msg={mid}"
+                        )
+                        continue
+
+                    try:
+                        # ensure_reply=False is deliberate for these
+                        # no-history routes. It prevents an old replied-to
+                        # parent from being imported into the destination.
+                        await copy_one(
+                            msg,
+                            route,
+                            edited=False,
+                            ensure_reply=False,
+                        )
+
+                        if text:
+                            remember_dedupe(route, msg, text)
+
+                        PRIVATE_LIVE_POLL_LAST_IDS[key] = max(
+                            int(PRIVATE_LIVE_POLL_LAST_IDS.get(key, 0) or 0),
+                            mid,
+                        )
+
+                        log.info(
+                            f"[PRIVATE LIVE COPIED] "
+                            f"route={route['name']} "
+                            f"source={route['source_chat']}_"
+                            f"{route.get('source_topic')} "
+                            f"msg={mid} "
+                            f"dest={route['dest_chat']}_"
+                            f"{route['dest_topic']}"
+                        )
+
+                    except Exception as exc:
+                        # DO NOT advance last_id on a failed copy.
+                        # The worker will retry this new message next cycle.
+                        log.exception(
+                            f"[PRIVATE LIVE COPY FAILED] "
+                            f"route={route['name']} msg={mid}: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+
+                        # Stop processing newer messages on this route
+                        # until the failed one succeeds, preserving order.
+                        break
+
+            except Exception as exc:
+                log.exception(
+                    f"[private live poll route failed] "
+                    f"route={route.get('name')}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+        await asyncio.sleep(5)
+
+
+
 async def new_mirror_poll_loop():
     if not NEW_MIRROR_POLLING_ENABLED:
         return
@@ -2347,6 +2543,7 @@ async def main():
     asyncio.create_task(route_title_checker_loop())
     await cleanup_existing_blocked_sender_copies_once()
     asyncio.create_task(new_mirror_poll_loop())
+    asyncio.create_task(private_live_route_poll_loop())
     log.info("Imperium fixed Telegram worker running...")
     asyncio.create_task(stats.loop(client))
     log.info("Weekly stats reporter running for Sunday 00:00 Europe/Malta")

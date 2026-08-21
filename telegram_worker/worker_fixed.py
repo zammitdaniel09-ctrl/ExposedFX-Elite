@@ -2653,6 +2653,184 @@ async def force_last20_2521699926_to_5762_v7():
 # END FORCE_LAST20_2521699926_V7
 
 
+
+# BEGIN FORCE_LAST1_HUB568_TO_5632_V1
+
+async def force_last1_hub568_to_5632_v1():
+    """
+    Send exactly ONE previous copyable message from hub topic 568
+    into destination topic 5632 as KratosFX.
+
+    After this, the normal live-only private poller handles new messages.
+    """
+
+    route = next(
+        (
+            r for r in ROUTES
+            if int(r.get("source_chat", 0)) == -1003918958200
+            and int(r.get("source_topic") or 0) == 568
+            and int(r.get("dest_chat", 0)) == -1003852763875
+            and int(r.get("dest_topic", 0)) == 5632
+        ),
+        None,
+    )
+
+    if route is None:
+        raise RuntimeError(
+            "Hub568 -> private5632 route not found"
+        )
+
+    marker = DATA_DIR / "last1_hub568_to_5632_v1.done"
+
+    if marker.exists():
+        log.warning(
+            "[FORCE HUB568 LAST1 ALREADY DONE] "
+            "dest=-1003852763875_5632"
+        )
+        return
+
+    log.warning(
+        "[FORCE HUB568 LAST1 BEGIN] "
+        "source=-1003918958200_568 "
+        "dest=-1003852763875_5632 "
+        "sender=KratosFX"
+    )
+
+    # Fetch several messages only so we can skip Telegram service
+    # messages if the newest item is not actually copyable.
+    messages = await get_route_poll_messages(
+        route,
+        20,
+    )
+
+    messages = sorted(
+        list(messages or []),
+        key=lambda m: int(
+            getattr(m, "id", 0) or 0
+        ),
+        reverse=True,
+    )
+
+    log.warning(
+        f"[FORCE HUB568 LAST1 FETCHED] "
+        f"candidates={len(messages)}"
+    )
+
+    if not messages:
+        raise RuntimeError(
+            "No messages returned from topic 568"
+        )
+
+    copied = False
+
+    for message in messages:
+
+        mid = int(
+            getattr(message, "id", 0) or 0
+        )
+
+        # If an earlier partial attempt already copied one,
+        # NEVER send another historical message.
+        if existing_destination_ids(message, route):
+
+            marker.write_text(
+                f"done already_mapped={mid}\n",
+                encoding="utf-8",
+            )
+
+            log.warning(
+                f"[FORCE HUB568 LAST1 ALREADY MAPPED] "
+                f"source_msg={mid}"
+            )
+
+            return
+
+        if not text_of(message) and not is_real_media(message):
+            continue
+
+        final_error = None
+
+        for attempt in range(1, 4):
+            try:
+
+                sent = await copy_one(
+                    message,
+                    route,
+                    edited=False,
+                    ensure_reply=False,
+                )
+
+                if not sent:
+                    raise RuntimeError(
+                        "copy_one returned no destination message"
+                    )
+
+                marker.write_text(
+                    f"done source_msg={mid}\n",
+                    encoding="utf-8",
+                )
+
+                log.warning(
+                    f"[FORCE HUB568 LAST1 COPIED] "
+                    f"source_msg={mid} "
+                    f"dest=-1003852763875_5632"
+                )
+
+                copied = True
+                break
+
+            except FloodWaitError as exc:
+
+                final_error = exc
+
+                wait_for = min(
+                    int(exc.seconds) + 1,
+                    120,
+                )
+
+                log.warning(
+                    f"[FORCE HUB568 LAST1 FLOODWAIT] "
+                    f"source_msg={mid} "
+                    f"wait={wait_for}s"
+                )
+
+                await asyncio.sleep(wait_for)
+
+            except Exception as exc:
+
+                final_error = exc
+
+                log.exception(
+                    f"[FORCE HUB568 LAST1 FAILED] "
+                    f"source_msg={mid} "
+                    f"attempt={attempt}/3 "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+                await asyncio.sleep(2)
+
+        if copied:
+            break
+
+        raise RuntimeError(
+            f"Failed copying source message {mid}: "
+            f"{final_error}"
+        )
+
+    if not copied:
+        raise RuntimeError(
+            "No copyable message found in latest topic 568 messages"
+        )
+
+    log.warning(
+        "[FORCE HUB568 LAST1 DONE] "
+        "copied=1 "
+        "dest=-1003852763875_5632"
+    )
+
+# END FORCE_LAST1_HUB568_TO_5632_V1
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -2706,6 +2884,7 @@ async def main():
     log.info("New mirror polling backup active: True")
     log.info("Forward sidecar isolation active: True")
     await force_last20_2521699926_to_5762_v7()
+    await force_last1_hub568_to_5632_v1()
     await verify_route_titles_once()
     await probe_new_mirror_routes_once()
     asyncio.create_task(route_title_checker_loop())

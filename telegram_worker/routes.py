@@ -436,6 +436,15 @@ ROUTES = [{'name': 'Triad FX',
   'verify_title': False,
   'anonymous_send_as': False,
   'live_only': True,
+  'copy_reply_parent': False},
+ {'name': 'Private Hub568 To 5632',
+  'source_chat': -1003918958200,
+  'source_topic': 568,
+  'dest_chat': -1003852763875,
+  'dest_topic': 5632,
+  'verify_title': False,
+  'anonymous_send_as': False,
+  'live_only': True,
   'copy_reply_parent': False}]
 
 if os.environ.get("DISABLE_PROVIDER_ROUTES", "0").strip() == "1":

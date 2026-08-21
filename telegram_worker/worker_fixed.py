@@ -1475,6 +1475,10 @@ def new_mirror_routes():
     out = []
 
     for route in ROUTES:
+        # Private live-only routes have their own exact poller.
+        if route.get("live_only"):
+            continue
+
         try:
             source_chat = int(route.get("source_chat"))
             dest_topic = int(route.get("dest_topic"))
@@ -2494,6 +2498,231 @@ async def route_title_checker_loop():
 
 
 
+
+# BEGIN FORCE_LAST3_20458_TO_2524_V1
+
+async def force_last3_20458_to_2524_v1():
+    """
+    Send exactly the newest THREE copyable messages from source
+    topic 20458 into private topic 2524.
+
+    Uses a per-message progress file so a partial crash/restart
+    cannot resend already-completed members of the three-message batch.
+    """
+
+    route = next(
+        (
+            r for r in ROUTES
+            if int(r.get("source_chat", 0)) == -1002817163788
+            and int(r.get("source_topic") or 0) == 20458
+            and int(r.get("dest_chat", 0)) == -1003852763875
+            and int(r.get("dest_topic", 0)) == 2524
+        ),
+        None,
+    )
+
+    if route is None:
+        raise RuntimeError(
+            "20458 -> 2524 private route not found"
+        )
+
+    done_file = DATA_DIR / "last3_20458_to_2524_20260821_v1.done"
+    progress_file = DATA_DIR / "last3_20458_to_2524_20260821_v1.progress.json"
+
+    if done_file.exists():
+        log.warning(
+            "[FORCE 20458 LAST3 ALREADY DONE] "
+            "dest=-1003852763875_2524"
+        )
+        return
+
+    log.warning(
+        "[FORCE 20458 LAST3 BEGIN] "
+        "source=-1002817163788_20458 "
+        "dest=-1003852763875_2524 "
+        "requested=3 sender=KratosFX"
+    )
+
+    # Fetch extra candidates so Telegram service/empty messages
+    # do not reduce the requested 3 real messages.
+    candidates = await get_route_poll_messages(
+        route,
+        30,
+    )
+
+    candidates = list(candidates or [])
+
+    copyable = [
+        msg
+        for msg in candidates
+        if text_of(msg) or is_real_media(msg)
+    ]
+
+    # newest first
+    copyable.sort(
+        key=lambda msg: int(
+            getattr(msg, "id", 0) or 0
+        ),
+        reverse=True,
+    )
+
+    selected = copyable[:3]
+
+    if len(selected) < 3:
+        raise RuntimeError(
+            f"Only {len(selected)} copyable messages found; expected 3"
+        )
+
+    # Send oldest -> newest so order in destination is correct.
+    selected.sort(
+        key=lambda msg: int(
+            getattr(msg, "id", 0) or 0
+        )
+    )
+
+    selected_ids = [
+        int(getattr(msg, "id", 0) or 0)
+        for msg in selected
+    ]
+
+    log.warning(
+        f"[FORCE 20458 LAST3 SELECTED] ids={selected_ids}"
+    )
+
+    completed = set()
+
+    if progress_file.exists():
+        try:
+            raw = json.loads(
+                progress_file.read_text(encoding="utf-8")
+            )
+
+            completed = {
+                int(x)
+                for x in raw.get("completed", [])
+            }
+
+        except Exception:
+            completed = set()
+
+    copied_now = 0
+
+    for message in selected:
+
+        mid = int(
+            getattr(message, "id", 0) or 0
+        )
+
+        if mid in completed:
+
+            log.warning(
+                f"[FORCE 20458 LAST3 PROGRESS SKIP] "
+                f"source_msg={mid}"
+            )
+
+            continue
+
+        success = False
+        last_error = None
+
+        for attempt in range(1, 4):
+
+            try:
+
+                sent = await copy_one(
+                    message,
+                    route,
+                    edited=False,
+                    ensure_reply=False,
+                )
+
+                if not sent:
+                    raise RuntimeError(
+                        "copy_one returned no destination message"
+                    )
+
+                completed.add(mid)
+
+                progress_file.write_text(
+                    json.dumps({
+                        "selected": selected_ids,
+                        "completed": sorted(completed),
+                    }),
+                    encoding="utf-8",
+                )
+
+                copied_now += 1
+                success = True
+
+                log.warning(
+                    f"[FORCE 20458 LAST3 COPIED] "
+                    f"source_msg={mid} "
+                    f"completed={len(completed)}/3 "
+                    f"dest=-1003852763875_2524"
+                )
+
+                break
+
+            except FloodWaitError as exc:
+
+                last_error = exc
+
+                wait_seconds = min(
+                    int(exc.seconds) + 1,
+                    120,
+                )
+
+                log.warning(
+                    f"[FORCE 20458 LAST3 FLOODWAIT] "
+                    f"source_msg={mid} "
+                    f"wait={wait_seconds}s"
+                )
+
+                await asyncio.sleep(wait_seconds)
+
+            except Exception as exc:
+
+                last_error = exc
+
+                log.exception(
+                    f"[FORCE 20458 LAST3 ITEM FAILED] "
+                    f"source_msg={mid} "
+                    f"attempt={attempt}/3 "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+                await asyncio.sleep(2)
+
+        if not success:
+            raise RuntimeError(
+                f"Failed source message {mid}: {last_error}"
+            )
+
+        await asyncio.sleep(0.3)
+
+    if not all(mid in completed for mid in selected_ids):
+        raise RuntimeError(
+            "Last3 progress incomplete after send loop"
+        )
+
+    done_file.write_text(
+        json.dumps({
+            "done": True,
+            "source_ids": selected_ids,
+        }),
+        encoding="utf-8",
+    )
+
+    log.warning(
+        f"[FORCE 20458 LAST3 DONE] "
+        f"selected={selected_ids} "
+        f"copied_now={copied_now} "
+        f"dest=-1003852763875_2524"
+    )
+
+# END FORCE_LAST3_20458_TO_2524_V1
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -2546,6 +2775,7 @@ async def main():
     log.info(f"NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS={sorted(NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS)}")
     log.info("New mirror polling backup active: True")
     log.info("Forward sidecar isolation active: True")
+    await force_last3_20458_to_2524_v1()
     await verify_route_titles_once()
     await probe_new_mirror_routes_once()
     asyncio.create_task(route_title_checker_loop())

@@ -2723,6 +2723,264 @@ async def force_last3_20458_to_2524_v1():
 # END FORCE_LAST3_20458_TO_2524_V1
 
 
+
+# BEGIN FORCE_LAST10_3229476368_TO_5947_V1
+
+async def force_last10_3229476368_to_5947_v1():
+    """
+    Copy exactly the newest 10 copyable messages from
+    -1003229476368 into -1003852763875 topic 5947 ONCE.
+
+    After this helper finishes, the route remains live_only and the
+    private poller handles only new messages.
+    """
+
+    route = next(
+        (
+            r for r in ROUTES
+            if int(r.get("source_chat", 0)) == -1003229476368
+            and r.get("source_topic") is None
+            and int(r.get("dest_chat", 0)) == -1003852763875
+            and int(r.get("dest_topic", 0)) == 5947
+        ),
+        None,
+    )
+
+    if route is None:
+        raise RuntimeError(
+            "3229476368 -> 5947 route not found"
+        )
+
+    done_file = DATA_DIR / "last10_3229476368_to_5947_v1.done"
+    progress_file = DATA_DIR / "last10_3229476368_to_5947_v1.progress.json"
+
+    if done_file.exists():
+        log.warning(
+            "[FORCE 3229476368 LAST10 ALREADY DONE] "
+            "dest=-1003852763875_5947"
+        )
+        return
+
+    log.warning(
+        "[FORCE 3229476368 LAST10 BEGIN] "
+        "source=-1003229476368 "
+        "dest=-1003852763875_5947 "
+        "requested=10 sender=KratosFX"
+    )
+
+    # Fetch extra candidates so service/unsupported messages do not
+    # reduce the requested number of real messages.
+    candidates = await get_route_poll_messages(
+        route,
+        50,
+    )
+
+    candidates = list(candidates or [])
+
+    copyable = [
+        msg
+        for msg in candidates
+        if text_of(msg) or is_real_media(msg)
+    ]
+
+    # Newest first.
+    copyable.sort(
+        key=lambda msg: int(
+            getattr(msg, "id", 0) or 0
+        ),
+        reverse=True,
+    )
+
+    selected = copyable[:10]
+
+    if len(selected) < 10:
+        raise RuntimeError(
+            f"Only {len(selected)} copyable messages found; expected 10"
+        )
+
+    # Deliver oldest -> newest so Telegram destination order is correct.
+    selected.sort(
+        key=lambda msg: int(
+            getattr(msg, "id", 0) or 0
+        )
+    )
+
+    selected_ids = [
+        int(getattr(msg, "id", 0) or 0)
+        for msg in selected
+    ]
+
+    log.warning(
+        f"[FORCE 3229476368 LAST10 SELECTED] "
+        f"ids={selected_ids}"
+    )
+
+    completed = set()
+
+    if progress_file.exists():
+        try:
+            raw = json.loads(
+                progress_file.read_text(encoding="utf-8")
+            )
+
+            completed = {
+                int(x)
+                for x in raw.get("completed", [])
+            }
+
+        except Exception:
+            completed = set()
+
+    copied_now = 0
+
+    for message in selected:
+
+        mid = int(
+            getattr(message, "id", 0) or 0
+        )
+
+        # Progress file says we already completed this item.
+        if mid in completed:
+            log.warning(
+                f"[FORCE 3229476368 LAST10 PROGRESS SKIP] "
+                f"source_msg={mid}"
+            )
+            continue
+
+        # Extra protection:
+        # if a partial previous attempt already created a mapped
+        # destination copy, NEVER send that historical message again.
+        try:
+            already_mapped = existing_destination_ids(
+                message,
+                route,
+            )
+        except Exception:
+            already_mapped = []
+
+        if already_mapped:
+
+            completed.add(mid)
+
+            progress_file.write_text(
+                json.dumps({
+                    "selected": selected_ids,
+                    "completed": sorted(completed),
+                }),
+                encoding="utf-8",
+            )
+
+            log.warning(
+                f"[FORCE 3229476368 LAST10 ALREADY MAPPED] "
+                f"source_msg={mid}"
+            )
+
+            continue
+
+        success = False
+        last_error = None
+
+        for attempt in range(1, 4):
+
+            try:
+
+                sent = await copy_one(
+                    message,
+                    route,
+                    edited=False,
+                    ensure_reply=False,
+                )
+
+                if not sent:
+                    raise RuntimeError(
+                        "copy_one returned no destination message"
+                    )
+
+                completed.add(mid)
+
+                progress_file.write_text(
+                    json.dumps({
+                        "selected": selected_ids,
+                        "completed": sorted(completed),
+                    }),
+                    encoding="utf-8",
+                )
+
+                copied_now += 1
+                success = True
+
+                log.warning(
+                    f"[FORCE 3229476368 LAST10 COPIED] "
+                    f"source_msg={mid} "
+                    f"completed={len(completed)}/10 "
+                    f"dest=-1003852763875_5947"
+                )
+
+                break
+
+            except FloodWaitError as exc:
+
+                last_error = exc
+
+                wait_seconds = min(
+                    int(exc.seconds) + 1,
+                    120,
+                )
+
+                log.warning(
+                    f"[FORCE 3229476368 LAST10 FLOODWAIT] "
+                    f"source_msg={mid} "
+                    f"wait={wait_seconds}s"
+                )
+
+                await asyncio.sleep(wait_seconds)
+
+            except Exception as exc:
+
+                last_error = exc
+
+                log.exception(
+                    f"[FORCE 3229476368 LAST10 ITEM FAILED] "
+                    f"source_msg={mid} "
+                    f"attempt={attempt}/3 "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+                await asyncio.sleep(2)
+
+        if not success:
+            raise RuntimeError(
+                f"Failed source message {mid}: {last_error}"
+            )
+
+        await asyncio.sleep(0.35)
+
+    if not all(
+        mid in completed
+        for mid in selected_ids
+    ):
+        raise RuntimeError(
+            "LAST10 progress incomplete"
+        )
+
+    done_file.write_text(
+        json.dumps({
+            "done": True,
+            "source_ids": selected_ids,
+        }),
+        encoding="utf-8",
+    )
+
+    log.warning(
+        f"[FORCE 3229476368 LAST10 DONE] "
+        f"selected={selected_ids} "
+        f"copied_now={copied_now} "
+        f"dest=-1003852763875_5947"
+    )
+
+# END FORCE_LAST10_3229476368_TO_5947_V1
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -2776,6 +3034,7 @@ async def main():
     log.info("New mirror polling backup active: True")
     log.info("Forward sidecar isolation active: True")
     await force_last3_20458_to_2524_v1()
+    await force_last10_3229476368_to_5947_v1()
     await verify_route_titles_once()
     await probe_new_mirror_routes_once()
     asyncio.create_task(route_title_checker_loop())

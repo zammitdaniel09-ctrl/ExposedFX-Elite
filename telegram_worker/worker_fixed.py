@@ -267,7 +267,7 @@ def dedupe_key(route, message, text):
     For selected destination topics, dedupe across different source groups too,
     because providers often forward each other's exact messages.
     """
-    cross_source = int(route["dest_topic"]) in CROSS_SOURCE_DEDUP_DEST_TOPICS
+    cross_source = bool(route.get("cross_source_dedupe")) or int(route["dest_topic"]) in CROSS_SOURCE_DEDUP_DEST_TOPICS
 
     source_chat_key = "ANY_SOURCE" if cross_source else str(route["source_chat"])
     source_topic_key = "ANY_TOPIC" if cross_source else str(route.get("source_topic"))
@@ -464,6 +464,153 @@ def sender_ids_for_message(message):
                             pass
 
     return ids
+
+
+
+# BEGIN PRIVATE_LOOP_GUARD_V1
+
+def _marked_peer_id(peer):
+    """
+    Convert Telethon PeerChannel / PeerChat IDs into the same
+    marked format used by ROUTES, e.g. -1003252087470.
+    """
+
+    if peer is None:
+        return None
+
+    if isinstance(peer, int):
+        return int(peer)
+
+    channel_id = getattr(
+        peer,
+        "channel_id",
+        None,
+    )
+
+    if channel_id:
+        try:
+            return int(
+                "-100" + str(abs(int(channel_id)))
+            )
+        except Exception:
+            pass
+
+    chat_id = getattr(
+        peer,
+        "chat_id",
+        None,
+    )
+
+    if chat_id:
+        try:
+            value = int(chat_id)
+            return -abs(value)
+        except Exception:
+            pass
+
+    user_id = getattr(
+        peer,
+        "user_id",
+        None,
+    )
+
+    if user_id:
+        try:
+            return int(user_id)
+        except Exception:
+            pass
+
+    return None
+
+
+def forward_origin_chat_ids(message):
+    """
+    IDs contained in Telegram's actual ForwardHeader.
+
+    This detects:
+        A forwards B
+        B forwards A
+
+    without relying only on matching message text.
+    """
+
+    out = set()
+
+    fwd = getattr(
+        message,
+        "fwd_from",
+        None,
+    )
+
+    if not fwd:
+        return out
+
+    for attr in (
+        "from_id",
+        "saved_from_peer",
+    ):
+
+        peer = getattr(
+            fwd,
+            attr,
+            None,
+        )
+
+        marked = _marked_peer_id(peer)
+
+        if marked is not None:
+            out.add(marked)
+
+    return out
+
+
+def should_block_private_peer_loop(
+    message,
+    route,
+):
+    peers_raw = (
+        route.get("loop_guard_peers")
+        if isinstance(route, dict)
+        else None
+    )
+
+    if not peers_raw:
+        return False
+
+    peers = set()
+
+    for value in peers_raw:
+        try:
+            peers.add(int(value))
+        except Exception:
+            pass
+
+    origins = forward_origin_chat_ids(
+        message
+    )
+
+    matched = sorted(
+        origins & peers
+    )
+
+    if not matched:
+        return False
+
+    log.warning(
+        "[PEER LOOP BLOCKED] "
+        f"route={route.get('name')} "
+        f"source={route.get('source_chat')}_"
+        f"{route.get('source_topic')} "
+        f"msg={getattr(message, 'id', None)} "
+        f"forward_origins={sorted(origins)} "
+        f"matched_peers={matched} "
+        f"dest={route.get('dest_chat')}_"
+        f"{route.get('dest_topic')}"
+    )
+
+    return True
+
+# END PRIVATE_LOOP_GUARD_V1
 
 
 def is_blocked_sender(message):
@@ -1143,47 +1290,116 @@ async def delete_sent_copy(route, sent, reason):
 
 
 async def repair_bad_mirror_structure(message, route, target_reply, text, entities, sent):
+    """
+    Safety rule:
+    NEVER leave or map a structure we already know is wrong.
+
+    Previous behaviour could delete the bad first send and then,
+    if the repair itself failed, return the already-deleted first
+    Message object. That made the message map unreliable.
+
+    This version fails CLOSED.
+    """
+
     if not MIRROR_STRUCTURE_REPAIR:
         return sent
 
-    ok, reason = mirror_structure_status(message, sent, text)
+    ok, reason = mirror_structure_status(
+        message,
+        sent,
+        text,
+    )
 
     if ok:
         return sent
 
-    await delete_sent_copy(route, sent, reason)
+    await delete_sent_copy(
+        route,
+        sent,
+        reason,
+    )
 
     try:
+
         if is_real_media(message):
-            repaired = await send_media_exact(message, route, target_reply, text, entities)
+
+            repaired = await send_media_exact(
+                message,
+                route,
+                target_reply,
+                text,
+                entities,
+            )
+
         else:
+
             repaired = await client.send_message(
                 route["dest_chat"],
                 text,
-                formatting_entities=entities if text else None,
+                formatting_entities=(
+                    entities if text else None
+                ),
                 parse_mode=None,
                 reply_to=target_reply,
                 link_preview=True,
                 send_as=route_send_as_peer(route),
             )
 
-        ok2, reason2 = mirror_structure_status(message, repaired, text)
+    except Exception as exc:
 
-        if ok2:
-            log.info(f"[mirror structure repair ok] route={route['name']} source_msg={message.id}")
-        else:
-            log.warning(f"[mirror structure repair still bad] route={route['name']} source_msg={message.id} reason={reason2}")
+        log.exception(
+            "[mirror structure repair resend failed CLOSED] "
+            f"route={route['name']} "
+            f"source_msg={message.id}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        raise RuntimeError(
+            "mirror structure repair failed"
+        ) from exc
+
+    ok2, reason2 = mirror_structure_status(
+        message,
+        repaired,
+        text,
+    )
+
+    if ok2:
+
+        log.info(
+            "[mirror structure repair ok] "
+            f"route={route['name']} "
+            f"source_msg={message.id}"
+        )
 
         return repaired
 
-    except Exception as exc:
-        log.warning(f"[mirror structure repair resend failed] route={route['name']} source_msg={message.id}: {exc}")
-        return sent
+    # Repair is STILL wrong.
+    # Remove it. Never map it.
+    await delete_sent_copy(
+        route,
+        repaired,
+        reason2,
+    )
 
+    log.error(
+        "[mirror structure repair rejected CLOSED] "
+        f"route={route['name']} "
+        f"source_msg={message.id} "
+        f"reason={reason2}"
+    )
+
+    raise RuntimeError(
+        "mirror structure mismatch after repair: "
+        + str(reason2)
+    )
 
 
 async def copy_one(message, route, edited=False, ensure_reply=True):
     if should_hard_block_sender(message, "copy_one", route):
+        return None
+
+    if should_block_private_peer_loop(message, route):
         return None
 
     if edited:
@@ -1231,6 +1447,9 @@ async def copy_one(message, route, edited=False, ensure_reply=True):
 async def copy_album(messages, route):
     for item in messages:
         if should_hard_block_sender(item, "album", route):
+            return None
+
+        if should_block_private_peer_loop(item, route):
             return None
 
     first = messages[0]
@@ -1314,6 +1533,20 @@ async def copy_album(messages, route):
                 except Exception:
                     pass
 
+    sent_items_check = sent_as_list(sent)
+
+    if len(files) > 1 and len(sent_items_check) != len(files):
+        await delete_sent_copy(
+            route,
+            sent,
+            "album_item_count_mismatch",
+        )
+
+        raise RuntimeError(
+            f"mirror album structure mismatch: "
+            f"expected={len(files)} sent={len(sent_items_check)}"
+        )
+
     if isinstance(sent, list):
         for src, dst in zip(messages, sent):
             remember_message(src, dst, route)
@@ -1334,6 +1567,8 @@ def is_transient_copy_error(exc):
         "transport",
         "network",
         "request failed",
+        "mirror structure",
+        "mirror album structure",
     )
     return any(p in text for p in patterns)
 
@@ -1869,39 +2104,63 @@ async def initialise_private_live_poll_state():
 
 async def private_live_route_poll_loop():
     """
-    Exact-route polling for private live-only mirrors.
+    Sole writer for NEW live_only private messages.
 
-    Important:
-    get_route_poll_messages(route, ...) already knows the exact source
-    topic. We therefore DO NOT run the fetched message back through
-    topic_of()/routes_for(), which is where Telegram forum messages were
-    being reduced to topic=None.
+    Guarantees:
+    - no startup history
+    - oldest -> newest
+    - failed message stops newer ones on that route
+    - Telegram grouped media is copied as ONE album
+    - grouped albums are allowed time to finish arriving
+    - A<->B forwarded messages can be blocked by loop_guard_peers
+    - no NewMessage-handler race for live_only routes
     """
+
     await initialise_private_live_poll_state()
 
     routes = private_live_routes()
 
     log.info(
-        f"[private live poller ready] routes={len(routes)} "
-        f"interval=5s NO_HISTORY=True"
+        f"[private live poller ready] "
+        f"routes={len(routes)} "
+        f"interval=5s NO_HISTORY=True "
+        f"SINGLE_WRITER=True ALBUM_ORDERING=True"
     )
 
     while True:
+
         for route in routes:
+
             key = route_poll_key(route)
 
             try:
-                messages = await get_route_poll_messages(route, 100)
+
+                messages = await get_route_poll_messages(
+                    route,
+                    150,
+                )
 
                 last_id = int(
-                    PRIVATE_LIVE_POLL_LAST_IDS.get(key, 0) or 0
+                    PRIVATE_LIVE_POLL_LAST_IDS.get(
+                        key,
+                        0,
+                    )
+                    or 0
                 )
 
                 newer = []
 
                 for msg in messages:
+
                     try:
-                        mid = int(getattr(msg, "id", 0) or 0)
+                        mid = int(
+                            getattr(
+                                msg,
+                                "id",
+                                0,
+                            )
+                            or 0
+                        )
                     except Exception:
                         mid = 0
 
@@ -1910,92 +2169,391 @@ async def private_live_route_poll_loop():
 
                 newer.sort(
                     key=lambda msg: int(
-                        getattr(msg, "id", 0) or 0
+                        getattr(
+                            msg,
+                            "id",
+                            0,
+                        )
+                        or 0
                     )
                 )
 
+                # ------------------------------------------------
+                # Build ordered units.
+                #
+                # Normal message = one unit
+                # grouped_id album = entire group is one unit
+                # ------------------------------------------------
+
+                units = []
+                used_ids = set()
+
                 for msg in newer:
-                    mid = int(getattr(msg, "id", 0) or 0)
 
-                    # If the normal Telegram NewMessage handler already
-                    # forwarded it, do not make a second copy.
-                    if existing_destination_ids(msg, route):
+                    mid = int(
+                        getattr(
+                            msg,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+
+                    if mid in used_ids:
+                        continue
+
+                    gid = getattr(
+                        msg,
+                        "grouped_id",
+                        None,
+                    )
+
+                    if gid:
+
+                        unit = [
+                            candidate
+                            for candidate in newer
+                            if getattr(
+                                candidate,
+                                "grouped_id",
+                                None,
+                            ) == gid
+                        ]
+
+                        unit.sort(
+                            key=lambda item: int(
+                                getattr(
+                                    item,
+                                    "id",
+                                    0,
+                                )
+                                or 0
+                            )
+                        )
+
+                    else:
+
+                        unit = [msg]
+
+                    for item in unit:
+                        used_ids.add(
+                            int(
+                                getattr(
+                                    item,
+                                    "id",
+                                    0,
+                                )
+                                or 0
+                            )
+                        )
+
+                    units.append(unit)
+
+
+                for unit in units:
+
+                    if not unit:
+                        continue
+
+                    ids = [
+                        int(
+                            getattr(
+                                item,
+                                "id",
+                                0,
+                            )
+                            or 0
+                        )
+                        for item in unit
+                    ]
+
+                    max_mid = max(ids)
+
+                    first = unit[0]
+
+                    gid = getattr(
+                        first,
+                        "grouped_id",
+                        None,
+                    )
+
+                    # Telegram sometimes emits album pieces a fraction
+                    # of a second apart. Hold a new album until it is at
+                    # least 2 seconds old, then fetch it again next cycle.
+                    if gid:
+
+                        dates = [
+                            getattr(
+                                item,
+                                "date",
+                                None,
+                            )
+                            for item in unit
+                        ]
+
+                        timestamps = []
+
+                        for value in dates:
+                            try:
+                                timestamps.append(
+                                    float(
+                                        value.timestamp()
+                                    )
+                                )
+                            except Exception:
+                                pass
+
+                        if timestamps:
+
+                            newest_age = (
+                                time.time()
+                                - max(timestamps)
+                            )
+
+                            if newest_age < 2.0:
+
+                                log.info(
+                                    "[PRIVATE LIVE ALBUM HOLD] "
+                                    f"route={route['name']} "
+                                    f"grouped_id={gid} "
+                                    f"ids={ids} "
+                                    f"age={newest_age:.2f}s"
+                                )
+
+                                # Preserve ordering: do not jump past
+                                # this unfinished grouped message.
+                                break
+
+
+                    # --------------------------------------------
+                    # Already fully mapped?
+                    # --------------------------------------------
+
+                    mapped_flags = [
+                        bool(
+                            existing_destination_ids(
+                                item,
+                                route,
+                            )
+                        )
+                        for item in unit
+                    ]
+
+                    if all(mapped_flags):
+
                         PRIVATE_LIVE_POLL_LAST_IDS[key] = max(
-                            int(PRIVATE_LIVE_POLL_LAST_IDS.get(key, 0) or 0),
-                            mid,
+                            int(
+                                PRIVATE_LIVE_POLL_LAST_IDS.get(
+                                    key,
+                                    0,
+                                )
+                                or 0
+                            ),
+                            max_mid,
                         )
 
                         log.info(
-                            f"[private live already copied] "
-                            f"route={route['name']} msg={mid}"
+                            "[private live already copied] "
+                            f"route={route['name']} "
+                            f"ids={ids}"
                         )
+
                         continue
 
-                    text = text_of(msg)
 
-                    if text and is_recent_duplicate(route, msg, text):
+                    # --------------------------------------------
+                    # If an old worker partially split an album,
+                    # fail closed rather than duplicate pieces.
+                    # --------------------------------------------
+
+                    if gid and any(mapped_flags):
+
+                        log.error(
+                            "[PRIVATE LIVE PARTIAL ALBUM MAP STOP] "
+                            f"route={route['name']} "
+                            f"grouped_id={gid} "
+                            f"ids={ids} "
+                            f"mapped={mapped_flags}"
+                        )
+
+                        break
+
+
+                    # --------------------------------------------
+                    # LOOP GUARD:
+                    # A forwards B / B forwards A
+                    # --------------------------------------------
+
+                    if any(
+                        should_block_private_peer_loop(
+                            item,
+                            route,
+                        )
+                        for item in unit
+                    ):
+
                         PRIVATE_LIVE_POLL_LAST_IDS[key] = max(
-                            int(PRIVATE_LIVE_POLL_LAST_IDS.get(key, 0) or 0),
-                            mid,
+                            int(
+                                PRIVATE_LIVE_POLL_LAST_IDS.get(
+                                    key,
+                                    0,
+                                )
+                                or 0
+                            ),
+                            max_mid,
+                        )
+
+                        log.warning(
+                            "[PRIVATE LIVE LOOP UNIT SKIPPED] "
+                            f"route={route['name']} "
+                            f"ids={ids}"
+                        )
+
+                        continue
+
+
+                    text = ""
+
+                    for item in unit:
+
+                        candidate_text = text_of(
+                            item
+                        )
+
+                        if candidate_text:
+                            text = candidate_text
+                            break
+
+
+                    # --------------------------------------------
+                    # Cross-source duplicate safety.
+                    # For 5655 this compares A and B against each
+                    # other, not only each source individually.
+                    # --------------------------------------------
+
+                    if (
+                        text
+                        and is_recent_duplicate(
+                            route,
+                            first,
+                            text,
+                        )
+                    ):
+
+                        PRIVATE_LIVE_POLL_LAST_IDS[key] = max(
+                            int(
+                                PRIVATE_LIVE_POLL_LAST_IDS.get(
+                                    key,
+                                    0,
+                                )
+                                or 0
+                            ),
+                            max_mid,
                         )
 
                         log.info(
-                            f"[private live duplicate skipped] "
-                            f"route={route['name']} msg={mid}"
+                            "[PRIVATE LIVE CROSS DUPLICATE SKIPPED] "
+                            f"route={route['name']} "
+                            f"ids={ids}"
                         )
+
                         continue
+
 
                     try:
-                        # ensure_reply=False is deliberate for these
-                        # no-history routes. It prevents an old replied-to
-                        # parent from being imported into the destination.
-                        await copy_one(
-                            msg,
-                            route,
-                            edited=False,
-                            ensure_reply=False,
-                        )
+
+                        # ----------------------------------------
+                        # Album stays album.
+                        # ----------------------------------------
+
+                        if gid and len(unit) > 1:
+
+                            sent = await copy_album_with_retry(
+                                unit,
+                                route,
+                            )
+
+                            copy_kind = (
+                                f"ALBUM items={len(unit)}"
+                            )
+
+                        else:
+
+                            sent = await copy_one_with_retry(
+                                first,
+                                route,
+                                edited=False,
+                            )
+
+                            copy_kind = "SINGLE"
+
+
+                        if not sent:
+
+                            raise RuntimeError(
+                                "private live copy returned no "
+                                "destination message"
+                            )
+
 
                         if text:
-                            remember_dedupe(route, msg, text)
+
+                            remember_dedupe(
+                                route,
+                                first,
+                                text,
+                            )
+
 
                         PRIVATE_LIVE_POLL_LAST_IDS[key] = max(
-                            int(PRIVATE_LIVE_POLL_LAST_IDS.get(key, 0) or 0),
-                            mid,
+                            int(
+                                PRIVATE_LIVE_POLL_LAST_IDS.get(
+                                    key,
+                                    0,
+                                )
+                                or 0
+                            ),
+                            max_mid,
                         )
 
+
                         log.info(
-                            f"[PRIVATE LIVE COPIED] "
+                            "[PRIVATE LIVE ORDERED COPIED] "
                             f"route={route['name']} "
                             f"source={route['source_chat']}_"
                             f"{route.get('source_topic')} "
-                            f"msg={mid} "
+                            f"ids={ids} "
+                            f"kind={copy_kind} "
                             f"dest={route['dest_chat']}_"
                             f"{route['dest_topic']}"
                         )
 
+
                     except Exception as exc:
-                        # DO NOT advance last_id on a failed copy.
-                        # The worker will retry this new message next cycle.
+
+                        # CRITICAL ORDER RULE:
+                        # Never advance last_id after a failed unit.
+                        # Never continue to a newer message.
                         log.exception(
-                            f"[PRIVATE LIVE COPY FAILED] "
-                            f"route={route['name']} msg={mid}: "
+                            "[PRIVATE LIVE ORDERED COPY FAILED] "
+                            f"route={route['name']} "
+                            f"ids={ids}: "
                             f"{type(exc).__name__}: {exc}"
                         )
 
-                        # Stop processing newer messages on this route
-                        # until the failed one succeeds, preserving order.
                         break
 
+
             except Exception as exc:
+
                 log.exception(
-                    f"[private live poll route failed] "
+                    "[private live poll route failed] "
                     f"route={route.get('name')}: "
                     f"{type(exc).__name__}: {exc}"
                 )
 
-        await asyncio.sleep(5)
 
+        await asyncio.sleep(5)
 
 
 async def new_mirror_poll_loop():
@@ -2085,6 +2643,19 @@ async def handle_single_message(event, edited=False):
 
     for route in routes:
         try:
+            # LIVE_ONLY SINGLE WRITER:
+            # New messages are handled exclusively by the ordered
+            # private poller. Edited messages can still update an
+            # already-mapped destination copy.
+            if route.get("live_only") and not edited:
+                log.info(
+                    f"[live-only normal-handler skipped] "
+                    f"route={route['name']} "
+                    f"source={chat_id}_{topic_id} "
+                    f"msg={getattr(message, 'id', None)}"
+                )
+                continue
+
             if edited and route.get("live_only") and not existing_destination_ids(message, route):
                 log.info(
                     f"[live-only old edit skipped] route={route['name']} "
@@ -2204,6 +2775,14 @@ async def on_album(event):
 
         for route in routes:
             try:
+                if route.get("live_only"):
+                    log.info(
+                        f"[live-only album-handler skipped] "
+                        f"route={route['name']} "
+                        f"first_msg={getattr(first, 'id', None)}"
+                    )
+                    continue
+
                 if text and is_recent_duplicate(route, first, text):
                     log.info(f"[album duplicate skipped] {route['name']} source={chat_id}_{topic_id} items={len(event.messages)}")
                     continue

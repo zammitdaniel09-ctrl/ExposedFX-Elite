@@ -613,6 +613,81 @@ def should_block_private_peer_loop(
 # END PRIVATE_LOOP_GUARD_V1
 
 
+
+# BEGIN HARD_BLOCK_2521699926_FROM_VIP_V1
+
+VIP_HARD_BLOCK_CHAT = -1003852763875
+VIP_HARD_BLOCKED_SOURCE = -1002521699926
+
+
+def should_hard_block_2521699926_from_vip(message, route):
+    """
+    Absolute VIP protection.
+
+    Blocks:
+    1. any direct route whose source is -1002521699926
+    2. any Telegram-forwarded post whose ForwardHeader says
+       the original channel was -1002521699926
+
+    This applies to EVERY topic inside -1003852763875.
+    """
+
+    if not isinstance(route, dict):
+        return False
+
+    try:
+        dest_chat = int(
+            route.get("dest_chat", 0)
+        )
+    except Exception:
+        return False
+
+    if dest_chat != VIP_HARD_BLOCK_CHAT:
+        return False
+
+    try:
+        direct_source = int(
+            route.get("source_chat", 0)
+        )
+    except Exception:
+        direct_source = 0
+
+    try:
+        forward_origins = (
+            forward_origin_chat_ids(message)
+        )
+    except Exception:
+        forward_origins = set()
+
+    direct_match = (
+        direct_source
+        == VIP_HARD_BLOCKED_SOURCE
+    )
+
+    forwarded_match = (
+        VIP_HARD_BLOCKED_SOURCE
+        in forward_origins
+    )
+
+    if not direct_match and not forwarded_match:
+        return False
+
+    log.warning(
+        "[VIP SOURCE HARD BLOCK] "
+        f"blocked_source={VIP_HARD_BLOCKED_SOURCE} "
+        f"direct_source={direct_source} "
+        f"forward_origins={sorted(forward_origins)} "
+        f"source_msg={getattr(message, 'id', None)} "
+        f"route={route.get('name')} "
+        f"dest={route.get('dest_chat')}_"
+        f"{route.get('dest_topic')}"
+    )
+
+    return True
+
+# END HARD_BLOCK_2521699926_FROM_VIP_V1
+
+
 def is_blocked_sender(message):
     ids = sender_ids_for_message(message)
     return bool(ids & BLOCKED_SENDER_IDS)
@@ -1399,6 +1474,9 @@ async def copy_one(message, route, edited=False, ensure_reply=True):
     if should_hard_block_sender(message, "copy_one", route):
         return None
 
+    if should_hard_block_2521699926_from_vip(message, route):
+        return None
+
     if should_block_private_peer_loop(message, route):
         return None
 
@@ -1447,6 +1525,9 @@ async def copy_one(message, route, edited=False, ensure_reply=True):
 async def copy_album(messages, route):
     for item in messages:
         if should_hard_block_sender(item, "album", route):
+            return None
+
+        if should_hard_block_2521699926_from_vip(item, route):
             return None
 
         if should_block_private_peer_loop(item, route):

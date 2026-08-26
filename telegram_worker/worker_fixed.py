@@ -3374,6 +3374,340 @@ async def route_title_checker_loop():
 
 
 
+
+# BEGIN SAFE_PROBE_LAST1_3229476368_TO_5947_V1
+
+async def safe_probe_last1_3229476368_to_5947_v1():
+
+    enabled = (
+        os.environ.get(
+            "ALLOW_SAFE_PROBE_3229476368_TO_5947",
+            "0",
+        ).strip()
+        == "1"
+    )
+
+    if not enabled:
+
+        log.warning(
+            "[5947 PROBE DISABLED] kill_switch=OFF"
+        )
+
+        return False
+
+
+    try:
+
+        route = next(
+            (
+                r
+                for r in ROUTES
+                if int(r.get("source_chat", 0))
+                    == -1003229476368
+                and r.get("source_topic") is None
+                and int(r.get("dest_chat", 0))
+                    == -1003852763875
+                and int(r.get("dest_topic", 0))
+                    == 5947
+            ),
+            None,
+        )
+
+
+        if route is None:
+
+            raise RuntimeError(
+                "5947 route not found"
+            )
+
+
+        key = route_poll_key(route)
+
+
+        # Wait for permanent live route to establish its
+        # safe current baseline first.
+        baseline = None
+
+        for _ in range(120):
+
+            if key in PRIVATE_LIVE_READY_KEYS:
+
+                value = int(
+                    PRIVATE_LIVE_POLL_LAST_IDS.get(
+                        key,
+                        0,
+                    )
+                    or 0
+                )
+
+                if value > 0:
+
+                    baseline = value
+                    break
+
+            await asyncio.sleep(1)
+
+
+        if baseline is None:
+
+            raise RuntimeError(
+                "5947 live baseline never became ready"
+            )
+
+
+        log.warning(
+            "[5947 PROBE BASELINE READY] "
+            f"baseline_id={baseline}"
+        )
+
+
+        done_file = (
+            DATA_DIR
+            / "safe_probe_last1_3229476368_to_5947_v1.done"
+        )
+
+
+        if done_file.exists():
+
+            log.warning(
+                "[5947 PROBE ALREADY DONE]"
+            )
+
+            return True
+
+
+        # Fetch several recent source posts so we can choose
+        # one historical post that is not already mapped.
+        messages = await client.get_messages(
+            -1003229476368,
+            limit=50,
+        )
+
+        messages = list(
+            messages or []
+        )
+
+
+        messages.sort(
+            key=lambda m: int(
+                getattr(
+                    m,
+                    "id",
+                    0,
+                )
+                or 0
+            ),
+            reverse=True,
+        )
+
+
+        candidate = None
+
+
+        for message in messages:
+
+            mid = int(
+                getattr(
+                    message,
+                    "id",
+                    0,
+                )
+                or 0
+            )
+
+
+            # This probe is specifically a PAST-message test.
+            # Never steal a genuinely new live message.
+            if mid > baseline:
+                continue
+
+
+            if not (
+                text_of(message)
+                or is_real_media(message)
+            ):
+                continue
+
+
+            if existing_destination_ids(
+                message,
+                route,
+            ):
+                continue
+
+
+            if should_hard_block_sender(
+                message,
+                "5947_probe_candidate",
+                route,
+            ):
+
+                log.warning(
+                    "[5947 PROBE CANDIDATE BLOCKED SENDER] "
+                    f"msg={mid}"
+                )
+
+                continue
+
+
+            if should_hard_block_2521699926_from_vip(
+                message,
+                route,
+            ):
+
+                log.warning(
+                    "[5947 PROBE CANDIDATE BLOCKED ORIGIN] "
+                    f"msg={mid}"
+                )
+
+                continue
+
+
+            if should_block_private_peer_loop(
+                message,
+                route,
+            ):
+
+                log.warning(
+                    "[5947 PROBE CANDIDATE LOOP BLOCKED] "
+                    f"msg={mid}"
+                )
+
+                continue
+
+
+            candidate = message
+            break
+
+
+        if candidate is None:
+
+            raise RuntimeError(
+                "No safe unmapped past message found "
+                "within latest 50 source posts"
+            )
+
+
+        mid = int(candidate.id)
+
+
+        log.warning(
+            "[5947 PROBE SENDING ONE PAST MESSAGE] "
+            f"source_msg={mid} "
+            f"baseline={baseline} "
+            "dest=-1003852763875_5947"
+        )
+
+
+        # If the chosen message belongs to an album, retrieve
+        # the complete album and send it as ONE Telegram post.
+        gid = getattr(
+            candidate,
+            "grouped_id",
+            None,
+        )
+
+
+        if gid:
+
+            around = await client.get_messages(
+                -1003229476368,
+                limit=50,
+                max_id=mid + 25,
+                min_id=max(0, mid - 25),
+            )
+
+            album = [
+                m
+                for m in list(around or [])
+                if getattr(
+                    m,
+                    "grouped_id",
+                    None,
+                ) == gid
+            ]
+
+            album.sort(
+                key=lambda m: int(
+                    getattr(
+                        m,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+            )
+
+
+            if len(album) > 1:
+
+                sent = await copy_album_with_retry(
+                    album,
+                    route,
+                )
+
+            else:
+
+                sent = await copy_one(
+                    candidate,
+                    route,
+                    edited=False,
+                    ensure_reply=False,
+                )
+
+        else:
+
+            sent = await copy_one(
+                candidate,
+                route,
+                edited=False,
+                ensure_reply=False,
+            )
+
+
+        if not sent:
+
+            raise RuntimeError(
+                "5947 test copy returned None"
+            )
+
+
+        done_file.write_text(
+            json.dumps({
+                "done": True,
+                "source_chat": -1003229476368,
+                "source_msg": mid,
+                "dest_chat": -1003852763875,
+                "dest_topic": 5947,
+                "baseline": baseline,
+            }),
+            encoding="utf-8",
+        )
+
+
+        log.warning(
+            "[5947 PROBE SUCCESS] "
+            f"source_msg={mid} "
+            "dest=-1003852763875_5947 "
+            "ONE_PAST_POST_ONLY=True"
+        )
+
+
+        return True
+
+
+    except Exception as exc:
+
+        log.exception(
+            "[5947 PROBE FAILED SAFE] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return False
+
+# END SAFE_PROBE_LAST1_3229476368_TO_5947_V1
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -3433,6 +3767,7 @@ async def main():
     await cleanup_existing_blocked_sender_copies_once()
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())
+    probe_5947_task = asyncio.create_task(safe_probe_last1_3229476368_to_5947_v1())
     log.info("Imperium fixed Telegram worker running...")
     asyncio.create_task(stats.loop(client))
     log.info("Weekly stats reporter running for Sunday 00:00 Europe/Malta")

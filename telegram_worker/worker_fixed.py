@@ -85,6 +85,10 @@ new_mirror_poll_last_ids = {}
 # Dedicated state for live-only private routes.
 PRIVATE_LIVE_POLL_LAST_IDS = {}
 
+# A live route is NEVER allowed to process messages until it has
+# successfully snapshotted the current Telegram newest message ID.
+PRIVATE_LIVE_READY_KEYS = set()
+
 
 
 MIRROR_STRUCTURE_REPAIR = os.environ.get("MIRROR_STRUCTURE_REPAIR", "1").strip() == "1"
@@ -431,97 +435,7 @@ def entities_of(message):
 
 
 
-# BEGIN NO_HISTORY_HARD_GUARD_V1
 
-NO_HISTORY_PROCESS_START_EPOCH = time.time()
-NO_HISTORY_GRACE_SECONDS = 5
-
-
-def should_block_prestartup_history(
-    message,
-    route=None,
-    context="",
-):
-    """
-    Fail closed against historical replay.
-
-    A NEW forwarding worker may copy only Telegram messages
-    created at/after this worker process began.
-
-    This protects against:
-    - accidental LAST10/LAST20/LAST100 helpers
-    - startup backfills
-    - stale persistent state
-    - lost .done marker files
-    - fresh Railway volumes
-    """
-
-    message_date = getattr(
-        message,
-        "date",
-        None,
-    )
-
-    if message_date is None:
-
-        log.warning(
-            "[NO HISTORY HARD BLOCK] "
-            f"reason=missing_message_date "
-            f"msg={getattr(message, 'id', None)} "
-            f"context={context} "
-            f"route={route.get('name') if isinstance(route, dict) else None}"
-        )
-
-        return True
-
-
-    try:
-
-        message_epoch = float(
-            message_date.timestamp()
-        )
-
-    except Exception:
-
-        log.warning(
-            "[NO HISTORY HARD BLOCK] "
-            f"reason=invalid_message_date "
-            f"msg={getattr(message, 'id', None)} "
-            f"context={context} "
-            f"route={route.get('name') if isinstance(route, dict) else None}"
-        )
-
-        return True
-
-
-    cutoff = (
-        NO_HISTORY_PROCESS_START_EPOCH
-        - NO_HISTORY_GRACE_SECONDS
-    )
-
-
-    if message_epoch >= cutoff:
-
-        return False
-
-
-    log.warning(
-        "[NO HISTORY HARD BLOCK] "
-        f"reason=prestartup_message "
-        f"msg={getattr(message, 'id', None)} "
-        f"message_epoch={message_epoch} "
-        f"worker_epoch={NO_HISTORY_PROCESS_START_EPOCH} "
-        f"context={context} "
-        f"route={route.get('name') if isinstance(route, dict) else None} "
-        f"source={route.get('source_chat') if isinstance(route, dict) else None}_"
-        f"{route.get('source_topic') if isinstance(route, dict) else None} "
-        f"dest={route.get('dest_chat') if isinstance(route, dict) else None}_"
-        f"{route.get('dest_topic') if isinstance(route, dict) else None}"
-    )
-
-    return True
-
-# END NO_HISTORY_HARD_GUARD_V1
 
 
 def sender_ids_for_message(message):
@@ -1563,13 +1477,6 @@ async def repair_bad_mirror_structure(message, route, target_reply, text, entiti
 
 
 async def copy_one(message, route, edited=False, ensure_reply=True):
-    if not edited and should_block_prestartup_history(
-        message,
-        route,
-        "copy_one",
-    ):
-        return None
-
     if should_hard_block_sender(message, "copy_one", route):
         return None
 
@@ -1622,14 +1529,6 @@ async def copy_one(message, route, edited=False, ensure_reply=True):
 
 
 async def copy_album(messages, route):
-    for history_item in messages:
-        if should_block_prestartup_history(
-            history_item,
-            route,
-            "copy_album",
-        ):
-            return None
-
     for item in messages:
         if should_hard_block_sender(item, "album", route):
             return None
@@ -2268,44 +2167,108 @@ def private_live_routes():
     ]
 
 
-async def initialise_private_live_poll_state():
-    routes = private_live_routes()
+async def snapshot_private_live_route(
+    route,
+    reason="startup",
+):
+    """
+    Establish a NO-HISTORY baseline for exactly one live route.
 
-    log.info(
-        f"[private live init start] routes={len(routes)} "
-        f"backfill=False"
+    Important:
+    We snapshot the CURRENT newest Telegram message ID and copy
+    absolutely nothing during this operation.
+
+    If snapshotting fails, this route remains NOT READY and the
+    poller will not process anything from it.
+    """
+
+    key = route_poll_key(route)
+
+    messages = await get_route_poll_messages(
+        route,
+        20,
     )
 
-    for route in routes:
-        key = route_poll_key(route)
+    latest_id = 0
+
+    for msg in messages or []:
 
         try:
-            # Fetch enough to determine the CURRENT newest message only.
-            # Nothing is copied during initialization.
-            messages = await get_route_poll_messages(route, 20)
+            mid = int(
+                getattr(
+                    msg,
+                    "id",
+                    0,
+                )
+                or 0
+            )
+        except Exception:
+            mid = 0
 
-            latest_id = 0
+        latest_id = max(
+            latest_id,
+            mid,
+        )
 
-            for msg in messages:
-                try:
-                    mid = int(getattr(msg, "id", 0) or 0)
-                except Exception:
-                    mid = 0
 
-                latest_id = max(latest_id, mid)
+    PRIVATE_LIVE_POLL_LAST_IDS[key] = latest_id
+    PRIVATE_LIVE_READY_KEYS.add(key)
 
-            PRIVATE_LIVE_POLL_LAST_IDS[key] = latest_id
 
-            log.info(
-                f"[private live init] route={route['name']} "
-                f"source={route['source_chat']}_{route.get('source_topic')} "
-                f"dest={route['dest_chat']}_{route['dest_topic']} "
-                f"last_id={latest_id} NO_HISTORY=True"
+    log.warning(
+        "[PRIVATE LIVE SAFE SNAPSHOT] "
+        f"reason={reason} "
+        f"route={route['name']} "
+        f"source={route['source_chat']}_"
+        f"{route.get('source_topic')} "
+        f"dest={route['dest_chat']}_"
+        f"{route['dest_topic']} "
+        f"baseline_id={latest_id} "
+        "COPIED_HISTORY=0"
+    )
+
+
+    return latest_id
+
+
+async def initialise_private_live_poll_state():
+
+    routes = private_live_routes()
+
+
+    log.info(
+        f"[private live init start] "
+        f"routes={len(routes)} "
+        "backfill=False SAFE_SNAPSHOT=True"
+    )
+
+
+    for route in routes:
+
+        key = route_poll_key(route)
+
+        # Fail closed before attempting initialization.
+        PRIVATE_LIVE_READY_KEYS.discard(key)
+
+        try:
+
+            await snapshot_private_live_route(
+                route,
+                reason="startup",
             )
 
+
         except Exception as exc:
+
+            PRIVATE_LIVE_READY_KEYS.discard(key)
+
             log.exception(
-                f"[private live init failed] route={route.get('name')}: "
+                "[PRIVATE LIVE SNAPSHOT FAILED - ROUTE LOCKED] "
+                f"route={route.get('name')} "
+                f"source={route.get('source_chat')}_"
+                f"{route.get('source_topic')} "
+                f"dest={route.get('dest_chat')}_"
+                f"{route.get('dest_topic')} "
                 f"{type(exc).__name__}: {exc}"
             )
 
@@ -2340,6 +2303,36 @@ async def private_live_route_poll_loop():
         for route in routes:
 
             key = route_poll_key(route)
+
+
+            # ----------------------------------------------------
+            # FAIL CLOSED:
+            # If startup snapshot failed, do NOT use last_id=0.
+            #
+            # Retry the snapshot. Even when it succeeds this cycle,
+            # CONTINUE without copying anything. New messages after
+            # that baseline will be eligible next cycle.
+            # ----------------------------------------------------
+
+            if key not in PRIVATE_LIVE_READY_KEYS:
+
+                try:
+
+                    await snapshot_private_live_route(
+                        route,
+                        reason="retry_after_failed_init",
+                    )
+
+                except Exception as exc:
+
+                    log.warning(
+                        "[PRIVATE LIVE STILL LOCKED] "
+                        f"route={route.get('name')} "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+                continue
+
 
             try:
 
@@ -2777,11 +2770,79 @@ async def new_mirror_poll_loop():
         await asyncio.sleep(NEW_MIRROR_POLL_SECONDS)
 
         for route in new_mirror_routes():
+
             chat_id = int(route["source_chat"])
-            last_id = int(new_mirror_poll_last_ids.get(route_poll_key(route), 0) or 0)
+            key = route_poll_key(route)
+
+
+            # If startup initialization failed, establish a baseline
+            # first and DO NOT forward anything from that snapshot.
+            if key not in new_mirror_poll_last_ids:
+
+                try:
+
+                    snapshot = await get_route_poll_messages(
+                        route,
+                        NEW_MIRROR_POLL_LIMIT,
+                    )
+
+                    snapshot = list(
+                        snapshot or []
+                    )
+
+                    baseline = max(
+                        [
+                            int(
+                                getattr(
+                                    m,
+                                    "id",
+                                    0,
+                                )
+                                or 0
+                            )
+                            for m in snapshot
+                        ]
+                        or [0]
+                    )
+
+                    new_mirror_poll_last_ids[key] = baseline
+
+                    log.warning(
+                        "[NEW MIRROR SAFE SNAPSHOT] "
+                        f"route={route['name']} "
+                        f"source={chat_id}_"
+                        f"{route.get('source_topic')} "
+                        f"dest={route['dest_chat']}_"
+                        f"{route['dest_topic']} "
+                        f"baseline_id={baseline} "
+                        "COPIED_HISTORY=0"
+                    )
+
+                except Exception as exc:
+
+                    log.warning(
+                        "[NEW MIRROR SNAPSHOT FAILED - ROUTE LOCKED] "
+                        f"route={route.get('name')} "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+                continue
+
+
+            last_id = int(
+                new_mirror_poll_last_ids.get(
+                    key,
+                    0,
+                )
+                or 0
+            )
+
 
             try:
-                msgs = await get_route_poll_messages(route, NEW_MIRROR_POLL_LIMIT)
+                msgs = await get_route_poll_messages(
+                    route,
+                    NEW_MIRROR_POLL_LIMIT,
+                )
 
                 if not msgs:
                     continue
@@ -3326,7 +3387,7 @@ async def main():
     log.info(f"DRY_RUN={DRY_RUN}")
     log.info(f"Watching {len(SOURCE_CHATS)} source chats: {SOURCE_CHATS}")
     log.info(f"Loaded {len(ROUTES)} routes")
-    log.warning("[NO HISTORY MODE ACTIVE] startup_backfill=False forced_history=False edited_old_messages=False prestartup_copy_guard=True")
+    log.warning("[LIVE-ONLY SAFE MODE ACTIVE] startup_backfill=False forced_history=False edited_old_messages=False timestamp_blocker=False route_snapshot_guard=True")
     log.info(f"FORWARD_EDITED_MESSAGES={FORWARD_EDITED_MESSAGES}")
     log.info(f"DEDUP_WINDOW_SECONDS={DEDUP_WINDOW_SECONDS}")
     log.info(f"CROSS_SOURCE_DEDUP_DEST_TOPICS={sorted(CROSS_SOURCE_DEDUP_DEST_TOPICS)}")

@@ -4665,6 +4665,520 @@ async def force_hub_68237_68239_backfill_v1():
 # END HUB_68237_68239_BACKFILL_V1
 
 
+
+# BEGIN FORCE_LAST100_3893360328_TO_70968_V1
+
+async def force_last100_3893360328_to_70968_v1():
+    """
+    Send the newest 100 Telegram posts from -1003893360328
+    to -1003918958200 topic 70968 ONCE.
+
+    Albums remain grouped as one post.
+    """
+
+    route = next(
+        (
+            r
+            for r in ROUTES
+            if int(r.get("source_chat", 0)) == -1003893360328
+            and r.get("source_topic") is None
+            and int(r.get("dest_chat", 0)) == -1003918958200
+            and int(r.get("dest_topic", 0)) == 70968
+        ),
+        None,
+    )
+
+    if route is None:
+        raise RuntimeError(
+            "3893360328 -> 70968 route not found"
+        )
+
+
+    done_file = (
+        DATA_DIR
+        / "last100_3893360328_to_70968_20260826_v1.done"
+    )
+
+    progress_file = (
+        DATA_DIR
+        / "last100_3893360328_to_70968_20260826_v1.progress.json"
+    )
+
+
+    if done_file.exists():
+
+        log.warning(
+            "[FORCE 3893360328 LAST100 ALREADY DONE] "
+            "dest=-1003918958200_70968"
+        )
+
+        return
+
+
+    log.warning(
+        "[FORCE 3893360328 LAST100 BEGIN] "
+        "source=-1003893360328 "
+        "dest=-1003918958200_70968 "
+        "requested=100"
+    )
+
+
+    # Fetch extra so albums/service messages do not reduce
+    # the requested 100 real posts.
+    candidates = await get_route_poll_messages(
+        route,
+        500,
+    )
+
+    candidates = list(
+        candidates or []
+    )
+
+
+    usable = []
+
+    for msg in candidates:
+
+        if not (
+            text_of(msg)
+            or is_real_media(msg)
+        ):
+            continue
+
+        if should_hard_block_sender(
+            msg,
+            "last100_70968",
+            route,
+        ):
+            continue
+
+        if should_block_private_peer_loop(
+            msg,
+            route,
+        ):
+            continue
+
+        usable.append(msg)
+
+
+    # Newest first.
+    usable.sort(
+        key=lambda msg: int(
+            getattr(
+                msg,
+                "id",
+                0,
+            )
+            or 0
+        ),
+        reverse=True,
+    )
+
+
+    # ========================================================
+    # BUILD POSTS
+    #
+    # Album = ONE post with every media item together.
+    # ========================================================
+
+    units = []
+    used_ids = set()
+    used_groups = set()
+
+
+    for message in usable:
+
+        mid = int(
+            getattr(
+                message,
+                "id",
+                0,
+            )
+            or 0
+        )
+
+        if mid in used_ids:
+            continue
+
+
+        gid = getattr(
+            message,
+            "grouped_id",
+            None,
+        )
+
+
+        if gid:
+
+            if gid in used_groups:
+                continue
+
+            unit = [
+                item
+                for item in usable
+                if getattr(
+                    item,
+                    "grouped_id",
+                    None,
+                ) == gid
+            ]
+
+            unit.sort(
+                key=lambda item: int(
+                    getattr(
+                        item,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+            )
+
+            used_groups.add(gid)
+
+        else:
+
+            unit = [message]
+
+
+        for item in unit:
+
+            used_ids.add(
+                int(
+                    getattr(
+                        item,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+            )
+
+
+        units.append(unit)
+
+        if len(units) >= 100:
+            break
+
+
+    if not units:
+
+        raise RuntimeError(
+            "ZERO copyable posts found in -1003893360328"
+        )
+
+
+    selected = units[:100]
+
+    actual = len(selected)
+
+
+    if actual < 100:
+
+        log.warning(
+            "[FORCE 3893360328 LAST100 SHORT SOURCE] "
+            f"requested=100 available={actual} "
+            "action=SEND_ALL_AVAILABLE"
+        )
+
+
+    # Oldest -> newest.
+    selected.sort(
+        key=lambda unit: min(
+            int(
+                getattr(
+                    item,
+                    "id",
+                    0,
+                )
+                or 0
+            )
+            for item in unit
+        )
+    )
+
+
+    def unit_key(unit):
+
+        first = unit[0]
+
+        gid = getattr(
+            first,
+            "grouped_id",
+            None,
+        )
+
+        if gid:
+            return f"group:{gid}"
+
+        return (
+            "msg:"
+            + str(
+                int(
+                    getattr(
+                        first,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+            )
+        )
+
+
+    selected_keys = [
+        unit_key(unit)
+        for unit in selected
+    ]
+
+
+    completed = set()
+
+
+    if progress_file.exists():
+
+        try:
+
+            state = json.loads(
+                progress_file.read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            completed = {
+                str(value)
+                for value in state.get(
+                    "completed",
+                    [],
+                )
+            }
+
+        except Exception:
+
+            completed = set()
+
+
+    log.warning(
+        "[FORCE 3893360328 LAST100 SELECTED] "
+        f"requested=100 actual={actual} "
+        f"units={selected_keys}"
+    )
+
+
+    for index, unit in enumerate(
+        selected,
+        start=1,
+    ):
+
+        key = unit_key(unit)
+
+        source_ids = [
+            int(
+                getattr(
+                    item,
+                    "id",
+                    0,
+                )
+                or 0
+            )
+            for item in unit
+        ]
+
+
+        if key in completed:
+
+            log.warning(
+                "[FORCE 3893360328 LAST100 PROGRESS SKIP] "
+                f"unit={key}"
+            )
+
+            continue
+
+
+        mapped_flags = [
+            bool(
+                existing_destination_ids(
+                    item,
+                    route,
+                )
+            )
+            for item in unit
+        ]
+
+
+        if all(mapped_flags):
+
+            completed.add(key)
+
+            progress_file.write_text(
+                json.dumps({
+                    "selected": selected_keys,
+                    "completed": sorted(completed),
+                }),
+                encoding="utf-8",
+            )
+
+            log.warning(
+                "[FORCE 3893360328 LAST100 ALREADY MAPPED] "
+                f"unit={key} "
+                f"source_ids={source_ids}"
+            )
+
+            continue
+
+
+        if len(unit) > 1 and any(mapped_flags):
+
+            raise RuntimeError(
+                f"Partial album mapping found "
+                f"unit={key} mapped={mapped_flags}"
+            )
+
+
+        success = False
+        last_error = None
+
+
+        for attempt in range(1, 4):
+
+            try:
+
+                first = unit[0]
+
+                gid = getattr(
+                    first,
+                    "grouped_id",
+                    None,
+                )
+
+
+                if gid and len(unit) > 1:
+
+                    sent = await copy_album_with_retry(
+                        unit,
+                        route,
+                    )
+
+                else:
+
+                    sent = await copy_one(
+                        first,
+                        route,
+                        edited=False,
+                        ensure_reply=False,
+                    )
+
+
+                if not sent:
+
+                    raise RuntimeError(
+                        "copy returned no destination message"
+                    )
+
+
+                completed.add(key)
+
+                progress_file.write_text(
+                    json.dumps({
+                        "selected": selected_keys,
+                        "completed": sorted(completed),
+                    }),
+                    encoding="utf-8",
+                )
+
+
+                success = True
+
+
+                log.warning(
+                    "[FORCE 3893360328 LAST100 COPIED] "
+                    f"post={index}/{actual} "
+                    f"unit={key} "
+                    f"source_ids={source_ids} "
+                    "dest=-1003918958200_70968"
+                )
+
+                break
+
+
+            except FloodWaitError as exc:
+
+                last_error = exc
+
+                wait_for = min(
+                    int(exc.seconds) + 1,
+                    120,
+                )
+
+                log.warning(
+                    "[FORCE 3893360328 LAST100 FLOODWAIT] "
+                    f"unit={key} "
+                    f"wait={wait_for}s"
+                )
+
+                await asyncio.sleep(
+                    wait_for
+                )
+
+
+            except Exception as exc:
+
+                last_error = exc
+
+                log.exception(
+                    "[FORCE 3893360328 LAST100 ITEM FAILED] "
+                    f"unit={key} "
+                    f"attempt={attempt}/3: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+                await asyncio.sleep(2)
+
+
+        if not success:
+
+            raise RuntimeError(
+                f"LAST100 failed unit={key}: "
+                f"{last_error}"
+            )
+
+
+        await asyncio.sleep(0.30)
+
+
+    if not all(
+        key in completed
+        for key in selected_keys
+    ):
+
+        raise RuntimeError(
+            "LAST100 progress incomplete"
+        )
+
+
+    done_file.write_text(
+        json.dumps({
+            "done": True,
+            "source_chat": -1003893360328,
+            "dest_chat": -1003918958200,
+            "dest_topic": 70968,
+            "requested": 100,
+            "copied": actual,
+            "selected": selected_keys,
+        }),
+        encoding="utf-8",
+    )
+
+
+    log.warning(
+        "[FORCE 3893360328 LAST100 DONE] "
+        f"requested=100 copied={actual} "
+        "dest=-1003918958200_70968"
+    )
+
+# END FORCE_LAST100_3893360328_TO_70968_V1
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -4720,6 +5234,7 @@ async def main():
     await force_last10_3229476368_to_5947_v1()
     await force_jamie_sub_ib_last20_v1()
     await force_hub_68237_68239_backfill_v1()
+    await force_last100_3893360328_to_70968_v1()
     await verify_route_titles_once()
     await probe_new_mirror_routes_once()
     asyncio.create_task(route_title_checker_loop())

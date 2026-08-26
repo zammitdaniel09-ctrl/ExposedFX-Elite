@@ -3652,15 +3652,36 @@ async def force_jamie_sub_ib_last20_v1():
                 break
 
 
-        if len(units) < 20:
+        # A topic may genuinely contain fewer than 20 posts.
+        #
+        # Requested behaviour:
+        # - 20+ available: newest 20
+        # - 1..19 available: every available post
+        # - 0 available: fail because the topic may be wrong/inaccessible.
+
+        if not units:
 
             raise RuntimeError(
-                f"Only {len(units)} copyable posts found "
-                f"in source topic {source_topic}; expected 20"
+                f"ZERO copyable posts found in source topic "
+                f"{source_topic}. Refusing to silently mark this route done."
             )
 
 
         selected = units[:20]
+
+        route_post_count = len(selected)
+
+
+        if route_post_count < 20:
+
+            log.warning(
+                "[JAMIE SUB IB LAST20 SHORT SOURCE] "
+                f"source=-1003852763875_{source_topic} "
+                f"dest=-1003802436353_{dest_topic} "
+                f"requested=20 "
+                f"available={route_post_count} "
+                "action=SEND_ALL_AVAILABLE"
+            )
 
 
         # Deliver oldest post -> newest post.
@@ -3880,7 +3901,7 @@ async def force_jamie_sub_ib_last20_v1():
                         "[JAMIE SUB IB LAST20 COPIED] "
                         f"source=-1003852763875_{source_topic} "
                         f"dest=-1003802436353_{dest_topic} "
-                        f"post={index}/20 "
+                        f"post={index}/{route_post_count} "
                         f"unit={key} "
                         f"source_ids={ids}"
                     )
@@ -3955,7 +3976,8 @@ async def force_jamie_sub_ib_last20_v1():
                 "source_topic": source_topic,
                 "dest_chat": -1003802436353,
                 "dest_topic": dest_topic,
-                "posts": 20,
+                "requested_posts": 20,
+                "copied_posts": route_post_count,
                 "selected": selected_keys,
             }),
             encoding="utf-8",
@@ -3965,7 +3987,8 @@ async def force_jamie_sub_ib_last20_v1():
         log.warning(
             "[JAMIE SUB IB LAST20 ROUTE DONE] "
             f"source=-1003852763875_{source_topic} "
-            f"dest=-1003802436353_{dest_topic}"
+            f"dest=-1003802436353_{dest_topic} "
+            f"requested=20 copied={route_post_count}"
         )
 
 
@@ -3999,7 +4022,7 @@ async def force_jamie_sub_ib_last20_v1():
 
     log.warning(
         "[JAMIE SUB IB LAST20 ALL DONE] "
-        "routes=4 posts_per_route=20"
+        "routes=4 requested_per_route=20 short_topics_send_all_available=True"
     )
 
 # END JAMIE_SUB_IB_LAST20_V1

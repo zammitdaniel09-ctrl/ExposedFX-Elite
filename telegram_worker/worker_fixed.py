@@ -4028,6 +4028,643 @@ async def force_jamie_sub_ib_last20_v1():
 # END JAMIE_SUB_IB_LAST20_V1
 
 
+
+# BEGIN HUB_68237_68239_BACKFILL_V1
+
+async def force_hub_68237_68239_backfill_v1():
+    """
+    ONE-TIME historical jobs:
+
+      -1003802436353 topic 31
+            -> -1003918958200 topic 68237
+            requested latest 20 posts
+
+      -1003229476368 whole channel
+            -> -1003918958200 topic 68239
+            requested latest 100 posts
+
+    Albums are one ordered unit and remain intact.
+    """
+
+    specs = [
+        {
+            "source_chat": -1003802436353,
+            "source_topic": 31,
+            "dest_chat": -1003918958200,
+            "dest_topic": 68237,
+            "requested": 20,
+        },
+        {
+            "source_chat": -1003229476368,
+            "source_topic": None,
+            "dest_chat": -1003918958200,
+            "dest_topic": 68239,
+            "requested": 100,
+        },
+    ]
+
+
+    for spec in specs:
+
+        source_chat = spec["source_chat"]
+        source_topic = spec["source_topic"]
+        dest_chat = spec["dest_chat"]
+        dest_topic = spec["dest_topic"]
+        requested = spec["requested"]
+
+
+        route = next(
+            (
+                r
+                for r in ROUTES
+                if int(r.get("source_chat", 0))
+                    == source_chat
+                and r.get("source_topic")
+                    == source_topic
+                and int(r.get("dest_chat", 0))
+                    == dest_chat
+                and int(r.get("dest_topic", 0))
+                    == dest_topic
+            ),
+            None,
+        )
+
+
+        if route is None:
+
+            raise RuntimeError(
+                f"Hub backfill route missing: "
+                f"{source_chat}_{source_topic} "
+                f"-> {dest_chat}_{dest_topic}"
+            )
+
+
+        source_topic_tag = (
+            str(source_topic)
+            if source_topic is not None
+            else "ALL"
+        )
+
+        tag = (
+            f"{abs(source_chat)}_"
+            f"{source_topic_tag}_"
+            f"to_{dest_topic}"
+        )
+
+
+        done_file = (
+            DATA_DIR
+            / f"hub_backfill_20260826_v1_{tag}.done"
+        )
+
+        progress_file = (
+            DATA_DIR
+            / f"hub_backfill_20260826_v1_{tag}.progress.json"
+        )
+
+
+        if done_file.exists():
+
+            log.warning(
+                "[HUB BACKFILL ALREADY DONE] "
+                f"source={source_chat}_{source_topic} "
+                f"dest={dest_chat}_{dest_topic}"
+            )
+
+            continue
+
+
+        log.warning(
+            "[HUB BACKFILL BEGIN] "
+            f"source={source_chat}_{source_topic} "
+            f"dest={dest_chat}_{dest_topic} "
+            f"requested={requested}"
+        )
+
+
+        # Fetch considerably more than requested so albums,
+        # service messages and blocked loops do not reduce selection.
+        fetch_limit = max(
+            requested * 4,
+            200,
+        )
+
+
+        candidates = await get_route_poll_messages(
+            route,
+            fetch_limit,
+        )
+
+        candidates = list(
+            candidates or []
+        )
+
+
+        # Only useful posts.
+        filtered = []
+
+        for msg in candidates:
+
+            if not (
+                text_of(msg)
+                or is_real_media(msg)
+            ):
+                continue
+
+            # Keep existing global blocked-sender protection.
+            if should_hard_block_sender(
+                msg,
+                "hub_backfill_filter",
+                route,
+            ):
+                continue
+
+            # Avoid an actual Telegram forward from the destination
+            # or source looping back through this route.
+            if should_block_private_peer_loop(
+                msg,
+                route,
+            ):
+                continue
+
+            filtered.append(msg)
+
+
+        # Newest first.
+        filtered.sort(
+            key=lambda msg: int(
+                getattr(
+                    msg,
+                    "id",
+                    0,
+                )
+                or 0
+            ),
+            reverse=True,
+        )
+
+
+        # ========================================================
+        # BUILD TELEGRAM POSTS
+        #
+        # An album counts as ONE post and all its pieces stay
+        # together.
+        # ========================================================
+
+        units = []
+        used_ids = set()
+        used_groups = set()
+
+
+        for message in filtered:
+
+            mid = int(
+                getattr(
+                    message,
+                    "id",
+                    0,
+                )
+                or 0
+            )
+
+            if mid in used_ids:
+                continue
+
+
+            gid = getattr(
+                message,
+                "grouped_id",
+                None,
+            )
+
+
+            if gid:
+
+                if gid in used_groups:
+                    continue
+
+                unit = [
+                    item
+                    for item in filtered
+                    if getattr(
+                        item,
+                        "grouped_id",
+                        None,
+                    ) == gid
+                ]
+
+                unit.sort(
+                    key=lambda item: int(
+                        getattr(
+                            item,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+                )
+
+                used_groups.add(gid)
+
+            else:
+
+                unit = [message]
+
+
+            for item in unit:
+
+                used_ids.add(
+                    int(
+                        getattr(
+                            item,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+                )
+
+
+            units.append(unit)
+
+            if len(units) >= requested:
+                break
+
+
+        if not units:
+
+            raise RuntimeError(
+                f"ZERO copyable posts found for "
+                f"{source_chat}_{source_topic}"
+            )
+
+
+        selected = units[:requested]
+
+        actual = len(selected)
+
+
+        if actual < requested:
+
+            log.warning(
+                "[HUB BACKFILL SHORT SOURCE] "
+                f"source={source_chat}_{source_topic} "
+                f"dest={dest_chat}_{dest_topic} "
+                f"requested={requested} "
+                f"available={actual} "
+                "action=SEND_ALL_AVAILABLE"
+            )
+
+
+        # Oldest -> newest.
+        selected.sort(
+            key=lambda unit: min(
+                int(
+                    getattr(
+                        item,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+                for item in unit
+            )
+        )
+
+
+        def unit_key(unit):
+
+            first = unit[0]
+
+            gid = getattr(
+                first,
+                "grouped_id",
+                None,
+            )
+
+            if gid:
+                return f"group:{gid}"
+
+            return (
+                "msg:"
+                + str(
+                    int(
+                        getattr(
+                            first,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+                )
+            )
+
+
+        selected_keys = [
+            unit_key(unit)
+            for unit in selected
+        ]
+
+
+        completed = set()
+
+
+        if progress_file.exists():
+
+            try:
+
+                state = json.loads(
+                    progress_file.read_text(
+                        encoding="utf-8"
+                    )
+                )
+
+                completed = {
+                    str(value)
+                    for value in state.get(
+                        "completed",
+                        [],
+                    )
+                }
+
+            except Exception:
+
+                completed = set()
+
+
+        log.warning(
+            "[HUB BACKFILL SELECTED] "
+            f"source={source_chat}_{source_topic} "
+            f"dest={dest_chat}_{dest_topic} "
+            f"requested={requested} "
+            f"actual={actual} "
+            f"units={selected_keys}"
+        )
+
+
+        for index, unit in enumerate(
+            selected,
+            start=1,
+        ):
+
+            key = unit_key(unit)
+
+            ids = [
+                int(
+                    getattr(
+                        item,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+                for item in unit
+            ]
+
+
+            if key in completed:
+
+                log.warning(
+                    "[HUB BACKFILL PROGRESS SKIP] "
+                    f"dest_topic={dest_topic} "
+                    f"unit={key}"
+                )
+
+                continue
+
+
+            mapped = [
+                bool(
+                    existing_destination_ids(
+                        item,
+                        route,
+                    )
+                )
+                for item in unit
+            ]
+
+
+            # Previous deployment already copied full unit.
+            if all(mapped):
+
+                completed.add(key)
+
+                progress_file.write_text(
+                    json.dumps({
+                        "selected": selected_keys,
+                        "completed": sorted(completed),
+                    }),
+                    encoding="utf-8",
+                )
+
+                log.warning(
+                    "[HUB BACKFILL ALREADY MAPPED] "
+                    f"dest_topic={dest_topic} "
+                    f"unit={key} "
+                    f"source_ids={ids}"
+                )
+
+                continue
+
+
+            # A partially copied album is dangerous.
+            if len(unit) > 1 and any(mapped):
+
+                raise RuntimeError(
+                    f"Partial album mapping found "
+                    f"dest_topic={dest_topic} "
+                    f"unit={key} "
+                    f"mapped={mapped}"
+                )
+
+
+            success = False
+            last_error = None
+
+
+            for attempt in range(1, 4):
+
+                try:
+
+                    first = unit[0]
+
+                    gid = getattr(
+                        first,
+                        "grouped_id",
+                        None,
+                    )
+
+
+                    if gid and len(unit) > 1:
+
+                        sent = await copy_album_with_retry(
+                            unit,
+                            route,
+                        )
+
+                    else:
+
+                        sent = await copy_one(
+                            first,
+                            route,
+                            edited=False,
+                            ensure_reply=False,
+                        )
+
+
+                    if not sent:
+
+                        raise RuntimeError(
+                            "copy returned no destination message"
+                        )
+
+
+                    completed.add(key)
+
+                    progress_file.write_text(
+                        json.dumps({
+                            "selected": selected_keys,
+                            "completed": sorted(completed),
+                        }),
+                        encoding="utf-8",
+                    )
+
+
+                    success = True
+
+
+                    log.warning(
+                        "[HUB BACKFILL COPIED] "
+                        f"source={source_chat}_{source_topic} "
+                        f"dest={dest_chat}_{dest_topic} "
+                        f"post={index}/{actual} "
+                        f"unit={key} "
+                        f"source_ids={ids}"
+                    )
+
+                    break
+
+
+                except FloodWaitError as exc:
+
+                    last_error = exc
+
+                    wait_for = min(
+                        int(exc.seconds) + 1,
+                        120,
+                    )
+
+                    log.warning(
+                        "[HUB BACKFILL FLOODWAIT] "
+                        f"dest_topic={dest_topic} "
+                        f"unit={key} "
+                        f"wait={wait_for}s"
+                    )
+
+                    await asyncio.sleep(
+                        wait_for
+                    )
+
+
+                except Exception as exc:
+
+                    last_error = exc
+
+                    log.exception(
+                        "[HUB BACKFILL ITEM FAILED] "
+                        f"dest_topic={dest_topic} "
+                        f"unit={key} "
+                        f"attempt={attempt}/3: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+                    await asyncio.sleep(2)
+
+
+            if not success:
+
+                raise RuntimeError(
+                    f"Hub backfill failed "
+                    f"dest_topic={dest_topic} "
+                    f"unit={key}: {last_error}"
+                )
+
+
+            await asyncio.sleep(0.30)
+
+
+        if not all(
+            key in completed
+            for key in selected_keys
+        ):
+
+            raise RuntimeError(
+                f"Hub backfill incomplete "
+                f"dest_topic={dest_topic}"
+            )
+
+
+        done_file.write_text(
+            json.dumps({
+                "done": True,
+                "source_chat": source_chat,
+                "source_topic": source_topic,
+                "dest_chat": dest_chat,
+                "dest_topic": dest_topic,
+                "requested": requested,
+                "copied": actual,
+                "selected": selected_keys,
+            }),
+            encoding="utf-8",
+        )
+
+
+        log.warning(
+            "[HUB BACKFILL ROUTE DONE] "
+            f"source={source_chat}_{source_topic} "
+            f"dest={dest_chat}_{dest_topic} "
+            f"requested={requested} "
+            f"copied={actual}"
+        )
+
+
+    # Both must be complete.
+    checks = [
+        (
+            DATA_DIR
+            / "hub_backfill_20260826_v1_1003802436353_31_to_68237.done"
+        ),
+        (
+            DATA_DIR
+            / "hub_backfill_20260826_v1_1003229476368_ALL_to_68239.done"
+        ),
+    ]
+
+
+    missing = [
+        str(path.name)
+        for path in checks
+        if not path.exists()
+    ]
+
+
+    if missing:
+
+        raise RuntimeError(
+            "Hub backfill completion markers missing: "
+            + ", ".join(missing)
+        )
+
+
+    log.warning(
+        "[HUB BACKFILL ALL DONE] "
+        "68237_requested=20 "
+        "68239_requested=100"
+    )
+
+# END HUB_68237_68239_BACKFILL_V1
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -4082,6 +4719,7 @@ async def main():
     log.info("Forward sidecar isolation active: True")
     await force_last10_3229476368_to_5947_v1()
     await force_jamie_sub_ib_last20_v1()
+    await force_hub_68237_68239_backfill_v1()
     await verify_route_titles_once()
     await probe_new_mirror_routes_once()
     asyncio.create_task(route_title_checker_loop())

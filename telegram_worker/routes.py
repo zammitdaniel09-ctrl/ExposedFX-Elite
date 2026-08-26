@@ -533,7 +533,18 @@ ROUTES = [{'name': 'Triad FX',
   'live_only': True,
   'copy_reply_parent': False,
   'ordered_private': True,
-  'loop_guard_peers': [-1003802436353]}]
+  'loop_guard_peers': [-1003802436353]},
+ {'name': 'Private Live 3838973021 To 6813',
+  'source_chat': -1003838973021,
+  'source_topic': None,
+  'dest_chat': -1003852763875,
+  'dest_topic': 6813,
+  'verify_title': False,
+  'anonymous_send_as': False,
+  'live_only': True,
+  'copy_reply_parent': False,
+  'ordered_private': True,
+  'loop_guard_peers': [-1003852763875]}]
 
 if os.environ.get("DISABLE_PROVIDER_ROUTES", "0").strip() == "1":
     ROUTES = []

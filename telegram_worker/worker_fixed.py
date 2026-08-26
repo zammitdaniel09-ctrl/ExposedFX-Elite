@@ -3375,22 +3375,36 @@ async def route_title_checker_loop():
 
 
 
-# BEGIN SAFE_PROBE_LAST1_3229476368_TO_5947_V1
 
-async def safe_probe_last1_3229476368_to_5947_v1():
+
+
+
+# BEGIN SAFE_LAST50_3838973021_TO_6813_V1
+
+async def safe_last50_3838973021_to_6813_v1():
+    """
+    ONE-TIME controlled history import.
+
+    Permanent live poller establishes the current baseline first.
+    This job may copy only messages at or BELOW that baseline.
+
+    Anything created after the baseline belongs exclusively
+    to normal live forwarding.
+    """
 
     enabled = (
         os.environ.get(
-            "ALLOW_SAFE_PROBE_3229476368_TO_5947",
+            "ALLOW_ONE_TIME_BACKFILL_3838973021_TO_6813",
             "0",
         ).strip()
         == "1"
     )
 
+
     if not enabled:
 
         log.warning(
-            "[5947 PROBE DISABLED] kill_switch=OFF"
+            "[6813 LAST50 DISABLED] kill_switch=OFF"
         )
 
         return False
@@ -3403,12 +3417,12 @@ async def safe_probe_last1_3229476368_to_5947_v1():
                 r
                 for r in ROUTES
                 if int(r.get("source_chat", 0))
-                    == -1003229476368
+                    == -1003838973021
                 and r.get("source_topic") is None
                 and int(r.get("dest_chat", 0))
                     == -1003852763875
                 and int(r.get("dest_topic", 0))
-                    == 5947
+                    == 6813
             ),
             None,
         )
@@ -3417,33 +3431,42 @@ async def safe_probe_last1_3229476368_to_5947_v1():
         if route is None:
 
             raise RuntimeError(
-                "5947 route not found"
+                "3838973021 -> 6813 route not found"
             )
 
 
-        key = route_poll_key(route)
+        route_key = route_poll_key(
+            route
+        )
 
 
-        # Wait for permanent live route to establish its
-        # safe current baseline first.
+        # ----------------------------------------------------
+        # Wait for permanent live route snapshot.
+        #
+        # Fail closed: never assume baseline=0.
+        # ----------------------------------------------------
+
         baseline = None
 
-        for _ in range(120):
 
-            if key in PRIVATE_LIVE_READY_KEYS:
+        for _ in range(180):
 
-                value = int(
+            if route_key in PRIVATE_LIVE_READY_KEYS:
+
+                candidate = int(
                     PRIVATE_LIVE_POLL_LAST_IDS.get(
-                        key,
+                        route_key,
                         0,
                     )
                     or 0
                 )
 
-                if value > 0:
 
-                    baseline = value
+                if candidate > 0:
+
+                    baseline = candidate
                     break
+
 
             await asyncio.sleep(1)
 
@@ -3451,36 +3474,43 @@ async def safe_probe_last1_3229476368_to_5947_v1():
         if baseline is None:
 
             raise RuntimeError(
-                "5947 live baseline never became ready"
+                "6813 live baseline was not ready; "
+                "LAST50 refused to run"
             )
 
 
         log.warning(
-            "[5947 PROBE BASELINE READY] "
-            f"baseline_id={baseline}"
+            "[6813 LAST50 BASELINE READY] "
+            f"baseline_id={baseline} "
+            "NEWER_MESSAGES_LIVE_ONLY=True"
         )
 
 
         done_file = (
             DATA_DIR
-            / "safe_probe_last1_3229476368_to_5947_v1.done"
+            / "safe_last50_3838973021_to_6813_v1.done"
+        )
+
+        progress_file = (
+            DATA_DIR
+            / "safe_last50_3838973021_to_6813_v1.progress.json"
         )
 
 
         if done_file.exists():
 
             log.warning(
-                "[5947 PROBE ALREADY DONE]"
+                "[6813 LAST50 ALREADY DONE]"
             )
 
             return True
 
 
-        # Fetch several recent source posts so we can choose
-        # one historical post that is not already mapped.
+        # Fetch enough messages to comfortably obtain 50
+        # copyable Telegram posts.
         messages = await client.get_messages(
-            -1003229476368,
-            limit=50,
+            -1003838973021,
+            limit=500,
         )
 
         messages = list(
@@ -3488,20 +3518,7 @@ async def safe_probe_last1_3229476368_to_5947_v1():
         )
 
 
-        messages.sort(
-            key=lambda m: int(
-                getattr(
-                    m,
-                    "id",
-                    0,
-                )
-                or 0
-            ),
-            reverse=True,
-        )
-
-
-        candidate = None
+        usable = []
 
 
         for message in messages:
@@ -3516,8 +3533,9 @@ async def safe_probe_last1_3229476368_to_5947_v1():
             )
 
 
-            # This probe is specifically a PAST-message test.
-            # Never steal a genuinely new live message.
+            # CRITICAL:
+            # This historical job NEVER takes a message newer
+            # than the permanent live route's baseline.
             if mid > baseline:
                 continue
 
@@ -3529,24 +3547,11 @@ async def safe_probe_last1_3229476368_to_5947_v1():
                 continue
 
 
-            if existing_destination_ids(
-                message,
-                route,
-            ):
-                continue
-
-
             if should_hard_block_sender(
                 message,
-                "5947_probe_candidate",
+                "6813_last50",
                 route,
             ):
-
-                log.warning(
-                    "[5947 PROBE CANDIDATE BLOCKED SENDER] "
-                    f"msg={mid}"
-                )
-
                 continue
 
 
@@ -3554,12 +3559,6 @@ async def safe_probe_last1_3229476368_to_5947_v1():
                 message,
                 route,
             ):
-
-                log.warning(
-                    "[5947 PROBE CANDIDATE BLOCKED ORIGIN] "
-                    f"msg={mid}"
-                )
-
                 continue
 
 
@@ -3567,129 +3566,476 @@ async def safe_probe_last1_3229476368_to_5947_v1():
                 message,
                 route,
             ):
-
-                log.warning(
-                    "[5947 PROBE CANDIDATE LOOP BLOCKED] "
-                    f"msg={mid}"
-                )
-
                 continue
 
 
-            candidate = message
-            break
+            usable.append(
+                message
+            )
 
 
-        if candidate is None:
+        # Newest first.
+        usable.sort(
+            key=lambda message: int(
+                getattr(
+                    message,
+                    "id",
+                    0,
+                )
+                or 0
+            ),
+            reverse=True,
+        )
+
+
+        # ----------------------------------------------------
+        # Build Telegram POSTS.
+        #
+        # Normal message = one post
+        # Telegram album = one post
+        # ----------------------------------------------------
+
+        units = []
+        used_ids = set()
+        used_groups = set()
+
+
+        for message in usable:
+
+            mid = int(
+                getattr(
+                    message,
+                    "id",
+                    0,
+                )
+                or 0
+            )
+
+
+            if mid in used_ids:
+                continue
+
+
+            gid = getattr(
+                message,
+                "grouped_id",
+                None,
+            )
+
+
+            if gid:
+
+                if gid in used_groups:
+                    continue
+
+
+                unit = [
+                    item
+                    for item in usable
+                    if getattr(
+                        item,
+                        "grouped_id",
+                        None,
+                    ) == gid
+                ]
+
+
+                unit.sort(
+                    key=lambda item: int(
+                        getattr(
+                            item,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+                )
+
+
+                used_groups.add(
+                    gid
+                )
+
+            else:
+
+                unit = [
+                    message
+                ]
+
+
+            for item in unit:
+
+                used_ids.add(
+                    int(
+                        getattr(
+                            item,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+                )
+
+
+            units.append(
+                unit
+            )
+
+
+            if len(units) >= 50:
+                break
+
+
+        if not units:
 
             raise RuntimeError(
-                "No safe unmapped past message found "
-                "within latest 50 source posts"
+                "ZERO safe copyable posts found "
+                "for -1003838973021"
             )
 
 
-        mid = int(candidate.id)
+        selected = units[:50]
 
-
-        log.warning(
-            "[5947 PROBE SENDING ONE PAST MESSAGE] "
-            f"source_msg={mid} "
-            f"baseline={baseline} "
-            "dest=-1003852763875_5947"
+        actual = len(
+            selected
         )
 
 
-        # If the chosen message belongs to an album, retrieve
-        # the complete album and send it as ONE Telegram post.
-        gid = getattr(
-            candidate,
-            "grouped_id",
-            None,
-        )
+        if actual < 50:
 
-
-        if gid:
-
-            around = await client.get_messages(
-                -1003229476368,
-                limit=50,
-                max_id=mid + 25,
-                min_id=max(0, mid - 25),
+            log.warning(
+                "[6813 LAST50 SHORT SOURCE] "
+                f"requested=50 available={actual} "
+                "action=SEND_ALL_AVAILABLE"
             )
 
-            album = [
-                m
-                for m in list(around or [])
-                if getattr(
-                    m,
-                    "grouped_id",
-                    None,
-                ) == gid
-            ]
 
-            album.sort(
-                key=lambda m: int(
+        # Send oldest -> newest.
+        selected.sort(
+            key=lambda unit: min(
+                int(
                     getattr(
-                        m,
+                        item,
                         "id",
                         0,
                     )
                     or 0
                 )
+                for item in unit
+            )
+        )
+
+
+        def unit_key(unit):
+
+            first = unit[0]
+
+            gid = getattr(
+                first,
+                "grouped_id",
+                None,
             )
 
 
-            if len(album) > 1:
+            if gid:
+                return f"group:{gid}"
 
-                sent = await copy_album_with_retry(
-                    album,
-                    route,
+
+            return (
+                "msg:"
+                + str(
+                    int(
+                        getattr(
+                            first,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
                 )
-
-            else:
-
-                sent = await copy_one(
-                    candidate,
-                    route,
-                    edited=False,
-                    ensure_reply=False,
-                )
-
-        else:
-
-            sent = await copy_one(
-                candidate,
-                route,
-                edited=False,
-                ensure_reply=False,
             )
 
 
-        if not sent:
+        selected_keys = [
+            unit_key(unit)
+            for unit in selected
+        ]
+
+
+        completed = set()
+
+
+        if progress_file.exists():
+
+            try:
+
+                state = json.loads(
+                    progress_file.read_text(
+                        encoding="utf-8"
+                    )
+                )
+
+
+                # Only reuse progress if it belongs to this
+                # exact selected batch.
+                previous_selected = [
+                    str(x)
+                    for x in state.get(
+                        "selected",
+                        [],
+                    )
+                ]
+
+
+                if previous_selected == selected_keys:
+
+                    completed = {
+                        str(x)
+                        for x in state.get(
+                            "completed",
+                            [],
+                        )
+                    }
+
+            except Exception:
+
+                completed = set()
+
+
+        log.warning(
+            "[6813 LAST50 BEGIN] "
+            f"requested=50 selected={actual} "
+            f"baseline_id={baseline}"
+        )
+
+
+        for index, unit in enumerate(
+            selected,
+            start=1,
+        ):
+
+            key_name = unit_key(
+                unit
+            )
+
+
+            if key_name in completed:
+
+                log.info(
+                    "[6813 LAST50 PROGRESS SKIP] "
+                    f"unit={key_name}"
+                )
+
+                continue
+
+
+            mapped_flags = [
+                bool(
+                    existing_destination_ids(
+                        item,
+                        route,
+                    )
+                )
+                for item in unit
+            ]
+
+
+            # Already copied to THIS exact destination.
+            if all(mapped_flags):
+
+                completed.add(
+                    key_name
+                )
+
+
+                progress_file.write_text(
+                    json.dumps({
+                        "selected": selected_keys,
+                        "completed": sorted(completed),
+                    }),
+                    encoding="utf-8",
+                )
+
+
+                log.warning(
+                    "[6813 LAST50 ALREADY MAPPED] "
+                    f"unit={key_name}"
+                )
+
+                continue
+
+
+            # Never create the missing half of an old partially
+            # mapped Telegram album.
+            if (
+                len(unit) > 1
+                and any(mapped_flags)
+            ):
+
+                raise RuntimeError(
+                    "Partial album mapping detected: "
+                    + key_name
+                )
+
+
+            success = False
+            last_error = None
+
+
+            for attempt in range(
+                1,
+                4,
+            ):
+
+                try:
+
+                    first = unit[0]
+
+                    gid = getattr(
+                        first,
+                        "grouped_id",
+                        None,
+                    )
+
+
+                    if (
+                        gid
+                        and len(unit) > 1
+                    ):
+
+                        sent = await copy_album_with_retry(
+                            unit,
+                            route,
+                        )
+
+                    else:
+
+                        # No historical reply-parent importing.
+                        sent = await copy_one(
+                            first,
+                            route,
+                            edited=False,
+                            ensure_reply=False,
+                        )
+
+
+                    if not sent:
+
+                        raise RuntimeError(
+                            "copy returned no destination message"
+                        )
+
+
+                    completed.add(
+                        key_name
+                    )
+
+
+                    progress_file.write_text(
+                        json.dumps({
+                            "selected": selected_keys,
+                            "completed": sorted(completed),
+                        }),
+                        encoding="utf-8",
+                    )
+
+
+                    log.warning(
+                        "[6813 LAST50 COPIED] "
+                        f"post={index}/{actual} "
+                        f"unit={key_name}"
+                    )
+
+
+                    success = True
+                    break
+
+
+                except FloodWaitError as exc:
+
+                    last_error = exc
+
+                    wait_for = min(
+                        int(exc.seconds) + 1,
+                        120,
+                    )
+
+
+                    log.warning(
+                        "[6813 LAST50 FLOODWAIT] "
+                        f"unit={key_name} "
+                        f"wait={wait_for}s"
+                    )
+
+
+                    await asyncio.sleep(
+                        wait_for
+                    )
+
+
+                except Exception as exc:
+
+                    last_error = exc
+
+
+                    log.exception(
+                        "[6813 LAST50 RETRY] "
+                        f"unit={key_name} "
+                        f"attempt={attempt}/3 "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+
+                    if attempt < 3:
+
+                        await asyncio.sleep(
+                            2
+                        )
+
+
+            if not success:
+
+                raise RuntimeError(
+                    f"LAST50 failed on {key_name}: "
+                    f"{last_error}"
+                )
+
+
+            await asyncio.sleep(
+                0.30
+            )
+
+
+        if not all(
+            key in completed
+            for key in selected_keys
+        ):
 
             raise RuntimeError(
-                "5947 test copy returned None"
+                "LAST50 completion validation failed"
             )
 
 
         done_file.write_text(
             json.dumps({
                 "done": True,
-                "source_chat": -1003229476368,
-                "source_msg": mid,
+                "source_chat": -1003838973021,
                 "dest_chat": -1003852763875,
-                "dest_topic": 5947,
-                "baseline": baseline,
+                "dest_topic": 6813,
+                "requested": 50,
+                "copied": actual,
+                "baseline_id": baseline,
+                "selected": selected_keys,
             }),
             encoding="utf-8",
         )
 
 
         log.warning(
-            "[5947 PROBE SUCCESS] "
-            f"source_msg={mid} "
-            "dest=-1003852763875_5947 "
-            "ONE_PAST_POST_ONLY=True"
+            "[6813 LAST50 DONE] "
+            f"requested=50 copied={actual} "
+            f"baseline_id={baseline} "
+            "LIVE_ROUTE_REMAINS=True"
         )
 
 
@@ -3698,14 +4044,16 @@ async def safe_probe_last1_3229476368_to_5947_v1():
 
     except Exception as exc:
 
+        # Temporary history failure must NEVER crash the
+        # permanent Telegram worker.
         log.exception(
-            "[5947 PROBE FAILED SAFE] "
+            "[6813 LAST50 FAILED SAFE] "
             f"{type(exc).__name__}: {exc}"
         )
 
         return False
 
-# END SAFE_PROBE_LAST1_3229476368_TO_5947_V1
+# END SAFE_LAST50_3838973021_TO_6813_V1
 
 
 async def main():
@@ -3767,7 +4115,7 @@ async def main():
     await cleanup_existing_blocked_sender_copies_once()
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())
-    probe_5947_task = asyncio.create_task(safe_probe_last1_3229476368_to_5947_v1())
+    last50_6813_task = asyncio.create_task(safe_last50_3838973021_to_6813_v1())
     log.info("Imperium fixed Telegram worker running...")
     asyncio.create_task(stats.loop(client))
     log.info("Weekly stats reporter running for Sunday 00:00 Europe/Malta")

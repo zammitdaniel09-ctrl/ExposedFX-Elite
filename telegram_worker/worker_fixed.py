@@ -1838,6 +1838,16 @@ async def get_route_poll_messages(route, limit):
                 )
                 return msgs
         except Exception as exc:
+            if route.get("strict_source_topic"):
+                log.exception(
+                    f"[STRICT SOURCE TOPIC FETCH FAILED] "
+                    f"route={route.get('name')} "
+                    f"source={chat_id}_{source_topic}. "
+                    f"NO WHOLE-CHAT FALLBACK ALLOWED: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                raise
+
             log.warning(
                 f"[new mirror topic poll fetch failed] route={route.get('name')} "
                 f"source={chat_id}_{source_topic}: {type(exc).__name__}: {exc}. Falling back to chat latest."
@@ -3424,6 +3434,577 @@ async def force_last10_3229476368_to_5947_v1():
 
 
 
+
+# BEGIN JAMIE_SUB_IB_LAST20_V1
+
+async def force_jamie_sub_ib_last20_v1():
+    """
+    JAMIE SUB IB FORWARDING
+
+    Backfill the latest 20 Telegram posts from each exact VIP
+    source topic into its exact Jamie destination topic ONCE.
+
+    Albums are treated as one Telegram post and kept together.
+
+    After this finishes the four live_only routes continue through
+    the ordered private-live poller.
+    """
+
+    specs = [
+        (6421, 37),
+        (5655, 31),
+        (5551, 35),
+        (5947, 33),
+    ]
+
+    all_completed = True
+
+    for source_topic, dest_topic in specs:
+
+        route = next(
+            (
+                r
+                for r in ROUTES
+                if int(r.get("source_chat", 0))
+                    == -1003852763875
+                and int(r.get("source_topic") or 0)
+                    == source_topic
+                and int(r.get("dest_chat", 0))
+                    == -1003802436353
+                and int(r.get("dest_topic", 0))
+                    == dest_topic
+            ),
+            None,
+        )
+
+        if route is None:
+            raise RuntimeError(
+                f"Jamie route missing: "
+                f"-1003852763875_{source_topic} "
+                f"-> -1003802436353_{dest_topic}"
+            )
+
+        tag = (
+            f"{source_topic}_to_{dest_topic}"
+        )
+
+        done_file = (
+            DATA_DIR
+            / f"jamie_sub_ib_last20_20260826_v1_{tag}.done"
+        )
+
+        progress_file = (
+            DATA_DIR
+            / f"jamie_sub_ib_last20_20260826_v1_{tag}.progress.json"
+        )
+
+        if done_file.exists():
+
+            log.warning(
+                "[JAMIE SUB IB LAST20 ALREADY DONE] "
+                f"source=-1003852763875_{source_topic} "
+                f"dest=-1003802436353_{dest_topic}"
+            )
+
+            continue
+
+        all_completed = False
+
+        log.warning(
+            "[JAMIE SUB IB LAST20 BEGIN] "
+            f"source=-1003852763875_{source_topic} "
+            f"dest=-1003802436353_{dest_topic} "
+            "posts=20"
+        )
+
+
+        # --------------------------------------------------------
+        # STRICT exact-topic fetch.
+        #
+        # Deliberately NOT using the worker's whole-chat fallback.
+        # --------------------------------------------------------
+
+        try:
+
+            candidates = await client.get_messages(
+                -1003852763875,
+                limit=150,
+                reply_to=int(source_topic),
+            )
+
+        except Exception as exc:
+
+            raise RuntimeError(
+                f"STRICT Jamie source-topic fetch failed "
+                f"for {source_topic}: {exc}"
+            ) from exc
+
+
+        candidates = list(
+            candidates or []
+        )
+
+
+        # Only real Telegram posts.
+        candidates = [
+            msg
+            for msg in candidates
+            if text_of(msg)
+            or is_real_media(msg)
+        ]
+
+
+        # Newest first.
+        candidates.sort(
+            key=lambda msg: int(
+                getattr(
+                    msg,
+                    "id",
+                    0,
+                )
+                or 0
+            ),
+            reverse=True,
+        )
+
+
+        # --------------------------------------------------------
+        # Build POSTS.
+        #
+        # A Telegram album counts as ONE post and all its media
+        # stays together.
+        # --------------------------------------------------------
+
+        units = []
+        used_message_ids = set()
+        used_group_ids = set()
+
+        for message in candidates:
+
+            mid = int(
+                getattr(
+                    message,
+                    "id",
+                    0,
+                )
+                or 0
+            )
+
+            if mid in used_message_ids:
+                continue
+
+            grouped_id = getattr(
+                message,
+                "grouped_id",
+                None,
+            )
+
+            if grouped_id:
+
+                if grouped_id in used_group_ids:
+                    continue
+
+                unit = [
+                    item
+                    for item in candidates
+                    if getattr(
+                        item,
+                        "grouped_id",
+                        None,
+                    ) == grouped_id
+                ]
+
+                unit.sort(
+                    key=lambda item: int(
+                        getattr(
+                            item,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+                )
+
+                used_group_ids.add(
+                    grouped_id
+                )
+
+            else:
+
+                unit = [message]
+
+            for item in unit:
+
+                used_message_ids.add(
+                    int(
+                        getattr(
+                            item,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+                )
+
+            units.append(unit)
+
+            if len(units) >= 20:
+                break
+
+
+        if len(units) < 20:
+
+            raise RuntimeError(
+                f"Only {len(units)} copyable posts found "
+                f"in source topic {source_topic}; expected 20"
+            )
+
+
+        selected = units[:20]
+
+
+        # Deliver oldest post -> newest post.
+        selected.sort(
+            key=lambda unit: min(
+                int(
+                    getattr(
+                        item,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+                for item in unit
+            )
+        )
+
+
+        def unit_key(unit):
+
+            first = unit[0]
+
+            gid = getattr(
+                first,
+                "grouped_id",
+                None,
+            )
+
+            if gid:
+                return f"group:{gid}"
+
+            return (
+                "msg:"
+                + str(
+                    int(
+                        getattr(
+                            first,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+                )
+            )
+
+
+        selected_keys = [
+            unit_key(unit)
+            for unit in selected
+        ]
+
+
+        completed = set()
+
+        if progress_file.exists():
+
+            try:
+
+                raw = json.loads(
+                    progress_file.read_text(
+                        encoding="utf-8"
+                    )
+                )
+
+                completed = {
+                    str(value)
+                    for value in raw.get(
+                        "completed",
+                        [],
+                    )
+                }
+
+            except Exception:
+
+                completed = set()
+
+
+        log.warning(
+            "[JAMIE SUB IB LAST20 SELECTED] "
+            f"source_topic={source_topic} "
+            f"dest_topic={dest_topic} "
+            f"units={selected_keys}"
+        )
+
+
+        for index, unit in enumerate(
+            selected,
+            start=1,
+        ):
+
+            key = unit_key(unit)
+
+            ids = [
+                int(
+                    getattr(
+                        item,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+                for item in unit
+            ]
+
+
+            if key in completed:
+
+                log.warning(
+                    "[JAMIE SUB IB LAST20 PROGRESS SKIP] "
+                    f"source_topic={source_topic} "
+                    f"unit={key}"
+                )
+
+                continue
+
+
+            mapped_flags = [
+                bool(
+                    existing_destination_ids(
+                        item,
+                        route,
+                    )
+                )
+                for item in unit
+            ]
+
+
+            # Fully copied by an earlier partial execution.
+            if all(mapped_flags):
+
+                completed.add(key)
+
+                progress_file.write_text(
+                    json.dumps({
+                        "selected": selected_keys,
+                        "completed": sorted(completed),
+                    }),
+                    encoding="utf-8",
+                )
+
+                log.warning(
+                    "[JAMIE SUB IB LAST20 ALREADY MAPPED] "
+                    f"source_topic={source_topic} "
+                    f"unit={key} ids={ids}"
+                )
+
+                continue
+
+
+            # Never create a second half of an album.
+            if any(mapped_flags):
+
+                raise RuntimeError(
+                    f"Partial mapping detected for Jamie backfill "
+                    f"source_topic={source_topic} "
+                    f"unit={key} ids={ids} "
+                    f"mapped={mapped_flags}"
+                )
+
+
+            last_error = None
+            success = False
+
+            for attempt in range(1, 4):
+
+                try:
+
+                    first = unit[0]
+
+                    grouped_id = getattr(
+                        first,
+                        "grouped_id",
+                        None,
+                    )
+
+
+                    if (
+                        grouped_id
+                        and len(unit) > 1
+                    ):
+
+                        sent = await copy_album_with_retry(
+                            unit,
+                            route,
+                        )
+
+                    else:
+
+                        sent = await copy_one(
+                            first,
+                            route,
+                            edited=False,
+                            ensure_reply=False,
+                        )
+
+
+                    if not sent:
+
+                        raise RuntimeError(
+                            "copy returned no destination message"
+                        )
+
+
+                    completed.add(key)
+
+                    progress_file.write_text(
+                        json.dumps({
+                            "selected": selected_keys,
+                            "completed": sorted(completed),
+                        }),
+                        encoding="utf-8",
+                    )
+
+                    success = True
+
+                    log.warning(
+                        "[JAMIE SUB IB LAST20 COPIED] "
+                        f"source=-1003852763875_{source_topic} "
+                        f"dest=-1003802436353_{dest_topic} "
+                        f"post={index}/20 "
+                        f"unit={key} "
+                        f"source_ids={ids}"
+                    )
+
+                    break
+
+
+                except FloodWaitError as exc:
+
+                    last_error = exc
+
+                    wait_for = min(
+                        int(exc.seconds) + 1,
+                        120,
+                    )
+
+                    log.warning(
+                        "[JAMIE SUB IB LAST20 FLOODWAIT] "
+                        f"source_topic={source_topic} "
+                        f"unit={key} "
+                        f"wait={wait_for}s"
+                    )
+
+                    await asyncio.sleep(
+                        wait_for
+                    )
+
+
+                except Exception as exc:
+
+                    last_error = exc
+
+                    log.exception(
+                        "[JAMIE SUB IB LAST20 ITEM FAILED] "
+                        f"source_topic={source_topic} "
+                        f"dest_topic={dest_topic} "
+                        f"unit={key} "
+                        f"attempt={attempt}/3: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+                    await asyncio.sleep(2)
+
+
+            if not success:
+
+                raise RuntimeError(
+                    f"Jamie LAST20 failed "
+                    f"source_topic={source_topic} "
+                    f"unit={key}: {last_error}"
+                )
+
+
+            await asyncio.sleep(0.35)
+
+
+        if not all(
+            key in completed
+            for key in selected_keys
+        ):
+
+            raise RuntimeError(
+                f"Jamie LAST20 incomplete "
+                f"for source topic {source_topic}"
+            )
+
+
+        done_file.write_text(
+            json.dumps({
+                "done": True,
+                "source_chat": -1003852763875,
+                "source_topic": source_topic,
+                "dest_chat": -1003802436353,
+                "dest_topic": dest_topic,
+                "posts": 20,
+                "selected": selected_keys,
+            }),
+            encoding="utf-8",
+        )
+
+
+        log.warning(
+            "[JAMIE SUB IB LAST20 ROUTE DONE] "
+            f"source=-1003852763875_{source_topic} "
+            f"dest=-1003802436353_{dest_topic}"
+        )
+
+
+    # Re-check all four marker files.
+    remaining = []
+
+    for source_topic, dest_topic in specs:
+
+        tag = (
+            f"{source_topic}_to_{dest_topic}"
+        )
+
+        done_file = (
+            DATA_DIR
+            / f"jamie_sub_ib_last20_20260826_v1_{tag}.done"
+        )
+
+        if not done_file.exists():
+            remaining.append(
+                f"{source_topic}->{dest_topic}"
+            )
+
+
+    if remaining:
+
+        raise RuntimeError(
+            "Jamie SUB IB LAST20 did not finish all routes: "
+            + ", ".join(remaining)
+        )
+
+
+    log.warning(
+        "[JAMIE SUB IB LAST20 ALL DONE] "
+        "routes=4 posts_per_route=20"
+    )
+
+# END JAMIE_SUB_IB_LAST20_V1
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -3477,6 +4058,7 @@ async def main():
     log.info("New mirror polling backup active: True")
     log.info("Forward sidecar isolation active: True")
     await force_last10_3229476368_to_5947_v1()
+    await force_jamie_sub_ib_last20_v1()
     await verify_route_titles_once()
     await probe_new_mirror_routes_once()
     asyncio.create_task(route_title_checker_loop())

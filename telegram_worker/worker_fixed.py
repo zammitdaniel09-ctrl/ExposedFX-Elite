@@ -3382,6 +3382,746 @@ async def route_title_checker_loop():
 
 
 
+
+# BEGIN MARKET_SLAYERS_LAST50_V2
+
+async def market_slayers_last50_v2():
+    """
+    Controlled ONE-TIME history import.
+
+    Permanent live routes snapshot first.
+
+    This helper can ONLY copy messages at or below each route's
+    safe live baseline.
+
+    Newer messages remain owned exclusively by the normal
+    private-live poller.
+    """
+
+    enabled = (
+        os.environ.get(
+            "ALLOW_MARKET_SLAYERS_LAST50_V2",
+            "0",
+        ).strip()
+        == "1"
+    )
+
+
+    if not enabled:
+
+        log.warning(
+            "[MARKET SLAYERS V2 DISABLED] "
+            "history_switch=OFF"
+        )
+
+        return False
+
+
+    specs = [
+        (5655, 33),
+        (5551, 32),
+        (5947, 31),
+    ]
+
+
+    route_failures = []
+
+
+    try:
+
+        # Destination group access preflight.
+        entity = await client.get_entity(
+            -1004365831817
+        )
+
+        log.warning(
+            "[MARKET SLAYERS V2 DEST ACCESS OK] "
+            f"dest=-1004365831817 "
+            f"title={getattr(entity, 'title', '')!r}"
+        )
+
+
+        for source_topic, dest_topic in specs:
+
+            try:
+
+                route = next(
+                    (
+                        r
+                        for r in ROUTES
+                        if int(r.get("source_chat", 0))
+                            == -1003852763875
+                        and int(r.get("source_topic", 0) or 0)
+                            == source_topic
+                        and int(r.get("dest_chat", 0))
+                            == -1004365831817
+                        and int(r.get("dest_topic", 0))
+                            == dest_topic
+                    ),
+                    None,
+                )
+
+
+                if route is None:
+                    raise RuntimeError(
+                        f"Route missing "
+                        f"{source_topic}->{dest_topic}"
+                    )
+
+
+                route_key = route_poll_key(
+                    route
+                )
+
+
+                # ====================================================
+                # WAIT FOR SAFE LIVE SNAPSHOT
+                # ====================================================
+
+                baseline = None
+
+
+                for _ in range(600):
+
+                    if route_key in PRIVATE_LIVE_READY_KEYS:
+
+                        value = int(
+                            PRIVATE_LIVE_POLL_LAST_IDS.get(
+                                route_key,
+                                0,
+                            )
+                            or 0
+                        )
+
+                        if value > 0:
+                            baseline = value
+                            break
+
+
+                    await asyncio.sleep(1)
+
+
+                if baseline is None:
+                    raise RuntimeError(
+                        "Safe live baseline never became ready"
+                    )
+
+
+                log.warning(
+                    "[MARKET SLAYERS V2 BASELINE] "
+                    f"source=-1003852763875_{source_topic} "
+                    f"dest=-1004365831817_{dest_topic} "
+                    f"baseline={baseline}"
+                )
+
+
+                # ====================================================
+                # DURABLE ONCE-ONLY FILES
+                # ====================================================
+
+                done_file = (
+                    DATA_DIR
+                    / (
+                        "market_slayers_v2_"
+                        f"{source_topic}_to_{dest_topic}.done"
+                    )
+                )
+
+
+                progress_file = (
+                    DATA_DIR
+                    / (
+                        "market_slayers_v2_"
+                        f"{source_topic}_to_{dest_topic}"
+                        ".progress.json"
+                    )
+                )
+
+
+                if done_file.exists():
+
+                    log.warning(
+                        "[MARKET SLAYERS V2 ALREADY DONE] "
+                        f"{source_topic}->{dest_topic}"
+                    )
+
+                    continue
+
+
+                # ====================================================
+                # FETCH EXACT SOURCE TOPIC
+                # ====================================================
+
+                messages = await get_route_poll_messages(
+                    route,
+                    500,
+                )
+
+                messages = list(
+                    messages or []
+                )
+
+
+                usable = []
+
+
+                for message in messages:
+
+                    mid = int(
+                        getattr(
+                            message,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+
+
+                    # NEVER take a new live message.
+                    if mid > baseline:
+                        continue
+
+
+                    if not (
+                        text_of(message)
+                        or is_real_media(message)
+                    ):
+                        continue
+
+
+                    if should_hard_block_sender(
+                        message,
+                        "market_slayers_v2_history",
+                        route,
+                    ):
+                        continue
+
+
+                    if should_hard_block_2521699926_from_vip(
+                        message,
+                        route,
+                    ):
+                        continue
+
+
+                    if should_block_private_peer_loop(
+                        message,
+                        route,
+                    ):
+                        continue
+
+
+                    usable.append(
+                        message
+                    )
+
+
+                # Newest first to SELECT latest 50.
+                usable.sort(
+                    key=lambda message: int(
+                        getattr(
+                            message,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    ),
+                    reverse=True,
+                )
+
+
+                # ====================================================
+                # BUILD TELEGRAM POSTS
+                #
+                # Album = one post.
+                # ====================================================
+
+                units = []
+                used_ids = set()
+                used_groups = set()
+
+
+                for message in usable:
+
+                    mid = int(
+                        getattr(
+                            message,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+
+
+                    if mid in used_ids:
+                        continue
+
+
+                    grouped_id = getattr(
+                        message,
+                        "grouped_id",
+                        None,
+                    )
+
+
+                    if grouped_id:
+
+                        if grouped_id in used_groups:
+                            continue
+
+
+                        unit = [
+                            item
+                            for item in usable
+                            if getattr(
+                                item,
+                                "grouped_id",
+                                None,
+                            ) == grouped_id
+                        ]
+
+
+                        unit.sort(
+                            key=lambda item: int(
+                                getattr(
+                                    item,
+                                    "id",
+                                    0,
+                                )
+                                or 0
+                            )
+                        )
+
+
+                        used_groups.add(
+                            grouped_id
+                        )
+
+                    else:
+
+                        unit = [
+                            message
+                        ]
+
+
+                    for item in unit:
+
+                        used_ids.add(
+                            int(
+                                getattr(
+                                    item,
+                                    "id",
+                                    0,
+                                )
+                                or 0
+                            )
+                        )
+
+
+                    units.append(
+                        unit
+                    )
+
+
+                    if len(units) >= 50:
+                        break
+
+
+                selected = units[:50]
+
+
+                if not selected:
+                    raise RuntimeError(
+                        "No copyable historical posts found"
+                    )
+
+
+                actual = len(
+                    selected
+                )
+
+
+                if actual < 50:
+
+                    log.warning(
+                        "[MARKET SLAYERS V2 SHORT] "
+                        f"source_topic={source_topic} "
+                        f"requested=50 "
+                        f"available={actual}"
+                    )
+
+
+                # Send oldest -> newest.
+                selected.sort(
+                    key=lambda unit: min(
+                        int(
+                            getattr(
+                                item,
+                                "id",
+                                0,
+                            )
+                            or 0
+                        )
+                        for item in unit
+                    )
+                )
+
+
+                def unit_key(unit):
+
+                    first = unit[0]
+
+                    gid = getattr(
+                        first,
+                        "grouped_id",
+                        None,
+                    )
+
+                    if gid:
+                        return f"group:{gid}"
+
+                    return (
+                        "msg:"
+                        + str(
+                            int(
+                                getattr(
+                                    first,
+                                    "id",
+                                    0,
+                                )
+                                or 0
+                            )
+                        )
+                    )
+
+
+                selected_keys = [
+                    unit_key(unit)
+                    for unit in selected
+                ]
+
+
+                completed = set()
+
+
+                if progress_file.exists():
+
+                    try:
+
+                        state = json.loads(
+                            progress_file.read_text(
+                                encoding="utf-8"
+                            )
+                        )
+
+
+                        previous_selected = [
+                            str(x)
+                            for x in state.get(
+                                "selected",
+                                [],
+                            )
+                        ]
+
+
+                        if previous_selected == selected_keys:
+
+                            completed = {
+                                str(x)
+                                for x in state.get(
+                                    "completed",
+                                    [],
+                                )
+                            }
+
+
+                    except Exception:
+                        completed = set()
+
+
+                log.warning(
+                    "[MARKET SLAYERS V2 LAST50 BEGIN] "
+                    f"source_topic={source_topic} "
+                    f"dest_topic={dest_topic} "
+                    f"posts={actual}"
+                )
+
+
+                # ====================================================
+                # COPY EXACT SELECTED BATCH
+                # ====================================================
+
+                for index, unit in enumerate(
+                    selected,
+                    start=1,
+                ):
+
+                    key_name = unit_key(
+                        unit
+                    )
+
+
+                    if key_name in completed:
+
+                        log.info(
+                            "[MARKET SLAYERS V2 PROGRESS SKIP] "
+                            f"source_topic={source_topic} "
+                            f"unit={key_name}"
+                        )
+
+                        continue
+
+
+                    mapped = [
+                        bool(
+                            existing_destination_ids(
+                                item,
+                                route,
+                            )
+                        )
+                        for item in unit
+                    ]
+
+
+                    # Already safely copied to this exact route.
+                    if all(mapped):
+
+                        completed.add(
+                            key_name
+                        )
+
+
+                        progress_file.write_text(
+                            json.dumps({
+                                "selected": selected_keys,
+                                "completed": sorted(completed),
+                            }),
+                            encoding="utf-8",
+                        )
+
+
+                        continue
+
+
+                    # Never split/reconstruct half of an old album.
+                    if len(unit) > 1 and any(mapped):
+
+                        raise RuntimeError(
+                            "Partial album mapping detected "
+                            f"unit={key_name}"
+                        )
+
+
+                    success = False
+                    last_error = None
+
+
+                    for attempt in range(1, 4):
+
+                        try:
+
+                            first = unit[0]
+
+                            gid = getattr(
+                                first,
+                                "grouped_id",
+                                None,
+                            )
+
+
+                            if gid and len(unit) > 1:
+
+                                sent = await copy_album_with_retry(
+                                    unit,
+                                    route,
+                                )
+
+                            else:
+
+                                # Do not import old reply parents.
+                                sent = await copy_one(
+                                    first,
+                                    route,
+                                    edited=False,
+                                    ensure_reply=False,
+                                )
+
+
+                            if not sent:
+
+                                raise RuntimeError(
+                                    "copy returned no destination message"
+                                )
+
+
+                            completed.add(
+                                key_name
+                            )
+
+
+                            progress_file.write_text(
+                                json.dumps({
+                                    "selected": selected_keys,
+                                    "completed": sorted(completed),
+                                }),
+                                encoding="utf-8",
+                            )
+
+
+                            log.warning(
+                                "[MARKET SLAYERS V2 COPIED] "
+                                f"source_topic={source_topic} "
+                                f"dest_topic={dest_topic} "
+                                f"post={index}/{actual} "
+                                f"unit={key_name}"
+                            )
+
+
+                            success = True
+                            break
+
+
+                        except FloodWaitError as exc:
+
+                            last_error = exc
+
+                            wait_for = min(
+                                int(exc.seconds) + 1,
+                                120,
+                            )
+
+
+                            log.warning(
+                                "[MARKET SLAYERS V2 FLOODWAIT] "
+                                f"source_topic={source_topic} "
+                                f"wait={wait_for}s"
+                            )
+
+
+                            await asyncio.sleep(
+                                wait_for
+                            )
+
+
+                        except Exception as exc:
+
+                            last_error = exc
+
+
+                            log.exception(
+                                "[MARKET SLAYERS V2 RETRY] "
+                                f"source_topic={source_topic} "
+                                f"unit={key_name} "
+                                f"attempt={attempt}/3 "
+                                f"{type(exc).__name__}: {exc}"
+                            )
+
+
+                            if attempt < 3:
+                                await asyncio.sleep(2)
+
+
+                    if not success:
+
+                        raise RuntimeError(
+                            f"Could not copy {key_name}: "
+                            f"{last_error}"
+                        )
+
+
+                    await asyncio.sleep(
+                        0.35
+                    )
+
+
+                if not all(
+                    key in completed
+                    for key in selected_keys
+                ):
+
+                    raise RuntimeError(
+                        "Final LAST50 validation failed"
+                    )
+
+
+                done_file.write_text(
+                    json.dumps({
+                        "done": True,
+                        "source_chat": -1003852763875,
+                        "source_topic": source_topic,
+                        "dest_chat": -1004365831817,
+                        "dest_topic": dest_topic,
+                        "baseline": baseline,
+                        "requested": 50,
+                        "copied": actual,
+                        "selected": selected_keys,
+                    }),
+                    encoding="utf-8",
+                )
+
+
+                log.warning(
+                    "[MARKET SLAYERS V2 ROUTE DONE] "
+                    f"source=-1003852763875_{source_topic} "
+                    f"dest=-1004365831817_{dest_topic} "
+                    f"copied={actual}"
+                )
+
+
+            except Exception as route_exc:
+
+                route_failures.append(
+                    (
+                        source_topic,
+                        dest_topic,
+                        str(route_exc),
+                    )
+                )
+
+
+                log.exception(
+                    "[MARKET SLAYERS V2 ROUTE FAILED SAFE] "
+                    f"source_topic={source_topic} "
+                    f"dest_topic={dest_topic}: "
+                    f"{type(route_exc).__name__}: "
+                    f"{route_exc}"
+                )
+
+
+        if route_failures:
+
+            log.error(
+                "[MARKET SLAYERS V2 FINISHED WITH FAILURES] "
+                f"failures={route_failures}"
+            )
+
+            return False
+
+
+        log.warning(
+            "[MARKET SLAYERS V2 ALL DONE] "
+            "5655_to_33=True "
+            "5551_to_32=True "
+            "5947_to_31=True "
+            "HISTORY_COMPLETE_ONCE=True"
+        )
+
+
+        return True
+
+
+    except Exception as exc:
+
+        log.exception(
+            "[MARKET SLAYERS V2 FAILED SAFE] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return False
+
+# END MARKET_SLAYERS_LAST50_V2
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -3441,6 +4181,7 @@ async def main():
     await cleanup_existing_blocked_sender_copies_once()
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())
+    market_slayers_last50_v2_task = asyncio.create_task(market_slayers_last50_v2())
     log.info("Imperium fixed Telegram worker running...")
     asyncio.create_task(stats.loop(client))
     log.info("Weekly stats reporter running for Sunday 00:00 Europe/Malta")

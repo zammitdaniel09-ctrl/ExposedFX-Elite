@@ -90,6 +90,47 @@ PRIVATE_LIVE_POLL_LAST_IDS = {}
 PRIVATE_LIVE_READY_KEYS = set()
 
 
+# BEGIN VIP_TOPIC_MOVE_STATE_V1
+
+VIP_TOPIC_MOVE_ENABLED = (
+    os.environ.get(
+        "ALLOW_VIP_TOPIC_MOVE_LAST50_V1",
+        "0",
+    ).strip()
+    == "1"
+)
+
+VIP_TOPIC_MOVE_OLD_CHAT = -1003852763875
+VIP_TOPIC_MOVE_NEW_CHAT = -1003726286301
+
+VIP_TOPIC_MOVE_MAP = {
+    2786: 5,
+    5655: 11,
+    5551: 7,
+    5947: 13,
+    6813: 9,
+}
+
+# While a topic is migrating, outbound routes from that new VIP
+# topic are temporarily paused.
+#
+# Inbound provider -> NEW VIP routes continue normally.
+VIP_TOPIC_MOVE_ACTIVE_TOPICS = (
+    set(VIP_TOPIC_MOVE_MAP.values())
+    if VIP_TOPIC_MOVE_ENABLED
+    else set()
+)
+
+# Exact NEW VIP message IDs created by history migration.
+#
+# When outbound routing resumes, these IDs are skipped while
+# genuine new/live messages remain eligible.
+VIP_TOPIC_MOVE_SUPPRESS_IDS = set()
+
+# END VIP_TOPIC_MOVE_STATE_V1
+
+
+
 
 MIRROR_STRUCTURE_REPAIR = os.environ.get("MIRROR_STRUCTURE_REPAIR", "1").strip() == "1"
 STRICT_ROUTE_TITLE_CHECK = os.environ.get("STRICT_ROUTE_TITLE_CHECK", "0").strip() == "1"
@@ -121,7 +162,7 @@ BLOCKED_DEST_TOPICS = {
 }
 
 
-IGNORED_SOURCE_CHATS_RAW = os.environ.get("IGNORED_SOURCE_CHATS", "-1003852763875").strip()
+IGNORED_SOURCE_CHATS_RAW = os.environ.get("IGNORED_SOURCE_CHATS", "-1003726286301").strip()
 IGNORED_SOURCE_CHATS = {
     int(x)
     for x in re.split(r"[,\\s]+", IGNORED_SOURCE_CHATS_RAW)
@@ -622,7 +663,7 @@ def should_block_private_peer_loop(
 
 # BEGIN HARD_BLOCK_2521699926_FROM_VIP_V1
 
-VIP_HARD_BLOCK_CHAT = -1003852763875
+VIP_HARD_BLOCK_CHAT = -1003726286301
 VIP_HARD_BLOCKED_SOURCE = -1002521699926
 
 
@@ -2305,6 +2346,45 @@ async def private_live_route_poll_loop():
             key = route_poll_key(route)
 
 
+            # BEGIN VIP_TOPIC_MOVE_ROUTE_PAUSE_V1
+
+            try:
+                move_source_chat = int(
+                    route.get("source_chat", 0)
+                )
+            except Exception:
+                move_source_chat = 0
+
+            try:
+                move_source_topic = (
+                    int(route.get("source_topic"))
+                    if route.get("source_topic") is not None
+                    else None
+                )
+            except Exception:
+                move_source_topic = None
+
+
+            if (
+                move_source_chat
+                == VIP_TOPIC_MOVE_NEW_CHAT
+                and move_source_topic
+                in VIP_TOPIC_MOVE_ACTIVE_TOPICS
+            ):
+
+                log.info(
+                    "[VIP MOVE OUTBOUND PAUSED] "
+                    f"route={route.get('name')} "
+                    f"source={move_source_chat}_"
+                    f"{move_source_topic}"
+                )
+
+                continue
+
+            # END VIP_TOPIC_MOVE_ROUTE_PAUSE_V1
+
+
+
             # ----------------------------------------------------
             # FAIL CLOSED:
             # If startup snapshot failed, do NOT use last_id=0.
@@ -2525,6 +2605,65 @@ async def private_live_route_poll_loop():
                                 # this unfinished grouped message.
                                 break
 
+
+
+                    # BEGIN VIP_TOPIC_MOVE_SUPPRESS_V1
+
+                    try:
+                        suppress_source_chat = int(
+                            route.get("source_chat", 0)
+                        )
+                    except Exception:
+                        suppress_source_chat = 0
+
+
+                    if (
+                        suppress_source_chat
+                        == VIP_TOPIC_MOVE_NEW_CHAT
+                    ):
+
+                        migration_flags = [
+                            message_id
+                            in VIP_TOPIC_MOVE_SUPPRESS_IDS
+                            for message_id in ids
+                        ]
+
+
+                        if all(migration_flags):
+
+                            PRIVATE_LIVE_POLL_LAST_IDS[key] = max(
+                                int(
+                                    PRIVATE_LIVE_POLL_LAST_IDS.get(
+                                        key,
+                                        0,
+                                    )
+                                    or 0
+                                ),
+                                max_mid,
+                            )
+
+
+                            log.info(
+                                "[VIP MOVE HISTORY OUTBOUND SUPPRESSED] "
+                                f"route={route.get('name')} "
+                                f"ids={ids}"
+                            )
+
+                            continue
+
+
+                        if any(migration_flags):
+
+                            log.error(
+                                "[VIP MOVE MIXED UNIT STOP] "
+                                f"route={route.get('name')} "
+                                f"ids={ids} "
+                                f"migration_flags={migration_flags}"
+                            )
+
+                            break
+
+                    # END VIP_TOPIC_MOVE_SUPPRESS_V1
 
                     # --------------------------------------------
                     # Already fully mapped?
@@ -4122,6 +4261,1095 @@ async def market_slayers_last50_v2():
 # END MARKET_SLAYERS_LAST50_V2
 
 
+
+# BEGIN VIP_TOPIC_MOVE_LAST50_V1
+
+async def vip_topic_move_last50_v1():
+    """
+    Move latest 50 Telegram posts from each OLD VIP topic to
+    corresponding NEW VIP topic exactly once.
+
+    Critical protections:
+
+    1. Permanent inbound forwarding has already been switched
+       to the NEW VIP.
+
+    2. Outbound routes from affected NEW VIP topics remain
+       temporarily paused during migration.
+
+    3. Destination IDs created by historical migration are
+       recorded in VIP_TOPIC_MOVE_SUPPRESS_IDS.
+
+    4. When outbound routes resume, only those historical IDs
+       are skipped. Genuine live messages still forward.
+
+    5. Durable done/progress files prevent replay on restart.
+    """
+
+    if not VIP_TOPIC_MOVE_ENABLED:
+
+        log.warning(
+            "[VIP MOVE DISABLED] "
+            "ALLOW_VIP_TOPIC_MOVE_LAST50_V1=0"
+        )
+
+        return False
+
+
+    specs = [
+        (2786, 5),
+        (5655, 11),
+        (5551, 7),
+        (5947, 13),
+        (6813, 9),
+    ]
+
+
+    try:
+
+        old_entity = await client.get_entity(
+            VIP_TOPIC_MOVE_OLD_CHAT
+        )
+
+        new_entity = await client.get_entity(
+            VIP_TOPIC_MOVE_NEW_CHAT
+        )
+
+
+        log.warning(
+            "[VIP MOVE ACCESS OK] "
+            f"old={VIP_TOPIC_MOVE_OLD_CHAT} "
+            f"old_title={getattr(old_entity, 'title', '')!r} "
+            f"new={VIP_TOPIC_MOVE_NEW_CHAT} "
+            f"new_title={getattr(new_entity, 'title', '')!r}"
+        )
+
+
+        # ====================================================
+        # Wait for all NEW VIP outbound live routes to have
+        # their safe startup baseline BEFORE inserting history.
+        # ====================================================
+
+        watched_outbound_routes = [
+            route
+            for route in ROUTES
+            if route.get("live_only")
+            and int(route.get("source_chat", 0))
+                == VIP_TOPIC_MOVE_NEW_CHAT
+            and route.get("source_topic") is not None
+            and int(route.get("source_topic"))
+                in set(VIP_TOPIC_MOVE_MAP.values())
+        ]
+
+
+        outbound_ready = False
+
+
+        for _ in range(600):
+
+            if all(
+                route_poll_key(route)
+                in PRIVATE_LIVE_READY_KEYS
+
+                for route
+                in watched_outbound_routes
+            ):
+
+                outbound_ready = True
+                break
+
+
+            await asyncio.sleep(1)
+
+
+        if not outbound_ready:
+
+            raise RuntimeError(
+                "NEW VIP outbound safe baselines "
+                "were not ready"
+            )
+
+
+        log.warning(
+            "[VIP MOVE OUTBOUND BASELINES READY] "
+            f"routes={len(watched_outbound_routes)} "
+            "HISTORY_CAN_START=True"
+        )
+
+
+        # Fast but controlled global send concurrency.
+        send_sem = asyncio.Semaphore(3)
+
+
+        async def send_migration_unit(
+            unit,
+            route,
+        ):
+
+            async with send_sem:
+
+                first = unit[0]
+
+                grouped_id = getattr(
+                    first,
+                    "grouped_id",
+                    None,
+                )
+
+
+                # --------------------------------------------
+                # ALBUM
+                # --------------------------------------------
+
+                if grouped_id and len(unit) > 1:
+
+                    files = []
+
+                    caption = None
+                    caption_entities = None
+
+
+                    for message in unit:
+
+                        if is_real_media(message):
+                            files.append(
+                                message.media
+                            )
+
+                        if caption is None:
+
+                            candidate = text_of(
+                                message
+                            )
+
+                            if candidate:
+
+                                caption = candidate
+                                caption_entities = entities_of(
+                                    message
+                                )
+
+
+                    if not files:
+
+                        raise RuntimeError(
+                            "Migration album had no media"
+                        )
+
+
+                    sent = None
+                    downloaded_files = []
+
+
+                    try:
+
+                        sent = await client.send_file(
+                            route["dest_chat"],
+                            files,
+                            caption=(
+                                caption
+                                if caption
+                                else None
+                            ),
+                            formatting_entities=(
+                                caption_entities
+                                if caption
+                                else None
+                            ),
+                            parse_mode=None,
+                            reply_to=route["dest_topic"],
+                            send_as=None,
+                        )
+
+
+                    except Exception as direct_exc:
+
+                        log.warning(
+                            "[VIP MOVE ALBUM DIRECT FAILED] "
+                            f"route={route['name']} "
+                            f"grouped_id={grouped_id}: "
+                            f"{type(direct_exc).__name__}: "
+                            f"{direct_exc}"
+                        )
+
+
+                        cache_dir = (
+                            DATA_DIR
+                            / "vip_move_media_cache"
+                        )
+
+                        cache_dir.mkdir(
+                            parents=True,
+                            exist_ok=True,
+                        )
+
+
+                        try:
+
+                            for message in unit:
+
+                                if not is_real_media(message):
+                                    continue
+
+
+                                downloaded = (
+                                    await message.download_media(
+                                        file=str(
+                                            cache_dir
+                                            / (
+                                                f"{route['dest_topic']}_"
+                                                f"{message.id}"
+                                            )
+                                        )
+                                    )
+                                )
+
+
+                                if downloaded:
+                                    downloaded_files.append(
+                                        downloaded
+                                    )
+
+
+                            if not downloaded_files:
+
+                                raise RuntimeError(
+                                    "Migration album fallback "
+                                    "downloaded no files"
+                                )
+
+
+                            sent = await client.send_file(
+                                route["dest_chat"],
+                                downloaded_files,
+                                caption=(
+                                    caption
+                                    if caption
+                                    else None
+                                ),
+                                formatting_entities=(
+                                    caption_entities
+                                    if caption
+                                    else None
+                                ),
+                                parse_mode=None,
+                                reply_to=route["dest_topic"],
+                                send_as=None,
+                            )
+
+
+                        finally:
+
+                            for filename in downloaded_files:
+
+                                try:
+                                    Path(filename).unlink(
+                                        missing_ok=True
+                                    )
+                                except Exception:
+                                    pass
+
+
+                    sent_list = sent_as_list(
+                        sent
+                    )
+
+
+                    if len(sent_list) != len(files):
+
+                        try:
+
+                            await client.delete_messages(
+                                route["dest_chat"],
+                                sent_ids(sent),
+                            )
+
+                        except Exception:
+                            pass
+
+
+                        raise RuntimeError(
+                            "Migration album count mismatch "
+                            f"expected={len(files)} "
+                            f"sent={len(sent_list)}"
+                        )
+
+
+                    for source_message, destination_message in zip(
+                        unit,
+                        sent_list,
+                    ):
+
+                        remember_message(
+                            source_message,
+                            destination_message,
+                            route,
+                        )
+
+
+                    return sent
+
+
+                # --------------------------------------------
+                # SINGLE MEDIA
+                # --------------------------------------------
+
+                if is_real_media(first):
+
+                    text = text_of(first)
+                    entities = entities_of(first)
+
+
+                    sent = await send_media_exact(
+                        first,
+                        route,
+                        route["dest_topic"],
+                        text,
+                        entities,
+                    )
+
+
+                    sent = await repair_bad_mirror_structure(
+                        first,
+                        route,
+                        route["dest_topic"],
+                        text,
+                        entities,
+                        sent,
+                    )
+
+
+                    remember_message(
+                        first,
+                        sent,
+                        route,
+                    )
+
+
+                    return sent
+
+
+                # --------------------------------------------
+                # SINGLE TEXT
+                # --------------------------------------------
+
+                text = text_of(first)
+
+                if not text:
+
+                    raise RuntimeError(
+                        "Migration unit had no copyable text/media"
+                    )
+
+
+                entities = entities_of(first)
+
+
+                sent = await client.send_message(
+                    route["dest_chat"],
+                    text,
+                    formatting_entities=(
+                        entities
+                        if text
+                        else None
+                    ),
+                    parse_mode=None,
+                    reply_to=route["dest_topic"],
+                    link_preview=True,
+                    send_as=None,
+                )
+
+
+                remember_message(
+                    first,
+                    sent,
+                    route,
+                )
+
+
+                return sent
+
+
+        async def migrate_topic(
+            old_topic,
+            new_topic,
+        ):
+
+            route = {
+                "name": (
+                    "VIP TOPIC MOVE "
+                    f"{old_topic} To {new_topic}"
+                ),
+
+                "source_chat": (
+                    VIP_TOPIC_MOVE_OLD_CHAT
+                ),
+
+                "source_topic": old_topic,
+
+                "dest_chat": (
+                    VIP_TOPIC_MOVE_NEW_CHAT
+                ),
+
+                "dest_topic": new_topic,
+
+                "verify_title": False,
+                "anonymous_send_as": False,
+
+                "live_only": True,
+                "copy_reply_parent": False,
+
+                "strict_source_topic": True,
+                "ordered_private": True,
+            }
+
+
+            done_file = (
+                DATA_DIR
+                / (
+                    "vip_topic_move_v1_"
+                    f"{old_topic}_to_{new_topic}.done"
+                )
+            )
+
+
+            progress_file = (
+                DATA_DIR
+                / (
+                    "vip_topic_move_v1_"
+                    f"{old_topic}_to_{new_topic}"
+                    ".progress.json"
+                )
+            )
+
+
+            try:
+
+                if done_file.exists():
+
+                    log.warning(
+                        "[VIP MOVE TOPIC ALREADY DONE] "
+                        f"{old_topic}->{new_topic}"
+                    )
+
+                    return True
+
+
+                messages = await client.get_messages(
+                    VIP_TOPIC_MOVE_OLD_CHAT,
+                    limit=500,
+                    reply_to=int(old_topic),
+                )
+
+
+                messages = list(
+                    messages or []
+                )
+
+
+                usable = []
+
+
+                for message in messages:
+
+                    if (
+                        text_of(message)
+                        or is_real_media(message)
+                    ):
+
+                        usable.append(
+                            message
+                        )
+
+
+                usable.sort(
+                    key=lambda message: int(
+                        getattr(
+                            message,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    ),
+                    reverse=True,
+                )
+
+
+                # --------------------------------------------
+                # Build Telegram posts.
+                # Album = one post.
+                # --------------------------------------------
+
+                units = []
+                used_ids = set()
+                used_groups = set()
+
+
+                for message in usable:
+
+                    mid = int(
+                        getattr(
+                            message,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+
+
+                    if mid in used_ids:
+                        continue
+
+
+                    grouped_id = getattr(
+                        message,
+                        "grouped_id",
+                        None,
+                    )
+
+
+                    if grouped_id:
+
+                        if grouped_id in used_groups:
+                            continue
+
+
+                        unit = [
+                            item
+                            for item in usable
+                            if getattr(
+                                item,
+                                "grouped_id",
+                                None,
+                            )
+                            == grouped_id
+                        ]
+
+
+                        unit.sort(
+                            key=lambda item: int(
+                                getattr(
+                                    item,
+                                    "id",
+                                    0,
+                                )
+                                or 0
+                            )
+                        )
+
+
+                        used_groups.add(
+                            grouped_id
+                        )
+
+                    else:
+
+                        unit = [
+                            message
+                        ]
+
+
+                    for item in unit:
+
+                        used_ids.add(
+                            int(
+                                getattr(
+                                    item,
+                                    "id",
+                                    0,
+                                )
+                                or 0
+                            )
+                        )
+
+
+                    units.append(
+                        unit
+                    )
+
+
+                    if len(units) >= 50:
+                        break
+
+
+                selected = units[:50]
+
+
+                if not selected:
+
+                    raise RuntimeError(
+                        f"No copyable messages found "
+                        f"in old topic {old_topic}"
+                    )
+
+
+                actual = len(
+                    selected
+                )
+
+
+                if actual < 50:
+
+                    log.warning(
+                        "[VIP MOVE SHORT TOPIC] "
+                        f"old={old_topic} "
+                        f"new={new_topic} "
+                        f"requested=50 "
+                        f"available={actual}"
+                    )
+
+
+                # Oldest -> newest.
+                selected.sort(
+                    key=lambda unit: min(
+                        int(
+                            getattr(
+                                item,
+                                "id",
+                                0,
+                            )
+                            or 0
+                        )
+                        for item in unit
+                    )
+                )
+
+
+                def unit_key(unit):
+
+                    first = unit[0]
+
+                    grouped_id = getattr(
+                        first,
+                        "grouped_id",
+                        None,
+                    )
+
+
+                    if grouped_id:
+
+                        return (
+                            "group:"
+                            + str(grouped_id)
+                        )
+
+
+                    return (
+                        "msg:"
+                        + str(
+                            int(
+                                getattr(
+                                    first,
+                                    "id",
+                                    0,
+                                )
+                                or 0
+                            )
+                        )
+                    )
+
+
+                selected_keys = [
+                    unit_key(unit)
+                    for unit in selected
+                ]
+
+
+                completed = set()
+
+
+                if progress_file.exists():
+
+                    try:
+
+                        state = json.loads(
+                            progress_file.read_text(
+                                encoding="utf-8"
+                            )
+                        )
+
+
+                        previous_selected = [
+                            str(value)
+                            for value
+                            in state.get(
+                                "selected",
+                                [],
+                            )
+                        ]
+
+
+                        if (
+                            previous_selected
+                            == selected_keys
+                        ):
+
+                            completed = {
+                                str(value)
+                                for value
+                                in state.get(
+                                    "completed",
+                                    [],
+                                )
+                            }
+
+
+                    except Exception:
+
+                        completed = set()
+
+
+                log.warning(
+                    "[VIP MOVE TOPIC BEGIN] "
+                    f"old={old_topic} "
+                    f"new={new_topic} "
+                    f"selected={actual}"
+                )
+
+
+                for index, unit in enumerate(
+                    selected,
+                    start=1,
+                ):
+
+                    key_name = unit_key(
+                        unit
+                    )
+
+
+                    if key_name in completed:
+                        continue
+
+
+                    mapped = [
+                        bool(
+                            existing_destination_ids(
+                                item,
+                                route,
+                            )
+                        )
+                        for item in unit
+                    ]
+
+
+                    if all(mapped):
+
+                        completed.add(
+                            key_name
+                        )
+
+
+                        progress_file.write_text(
+                            json.dumps({
+                                "selected": selected_keys,
+                                "completed": sorted(
+                                    completed
+                                ),
+                            }),
+                            encoding="utf-8",
+                        )
+
+
+                        continue
+
+
+                    if (
+                        len(unit) > 1
+                        and any(mapped)
+                    ):
+
+                        raise RuntimeError(
+                            "Partial migration album mapping "
+                            f"unit={key_name}"
+                        )
+
+
+                    success = False
+                    last_error = None
+
+
+                    for attempt in range(
+                        1,
+                        4,
+                    ):
+
+                        try:
+
+                            sent = await send_migration_unit(
+                                unit,
+                                route,
+                            )
+
+
+                            destination_ids = sent_ids(
+                                sent
+                            )
+
+
+                            if not destination_ids:
+
+                                raise RuntimeError(
+                                    "Migration send returned "
+                                    "no destination IDs"
+                                )
+
+
+                            # ------------------------------------
+                            # CRITICAL:
+                            # Tell outbound forwarding that these
+                            # exact NEW VIP IDs are historical.
+                            # ------------------------------------
+
+                            for destination_id in destination_ids:
+
+                                VIP_TOPIC_MOVE_SUPPRESS_IDS.add(
+                                    int(destination_id)
+                                )
+
+
+                            completed.add(
+                                key_name
+                            )
+
+
+                            progress_file.write_text(
+                                json.dumps({
+                                    "selected": (
+                                        selected_keys
+                                    ),
+                                    "completed": sorted(
+                                        completed
+                                    ),
+                                }),
+                                encoding="utf-8",
+                            )
+
+
+                            log.warning(
+                                "[VIP MOVE COPIED] "
+                                f"old={old_topic} "
+                                f"new={new_topic} "
+                                f"post={index}/{actual} "
+                                f"source={key_name} "
+                                f"dest_ids={destination_ids}"
+                            )
+
+
+                            success = True
+                            break
+
+
+                        except FloodWaitError as exc:
+
+                            last_error = exc
+
+                            wait_for = min(
+                                int(exc.seconds) + 1,
+                                120,
+                            )
+
+
+                            log.warning(
+                                "[VIP MOVE FLOODWAIT] "
+                                f"old={old_topic} "
+                                f"new={new_topic} "
+                                f"wait={wait_for}s"
+                            )
+
+
+                            await asyncio.sleep(
+                                wait_for
+                            )
+
+
+                        except Exception as exc:
+
+                            last_error = exc
+
+
+                            log.exception(
+                                "[VIP MOVE RETRY] "
+                                f"old={old_topic} "
+                                f"new={new_topic} "
+                                f"unit={key_name} "
+                                f"attempt={attempt}/3 "
+                                f"{type(exc).__name__}: "
+                                f"{exc}"
+                            )
+
+
+                            if attempt < 3:
+
+                                await asyncio.sleep(
+                                    1
+                                )
+
+
+                    if not success:
+
+                        raise RuntimeError(
+                            f"Could not migrate "
+                            f"{old_topic}->{new_topic} "
+                            f"unit={key_name}: "
+                            f"{last_error}"
+                        )
+
+
+                    # Fast pacing. Global semaphore still protects
+                    # against too many simultaneous Telegram sends.
+                    await asyncio.sleep(
+                        0.05
+                    )
+
+
+                if not all(
+                    key in completed
+                    for key in selected_keys
+                ):
+
+                    raise RuntimeError(
+                        "Migration completion validation failed"
+                    )
+
+
+                done_file.write_text(
+                    json.dumps({
+                        "done": True,
+                        "old_chat": (
+                            VIP_TOPIC_MOVE_OLD_CHAT
+                        ),
+                        "old_topic": old_topic,
+                        "new_chat": (
+                            VIP_TOPIC_MOVE_NEW_CHAT
+                        ),
+                        "new_topic": new_topic,
+                        "requested": 50,
+                        "copied": actual,
+                        "selected": selected_keys,
+                    }),
+                    encoding="utf-8",
+                )
+
+
+                log.warning(
+                    "[VIP MOVE TOPIC DONE] "
+                    f"old={old_topic} "
+                    f"new={new_topic} "
+                    f"copied={actual}"
+                )
+
+
+                return True
+
+
+            except Exception as exc:
+
+                log.exception(
+                    "[VIP MOVE TOPIC FAILED SAFE] "
+                    f"old={old_topic} "
+                    f"new={new_topic}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+
+                return False
+
+
+            finally:
+
+                # --------------------------------------------
+                # NEVER leave normal outbound forwarding
+                # permanently paused, even if migration fails.
+                # --------------------------------------------
+
+                VIP_TOPIC_MOVE_ACTIVE_TOPICS.discard(
+                    int(new_topic)
+                )
+
+
+                log.warning(
+                    "[VIP MOVE TOPIC RELEASED] "
+                    f"new_topic={new_topic} "
+                    "OUTBOUND_RESUMED=True"
+                )
+
+
+        # ====================================================
+        # RUN ALL FIVE TOPICS CONCURRENTLY
+        # ====================================================
+
+        results = await asyncio.gather(
+            *[
+                migrate_topic(
+                    old_topic,
+                    new_topic,
+                )
+                for old_topic, new_topic
+                in specs
+            ],
+            return_exceptions=False,
+        )
+
+
+        failed = [
+            specs[index]
+            for index, result
+            in enumerate(results)
+            if result is not True
+        ]
+
+
+        if failed:
+
+            log.error(
+                "[VIP MOVE FINISHED WITH FAILURES] "
+                f"failed={failed} "
+                "OUTBOUND_RELEASED=True"
+            )
+
+            return False
+
+
+        # Give outbound routes two poll cycles to:
+        # - skip historical migration IDs
+        # - forward genuine live messages that arrived meanwhile.
+        await asyncio.sleep(12)
+
+
+        log.warning(
+            "[VIP MOVE ALL DONE] "
+            "2786_to_5=True "
+            "5655_to_11=True "
+            "5551_to_7=True "
+            "5947_to_13=True "
+            "6813_to_9=True "
+            "LAST50_ONCE=True "
+            "OUTBOUND_HISTORY_SPAM=False "
+            "LIVE_FORWARDING=True"
+        )
+
+
+        return True
+
+
+    except Exception as exc:
+
+        # Absolute safety: never leave outbound forwarding paused.
+
+        VIP_TOPIC_MOVE_ACTIVE_TOPICS.clear()
+
+
+        log.exception(
+            "[VIP MOVE FAILED SAFE] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+
+        return False
+
+# END VIP_TOPIC_MOVE_LAST50_V1
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -4181,6 +5409,7 @@ async def main():
     await cleanup_existing_blocked_sender_copies_once()
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())
+    vip_topic_move_task = asyncio.create_task(vip_topic_move_last50_v1())
     market_slayers_last50_v2_task = asyncio.create_task(market_slayers_last50_v2())
     log.info("Imperium fixed Telegram worker running...")
     asyncio.create_task(stats.loop(client))

@@ -2190,22 +2190,87 @@ async def initialise_new_mirror_poll_state():
 
 
 
+# BEGIN FAST_TOPIC11_CONFIG_V1
+
+FAST_TOPIC11_SOURCE_CHAT = -1003726286301
+FAST_TOPIC11_SOURCE_TOPIC = 11
+
+FAST_TOPIC11_DESTINATIONS = {
+    (-1003802436353, 31),
+    (-1004365831817, 33),
+}
+
+FAST_TOPIC11_POLL_SECONDS = max(
+    0.5,
+    float(
+        os.environ.get(
+            "FAST_TOPIC11_POLL_SECONDS",
+            "1.0",
+        )
+    ),
+)
+
+
+def is_fast_topic11_route(route):
+
+    try:
+
+        source_chat = int(
+            route.get("source_chat", 0)
+        )
+
+        source_topic = int(
+            route.get("source_topic", 0)
+            or 0
+        )
+
+        dest_chat = int(
+            route.get("dest_chat", 0)
+        )
+
+        dest_topic = int(
+            route.get("dest_topic", 0)
+        )
+
+    except Exception:
+
+        return False
+
+
+    return (
+        source_chat == FAST_TOPIC11_SOURCE_CHAT
+        and source_topic == FAST_TOPIC11_SOURCE_TOPIC
+        and (dest_chat, dest_topic)
+        in FAST_TOPIC11_DESTINATIONS
+    )
+
+
+def fast_topic11_routes():
+
+    return [
+        route
+        for route in ROUTES
+        if is_fast_topic11_route(route)
+    ]
+
+
 def private_live_routes():
     """
-    Routes marked live_only get a dedicated polling backup.
+    General private live routes.
 
-    This intentionally ignores NEW_MIRROR_DEBUG_* filters because those
-    filters were causing private destination routes to disappear from
-    polling.
-
-    No history is forwarded: startup records the current latest message
-    ID and only messages arriving afterwards are eligible.
+    Topic 11 -> Jamie31 / MarketSlayers33 are intentionally
+    excluded because FAST_TOPIC11_FANOUT_V1 is their sole writer.
     """
+
     return [
         route
         for route in ROUTES
         if route.get("live_only")
+        and not is_fast_topic11_route(route)
     ]
+
+
+# END FAST_TOPIC11_CONFIG_V1
 
 
 async def snapshot_private_live_route(
@@ -2894,6 +2959,611 @@ async def private_live_route_poll_loop():
 
 
         await asyncio.sleep(5)
+
+
+
+# BEGIN FAST_TOPIC11_FANOUT_V1
+
+async def fast_topic11_fanout_loop():
+    """
+    Dedicated low-latency forwarding:
+
+        -1003726286301_11
+                  |
+                  +--> -1003802436353_31
+                  |
+                  +--> -1004365831817_33
+
+    Guarantees:
+
+    - exact topic only
+    - one source poll for both destinations
+    - startup copies zero history
+    - approximately 1-second polling
+    - oldest -> newest
+    - albums remain albums
+    - each destination has independent mapping
+    - if one destination succeeds and the other fails,
+      only the failed destination is retried
+    - source checkpoint advances only once both destinations
+      have been handled
+    """
+
+    routes = fast_topic11_routes()
+
+
+    if len(routes) != 2:
+
+        log.error(
+            "[FAST11 FATAL CONFIG] "
+            f"expected_routes=2 actual={len(routes)} "
+            f"routes={[r.get('name') for r in routes]}"
+        )
+
+        return
+
+
+    expected = {
+        (
+            int(route["dest_chat"]),
+            int(route["dest_topic"]),
+        )
+        for route in routes
+    }
+
+
+    if expected != FAST_TOPIC11_DESTINATIONS:
+
+        log.error(
+            "[FAST11 FATAL CONFIG] "
+            f"destinations={sorted(expected)} "
+            f"expected={sorted(FAST_TOPIC11_DESTINATIONS)}"
+        )
+
+        return
+
+
+    # Use either exact-topic route for the single source fetch.
+    probe_route = routes[0]
+
+
+    last_id = None
+
+
+    # ========================================================
+    # SAFE INITIAL SNAPSHOT
+    #
+    # Absolutely no history is forwarded.
+    # ========================================================
+
+    while last_id is None:
+
+        try:
+
+            snapshot = await get_route_poll_messages(
+                probe_route,
+                50,
+            )
+
+            snapshot = list(
+                snapshot or []
+            )
+
+
+            latest = max(
+                [
+                    int(
+                        getattr(
+                            message,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+                    for message in snapshot
+                ]
+                or [0]
+            )
+
+
+            last_id = latest
+
+
+            log.warning(
+                "[FAST11 READY] "
+                f"source={FAST_TOPIC11_SOURCE_CHAT}_"
+                f"{FAST_TOPIC11_SOURCE_TOPIC} "
+                f"baseline_id={last_id} "
+                f"destinations={sorted(FAST_TOPIC11_DESTINATIONS)} "
+                f"poll={FAST_TOPIC11_POLL_SECONDS}s "
+                "COPIED_HISTORY=0 "
+                "SINGLE_SOURCE_FETCH=True"
+            )
+
+
+        except Exception as exc:
+
+            log.exception(
+                "[FAST11 SNAPSHOT FAILED - LOCKED] "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            await asyncio.sleep(
+                2
+            )
+
+
+    # ========================================================
+    # LIVE LOOP
+    # ========================================================
+
+    while True:
+
+        try:
+
+            messages = await get_route_poll_messages(
+                probe_route,
+                200,
+            )
+
+            messages = list(
+                messages or []
+            )
+
+
+            newer = []
+
+
+            for message in messages:
+
+                try:
+
+                    mid = int(
+                        getattr(
+                            message,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+
+                except Exception:
+
+                    mid = 0
+
+
+                if mid > last_id:
+
+                    newer.append(
+                        message
+                    )
+
+
+            newer.sort(
+                key=lambda message: int(
+                    getattr(
+                        message,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+            )
+
+
+            # ====================================================
+            # Build ordered Telegram units.
+            #
+            # Normal message = one unit
+            # Album = one complete unit
+            # ====================================================
+
+            units = []
+            used_ids = set()
+
+
+            for message in newer:
+
+                mid = int(
+                    getattr(
+                        message,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+
+
+                if mid in used_ids:
+                    continue
+
+
+                grouped_id = getattr(
+                    message,
+                    "grouped_id",
+                    None,
+                )
+
+
+                if grouped_id:
+
+                    unit = [
+                        candidate
+                        for candidate in newer
+                        if getattr(
+                            candidate,
+                            "grouped_id",
+                            None,
+                        )
+                        == grouped_id
+                    ]
+
+
+                    unit.sort(
+                        key=lambda candidate: int(
+                            getattr(
+                                candidate,
+                                "id",
+                                0,
+                            )
+                            or 0
+                        )
+                    )
+
+
+                else:
+
+                    unit = [
+                        message
+                    ]
+
+
+                for item in unit:
+
+                    used_ids.add(
+                        int(
+                            getattr(
+                                item,
+                                "id",
+                                0,
+                            )
+                            or 0
+                        )
+                    )
+
+
+                units.append(
+                    unit
+                )
+
+
+            # ====================================================
+            # PROCESS OLDEST -> NEWEST
+            # ====================================================
+
+            for unit in units:
+
+                if not unit:
+                    continue
+
+
+                ids = [
+                    int(
+                        getattr(
+                            item,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+                    for item in unit
+                ]
+
+
+                max_mid = max(
+                    ids
+                )
+
+                first = unit[0]
+
+                grouped_id = getattr(
+                    first,
+                    "grouped_id",
+                    None,
+                )
+
+
+                # --------------------------------------------
+                # Album completion guard.
+                # --------------------------------------------
+
+                if grouped_id:
+
+                    timestamps = []
+
+
+                    for item in unit:
+
+                        date_value = getattr(
+                            item,
+                            "date",
+                            None,
+                        )
+
+
+                        if date_value is None:
+                            continue
+
+
+                        try:
+
+                            timestamps.append(
+                                float(
+                                    date_value.timestamp()
+                                )
+                            )
+
+                        except Exception:
+
+                            pass
+
+
+                    if timestamps:
+
+                        age = (
+                            time.time()
+                            - max(timestamps)
+                        )
+
+
+                        if age < 2.0:
+
+                            log.info(
+                                "[FAST11 ALBUM HOLD] "
+                                f"grouped_id={grouped_id} "
+                                f"ids={ids} "
+                                f"age={age:.2f}s"
+                            )
+
+                            # Do not pass an unfinished album.
+                            break
+
+
+                all_destinations_handled = True
+
+
+                # =================================================
+                # DELIVER SAME SOURCE UNIT TO BOTH DESTINATIONS
+                # =================================================
+
+                for route in routes:
+
+                    dest = (
+                        int(route["dest_chat"]),
+                        int(route["dest_topic"]),
+                    )
+
+
+                    try:
+
+                        mapped_flags = [
+                            bool(
+                                existing_destination_ids(
+                                    item,
+                                    route,
+                                )
+                            )
+                            for item in unit
+                        ]
+
+
+                        # ----------------------------------------
+                        # Already delivered to THIS destination.
+                        # ----------------------------------------
+
+                        if all(mapped_flags):
+
+                            log.info(
+                                "[FAST11 DEST ALREADY COPIED] "
+                                f"ids={ids} "
+                                f"dest={dest[0]}_{dest[1]}"
+                            )
+
+                            continue
+
+
+                        # ----------------------------------------
+                        # Never reconstruct a partial old album.
+                        # ----------------------------------------
+
+                        if (
+                            grouped_id
+                            and any(mapped_flags)
+                        ):
+
+                            raise RuntimeError(
+                                "partial album mapping detected "
+                                f"ids={ids} "
+                                f"mapped={mapped_flags}"
+                            )
+
+
+                        # ----------------------------------------
+                        # Normal hard sender protections.
+                        # ----------------------------------------
+
+                        blocked_sender = any(
+                            should_hard_block_sender(
+                                item,
+                                "fast11",
+                                route,
+                            )
+                            for item in unit
+                        )
+
+
+                        if blocked_sender:
+
+                            log.warning(
+                                "[FAST11 HARD-SENDER SKIP] "
+                                f"ids={ids} "
+                                f"dest={dest[0]}_{dest[1]}"
+                            )
+
+                            continue
+
+
+                        blocked_vip_source = any(
+                            should_hard_block_2521699926_from_vip(
+                                item,
+                                route,
+                            )
+                            for item in unit
+                        )
+
+
+                        if blocked_vip_source:
+
+                            log.warning(
+                                "[FAST11 VIP-SOURCE SKIP] "
+                                f"ids={ids} "
+                                f"dest={dest[0]}_{dest[1]}"
+                            )
+
+                            continue
+
+
+                        # ----------------------------------------
+                        # Loop guard is destination-specific.
+                        # ----------------------------------------
+
+                        blocked_loop = any(
+                            should_block_private_peer_loop(
+                                item,
+                                route,
+                            )
+                            for item in unit
+                        )
+
+
+                        if blocked_loop:
+
+                            log.warning(
+                                "[FAST11 LOOP SKIP] "
+                                f"ids={ids} "
+                                f"dest={dest[0]}_{dest[1]}"
+                            )
+
+                            continue
+
+
+                        # ----------------------------------------
+                        # SEND
+                        # ----------------------------------------
+
+                        if (
+                            grouped_id
+                            and len(unit) > 1
+                        ):
+
+                            sent = await copy_album_with_retry(
+                                unit,
+                                route,
+                            )
+
+                            kind = (
+                                f"ALBUM items={len(unit)}"
+                            )
+
+
+                        else:
+
+                            sent = await copy_one_with_retry(
+                                first,
+                                route,
+                                edited=False,
+                            )
+
+                            kind = "SINGLE"
+
+
+                        if not sent:
+
+                            raise RuntimeError(
+                                "copy returned no "
+                                "destination message"
+                            )
+
+
+                        log.warning(
+                            "[FAST11 COPIED] "
+                            f"source={FAST_TOPIC11_SOURCE_CHAT}_"
+                            f"{FAST_TOPIC11_SOURCE_TOPIC} "
+                            f"ids={ids} "
+                            f"kind={kind} "
+                            f"dest={dest[0]}_{dest[1]}"
+                        )
+
+
+                    except Exception as exc:
+
+                        all_destinations_handled = False
+
+
+                        log.exception(
+                            "[FAST11 DEST FAILED] "
+                            f"ids={ids} "
+                            f"dest={dest[0]}_{dest[1]} "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+
+
+                # =================================================
+                # Advance source checkpoint ONLY after BOTH routes
+                # are safely handled.
+                #
+                # If one failed, next loop retries this same source
+                # message. Destination mapping prevents the other
+                # successful destination from receiving a duplicate.
+                # =================================================
+
+                if not all_destinations_handled:
+
+                    log.warning(
+                        "[FAST11 RETAINING SOURCE CHECKPOINT] "
+                        f"last_id={last_id} "
+                        f"failed_unit={ids}"
+                    )
+
+                    break
+
+
+                last_id = max(
+                    last_id,
+                    max_mid,
+                )
+
+
+                log.info(
+                    "[FAST11 SOURCE COMMITTED] "
+                    f"ids={ids} "
+                    f"last_id={last_id}"
+                )
+
+
+        except Exception as exc:
+
+            log.exception(
+                "[FAST11 POLL ERROR] "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+
+        await asyncio.sleep(
+            FAST_TOPIC11_POLL_SECONDS
+        )
+
+# END FAST_TOPIC11_FANOUT_V1
 
 
 async def new_mirror_poll_loop():
@@ -5409,6 +6079,7 @@ async def main():
     await cleanup_existing_blocked_sender_copies_once()
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())
+    asyncio.create_task(fast_topic11_fanout_loop())
     vip_topic_move_task = asyncio.create_task(vip_topic_move_last50_v1())
     market_slayers_last50_v2_task = asyncio.create_task(market_slayers_last50_v2())
     log.info("Imperium fixed Telegram worker running...")

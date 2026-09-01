@@ -2190,46 +2190,186 @@ async def initialise_new_mirror_poll_state():
 
 
 
-# BEGIN FAST_TOPIC11_CONFIG_V1
 
-FAST_TOPIC11_SOURCE_CHAT = -1003726286301
-FAST_TOPIC11_SOURCE_TOPIC = 11
 
-FAST_TOPIC11_DESTINATIONS = {
-    (-1003802436353, 31),
-    (-1004365831817, 33),
-}
 
-FAST_TOPIC11_POLL_SECONDS = max(
-    0.5,
+
+# BEGIN FAST_VIP_ROUTER_CONFIG_V1
+
+FAST_VIP_CHAT = -1003726286301
+
+FAST_VIP_POLL_SECONDS = max(
+    0.25,
     float(
         os.environ.get(
-            "FAST_TOPIC11_POLL_SECONDS",
-            "1.0",
+            "FAST_VIP_POLL_SECONDS",
+            "0.5",
         )
     ),
 )
 
+# Maximum simultaneous Telegram history fetches used by
+# the VIP priority router.
+FAST_VIP_FETCH_CONCURRENCY = max(
+    1,
+    int(
+        os.environ.get(
+            "FAST_VIP_FETCH_CONCURRENCY",
+            "6",
+        )
+    ),
+)
 
-def is_fast_topic11_route(route):
+FAST_VIP_FETCH_SEMAPHORE = asyncio.Semaphore(
+    FAST_VIP_FETCH_CONCURRENCY
+)
+
+FAST_VIP_READY_SOURCES = set()
+
+
+def is_fast_vip_route(route):
+    """
+    Every live-only route whose source OR destination is
+    the VIP belongs to the dedicated priority router.
+    """
+
+    if not isinstance(route, dict):
+        return False
+
+    if not route.get("live_only"):
+        return False
 
     try:
-
         source_chat = int(
             route.get("source_chat", 0)
         )
+    except Exception:
+        source_chat = 0
 
-        source_topic = int(
-            route.get("source_topic", 0)
-            or 0
-        )
-
+    try:
         dest_chat = int(
             route.get("dest_chat", 0)
         )
+    except Exception:
+        dest_chat = 0
 
-        dest_topic = int(
-            route.get("dest_topic", 0)
+    return (
+        source_chat == FAST_VIP_CHAT
+        or dest_chat == FAST_VIP_CHAT
+    )
+
+
+def fast_vip_routes():
+
+    return [
+        route
+        for route in ROUTES
+        if is_fast_vip_route(route)
+    ]
+
+
+def fast_vip_source_key(route):
+
+    return (
+        int(route["source_chat"]),
+        (
+            int(route["source_topic"])
+            if route.get("source_topic") is not None
+            else None
+        ),
+    )
+
+
+def fast_vip_route_groups():
+    """
+    Group destinations by SOURCE.
+
+    Important for outbound VIP fan-out:
+
+        VIP topic 11
+              |
+              +--> Jamie
+              +--> Market Slayers
+
+    Topic 11 is fetched ONCE, then copied concurrently
+    to both destinations.
+    """
+
+    groups = {}
+
+    for route in fast_vip_routes():
+
+        key = fast_vip_source_key(
+            route
+        )
+
+        groups.setdefault(
+            key,
+            [],
+        ).append(
+            route
+        )
+
+    return groups
+
+
+def private_live_routes():
+    """
+    General private poller.
+
+    Every VIP-related live route is deliberately excluded
+    because FAST_VIP_ROUTER_V1 is its sole writer.
+    """
+
+    return [
+        route
+        for route in ROUTES
+        if route.get("live_only")
+        and not is_fast_vip_route(route)
+    ]
+
+
+# ============================================================
+# SPECIAL SAFE DEDUPE FOR THE TWO PROVIDERS FEEDING VIP 11
+#
+# Old behaviour:
+#     A forwards B -> loop guard can discard it immediately.
+#
+# New behaviour:
+#     first exact ORIGINAL Telegram post seen wins.
+#
+# Where Telegram exposes ForwardHeader.channel_post:
+#
+#     direct A message      = (A, original_msg_id)
+#     B forwarding A       = (A, original_msg_id)
+#
+# They therefore become one canonical event regardless of
+# which provider copy arrives first.
+# ============================================================
+
+FAST_VIP_PAIR_SOURCES = {
+    -1002438454194,
+    -1003252087470,
+}
+
+FAST_VIP_PAIR_DEST_TOPIC = 11
+
+FAST_VIP_PAIR_SEEN = {}
+FAST_VIP_PAIR_LOCK = asyncio.Lock()
+
+
+def is_fast_vip_pair_route(route):
+
+    try:
+
+        return (
+            int(route.get("source_chat", 0))
+            in FAST_VIP_PAIR_SOURCES
+            and route.get("source_topic") is None
+            and int(route.get("dest_chat", 0))
+            == FAST_VIP_CHAT
+            and int(route.get("dest_topic", 0))
+            == FAST_VIP_PAIR_DEST_TOPIC
         )
 
     except Exception:
@@ -2237,40 +2377,173 @@ def is_fast_topic11_route(route):
         return False
 
 
+def fast_vip_pair_canonical_key(
+    message,
+    route,
+):
+
+    if not is_fast_vip_pair_route(
+        route
+    ):
+        return None
+
+    source_chat = int(
+        route["source_chat"]
+    )
+
+    source_id = int(
+        getattr(
+            message,
+            "id",
+            0,
+        )
+        or 0
+    )
+
+    fwd = getattr(
+        message,
+        "fwd_from",
+        None,
+    )
+
+    if fwd:
+
+        try:
+
+            origins = (
+                forward_origin_chat_ids(
+                    message
+                )
+                & FAST_VIP_PAIR_SOURCES
+            )
+
+        except Exception:
+
+            origins = set()
+
+
+        original_post = getattr(
+            fwd,
+            "channel_post",
+            None,
+        )
+
+
+        if (
+            len(origins) == 1
+            and original_post
+        ):
+
+            original_chat = next(
+                iter(origins)
+            )
+
+            return (
+                "telegram-original",
+                int(original_chat),
+                int(original_post),
+            )
+
+
+    # Direct source message.
     return (
-        source_chat == FAST_TOPIC11_SOURCE_CHAT
-        and source_topic == FAST_TOPIC11_SOURCE_TOPIC
-        and (dest_chat, dest_topic)
-        in FAST_TOPIC11_DESTINATIONS
+        "telegram-original",
+        source_chat,
+        source_id,
     )
 
 
-def fast_topic11_routes():
+async def fast_vip_pair_reserve(
+    key,
+):
 
-    return [
-        route
-        for route in ROUTES
-        if is_fast_topic11_route(route)
-    ]
+    if key is None:
+        return True
 
 
-def private_live_routes():
+    async with FAST_VIP_PAIR_LOCK:
+
+        now = time.time()
+
+
+        # Keep one hour of exact Telegram-original IDs.
+        expired = [
+            candidate
+            for candidate, timestamp
+            in FAST_VIP_PAIR_SEEN.items()
+            if (
+                now
+                - float(timestamp)
+            ) > 3600
+        ]
+
+
+        for candidate in expired:
+
+            FAST_VIP_PAIR_SEEN.pop(
+                candidate,
+                None,
+            )
+
+
+        if key in FAST_VIP_PAIR_SEEN:
+
+            return False
+
+
+        FAST_VIP_PAIR_SEEN[key] = now
+
+        return True
+
+
+async def fast_vip_pair_release(
+    key,
+):
+
+    if key is None:
+        return
+
+
+    async with FAST_VIP_PAIR_LOCK:
+
+        FAST_VIP_PAIR_SEEN.pop(
+            key,
+            None,
+        )
+
+
+def fast_vip_effective_route(
+    route,
+):
     """
-    General private live routes.
-
-    Topic 11 -> Jamie31 / MarketSlayers33 are intentionally
-    excluded because FAST_TOPIC11_FANOUT_V1 is their sole writer.
+    Pair routes use canonical first-copy-wins protection
+    instead of the old broad peer-loop / 15-minute text dedupe.
     """
 
-    return [
+    if not is_fast_vip_pair_route(
         route
-        for route in ROUTES
-        if route.get("live_only")
-        and not is_fast_topic11_route(route)
-    ]
+    ):
+        return route
 
 
-# END FAST_TOPIC11_CONFIG_V1
+    effective = dict(
+        route
+    )
+
+    effective.pop(
+        "loop_guard_peers",
+        None,
+    )
+
+    effective.pop(
+        "cross_source_dedupe",
+        None,
+    )
+
+    return effective
+
+
+# END FAST_VIP_ROUTER_CONFIG_V1
 
 
 async def snapshot_private_live_route(
@@ -2962,95 +3235,391 @@ async def private_live_route_poll_loop():
 
 
 
-# BEGIN FAST_TOPIC11_FANOUT_V1
-
-async def fast_topic11_fanout_loop():
-    """
-    Dedicated low-latency forwarding:
-
-        -1003726286301_11
-                  |
-                  +--> -1003802436353_31
-                  |
-                  +--> -1004365831817_33
-
-    Guarantees:
-
-    - exact topic only
-    - one source poll for both destinations
-    - startup copies zero history
-    - approximately 1-second polling
-    - oldest -> newest
-    - albums remain albums
-    - each destination has independent mapping
-    - if one destination succeeds and the other fails,
-      only the failed destination is retried
-    - source checkpoint advances only once both destinations
-      have been handled
-    """
-
-    routes = fast_topic11_routes()
 
 
-    if len(routes) != 2:
 
-        log.error(
-            "[FAST11 FATAL CONFIG] "
-            f"expected_routes=2 actual={len(routes)} "
-            f"routes={[r.get('name') for r in routes]}"
+
+
+# BEGIN FAST_VIP_ROUTER_V1
+
+async def fast_vip_build_units(
+    newer,
+):
+
+    units = []
+    used_ids = set()
+
+
+    for message in newer:
+
+        mid = int(
+            getattr(
+                message,
+                "id",
+                0,
+            )
+            or 0
         )
 
-        return
+
+        if mid in used_ids:
+            continue
 
 
-    expected = {
-        (
-            int(route["dest_chat"]),
-            int(route["dest_topic"]),
-        )
-        for route in routes
-    }
-
-
-    if expected != FAST_TOPIC11_DESTINATIONS:
-
-        log.error(
-            "[FAST11 FATAL CONFIG] "
-            f"destinations={sorted(expected)} "
-            f"expected={sorted(FAST_TOPIC11_DESTINATIONS)}"
+        grouped_id = getattr(
+            message,
+            "grouped_id",
+            None,
         )
 
-        return
+
+        if grouped_id:
+
+            unit = [
+                candidate
+                for candidate in newer
+                if getattr(
+                    candidate,
+                    "grouped_id",
+                    None,
+                )
+                == grouped_id
+            ]
 
 
-    # Use either exact-topic route for the single source fetch.
+            unit.sort(
+                key=lambda candidate: int(
+                    getattr(
+                        candidate,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+            )
+
+
+        else:
+
+            unit = [
+                message
+            ]
+
+
+        for item in unit:
+
+            used_ids.add(
+                int(
+                    getattr(
+                        item,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+            )
+
+
+        units.append(
+            unit
+        )
+
+
+    return units
+
+
+async def fast_vip_deliver_route(
+    route,
+    unit,
+):
+
+    ids = [
+        int(
+            getattr(
+                item,
+                "id",
+                0,
+            )
+            or 0
+        )
+        for item in unit
+    ]
+
+    first = unit[0]
+
+    grouped_id = getattr(
+        first,
+        "grouped_id",
+        None,
+    )
+
+    dest = (
+        int(route["dest_chat"]),
+        int(route["dest_topic"]),
+    )
+
+
+    try:
+
+        mapped_flags = [
+            bool(
+                existing_destination_ids(
+                    item,
+                    route,
+                )
+            )
+            for item in unit
+        ]
+
+
+        if all(mapped_flags):
+
+            log.info(
+                "[FASTVIP DEST ALREADY COPIED] "
+                f"route={route.get('name')} "
+                f"ids={ids} "
+                f"dest={dest[0]}_{dest[1]}"
+            )
+
+            return True
+
+
+        if (
+            grouped_id
+            and any(mapped_flags)
+        ):
+
+            raise RuntimeError(
+                "partial album mapping detected "
+                f"ids={ids} "
+                f"mapped={mapped_flags}"
+            )
+
+
+        # ----------------------------------------------------
+        # HARD SENDER PROTECTION
+        # ----------------------------------------------------
+
+        if any(
+            should_hard_block_sender(
+                item,
+                "fastvip",
+                route,
+            )
+            for item in unit
+        ):
+
+            log.warning(
+                "[FASTVIP HARD-SENDER SKIP] "
+                f"route={route.get('name')} "
+                f"ids={ids}"
+            )
+
+            return True
+
+
+        if any(
+            should_hard_block_2521699926_from_vip(
+                item,
+                route,
+            )
+            for item in unit
+        ):
+
+            log.warning(
+                "[FASTVIP HARD-VIP-SOURCE SKIP] "
+                f"route={route.get('name')} "
+                f"ids={ids}"
+            )
+
+            return True
+
+
+        pair_route = is_fast_vip_pair_route(
+            route
+        )
+
+
+        # ----------------------------------------------------
+        # Existing loop guard remains active everywhere
+        # EXCEPT the special paired providers feeding VIP 11.
+        # ----------------------------------------------------
+
+        if (
+            not pair_route
+            and any(
+                should_block_private_peer_loop(
+                    item,
+                    route,
+                )
+                for item in unit
+            )
+        ):
+
+            log.warning(
+                "[FASTVIP LOOP SKIP] "
+                f"route={route.get('name')} "
+                f"ids={ids} "
+                f"dest={dest[0]}_{dest[1]}"
+            )
+
+            return True
+
+
+        effective_route = (
+            fast_vip_effective_route(
+                route
+            )
+        )
+
+
+        # ----------------------------------------------------
+        # Other cross-source dedupe routes retain existing
+        # behaviour. Paired VIP-11 sources use canonical
+        # Telegram original IDs instead.
+        # ----------------------------------------------------
+
+        if (
+            not pair_route
+            and route.get(
+                "cross_source_dedupe"
+            )
+        ):
+
+            text = ""
+
+            for item in unit:
+
+                candidate = text_of(
+                    item
+                )
+
+                if candidate:
+
+                    text = candidate
+                    break
+
+
+            if (
+                text
+                and is_recent_duplicate(
+                    route,
+                    first,
+                    text,
+                )
+            ):
+
+                log.info(
+                    "[FASTVIP CROSS DUPLICATE SKIP] "
+                    f"route={route.get('name')} "
+                    f"ids={ids}"
+                )
+
+                return True
+
+
+        # ----------------------------------------------------
+        # COPY
+        # ----------------------------------------------------
+
+        if (
+            grouped_id
+            and len(unit) > 1
+        ):
+
+            sent = await copy_album_with_retry(
+                unit,
+                effective_route,
+            )
+
+            kind = (
+                f"ALBUM items={len(unit)}"
+            )
+
+
+        else:
+
+            sent = await copy_one_with_retry(
+                first,
+                effective_route,
+                edited=False,
+            )
+
+            kind = "SINGLE"
+
+
+        if not sent:
+
+            raise RuntimeError(
+                "VIP priority copy returned "
+                "no destination message"
+            )
+
+
+        log.warning(
+            "[FASTVIP COPIED] "
+            f"route={route.get('name')} "
+            f"source={route.get('source_chat')}_"
+            f"{route.get('source_topic')} "
+            f"ids={ids} "
+            f"kind={kind} "
+            f"dest={dest[0]}_{dest[1]}"
+        )
+
+
+        return True
+
+
+    except Exception as exc:
+
+        log.exception(
+            "[FASTVIP DEST FAILED] "
+            f"route={route.get('name')} "
+            f"ids={ids} "
+            f"dest={dest[0]}_{dest[1]} "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return False
+
+
+async def fast_vip_source_loop_v1(
+    source_key,
+    routes,
+):
+
+    source_chat, source_topic = source_key
+
     probe_route = routes[0]
-
 
     last_id = None
 
 
     # ========================================================
-    # SAFE INITIAL SNAPSHOT
+    # SAFE STARTUP SNAPSHOT
     #
-    # Absolutely no history is forwarded.
+    # Fetch failure NEVER becomes baseline 0.
+    # No startup history is copied.
     # ========================================================
 
     while last_id is None:
 
         try:
 
-            snapshot = await get_route_poll_messages(
-                probe_route,
-                50,
+            async with FAST_VIP_FETCH_SEMAPHORE:
+
+                messages = await get_route_poll_messages(
+                    probe_route,
+                    50,
+                )
+
+
+            messages = list(
+                messages or []
             )
 
-            snapshot = list(
-                snapshot or []
-            )
 
-
-            latest = max(
+            last_id = max(
                 [
                     int(
                         getattr(
@@ -3060,33 +3629,36 @@ async def fast_topic11_fanout_loop():
                         )
                         or 0
                     )
-                    for message in snapshot
+                    for message in messages
                 ]
                 or [0]
             )
 
 
-            last_id = latest
+            FAST_VIP_READY_SOURCES.add(
+                source_key
+            )
 
 
             log.warning(
-                "[FAST11 READY] "
-                f"source={FAST_TOPIC11_SOURCE_CHAT}_"
-                f"{FAST_TOPIC11_SOURCE_TOPIC} "
+                "[FASTVIP SOURCE READY] "
+                f"source={source_chat}_{source_topic} "
                 f"baseline_id={last_id} "
-                f"destinations={sorted(FAST_TOPIC11_DESTINATIONS)} "
-                f"poll={FAST_TOPIC11_POLL_SECONDS}s "
-                "COPIED_HISTORY=0 "
-                "SINGLE_SOURCE_FETCH=True"
+                f"destinations="
+                f"{[(r['dest_chat'], r['dest_topic']) for r in routes]} "
+                f"poll={FAST_VIP_POLL_SECONDS}s "
+                "COPIED_HISTORY=0"
             )
 
 
         except Exception as exc:
 
             log.exception(
-                "[FAST11 SNAPSHOT FAILED - LOCKED] "
+                "[FASTVIP SNAPSHOT FAILED - SOURCE LOCKED] "
+                f"source={source_chat}_{source_topic} "
                 f"{type(exc).__name__}: {exc}"
             )
+
 
             await asyncio.sleep(
                 2
@@ -3101,42 +3673,31 @@ async def fast_topic11_fanout_loop():
 
         try:
 
-            messages = await get_route_poll_messages(
-                probe_route,
-                200,
-            )
+            async with FAST_VIP_FETCH_SEMAPHORE:
+
+                messages = await get_route_poll_messages(
+                    probe_route,
+                    200,
+                )
+
 
             messages = list(
                 messages or []
             )
 
 
-            newer = []
-
-
-            for message in messages:
-
-                try:
-
-                    mid = int(
-                        getattr(
-                            message,
-                            "id",
-                            0,
-                        )
-                        or 0
+            newer = [
+                message
+                for message in messages
+                if int(
+                    getattr(
+                        message,
+                        "id",
+                        0,
                     )
-
-                except Exception:
-
-                    mid = 0
-
-
-                if mid > last_id:
-
-                    newer.append(
-                        message
-                    )
+                    or 0
+                ) > last_id
+            ]
 
 
             newer.sort(
@@ -3151,95 +3712,10 @@ async def fast_topic11_fanout_loop():
             )
 
 
-            # ====================================================
-            # Build ordered Telegram units.
-            #
-            # Normal message = one unit
-            # Album = one complete unit
-            # ====================================================
+            units = await fast_vip_build_units(
+                newer
+            )
 
-            units = []
-            used_ids = set()
-
-
-            for message in newer:
-
-                mid = int(
-                    getattr(
-                        message,
-                        "id",
-                        0,
-                    )
-                    or 0
-                )
-
-
-                if mid in used_ids:
-                    continue
-
-
-                grouped_id = getattr(
-                    message,
-                    "grouped_id",
-                    None,
-                )
-
-
-                if grouped_id:
-
-                    unit = [
-                        candidate
-                        for candidate in newer
-                        if getattr(
-                            candidate,
-                            "grouped_id",
-                            None,
-                        )
-                        == grouped_id
-                    ]
-
-
-                    unit.sort(
-                        key=lambda candidate: int(
-                            getattr(
-                                candidate,
-                                "id",
-                                0,
-                            )
-                            or 0
-                        )
-                    )
-
-
-                else:
-
-                    unit = [
-                        message
-                    ]
-
-
-                for item in unit:
-
-                    used_ids.add(
-                        int(
-                            getattr(
-                                item,
-                                "id",
-                                0,
-                            )
-                            or 0
-                        )
-                    )
-
-
-                units.append(
-                    unit
-                )
-
-
-            # ====================================================
-            # PROCESS OLDEST -> NEWEST
-            # ====================================================
 
             for unit in units:
 
@@ -3264,6 +3740,7 @@ async def fast_topic11_fanout_loop():
                     ids
                 )
 
+
                 first = unit[0]
 
                 grouped_id = getattr(
@@ -3274,7 +3751,8 @@ async def fast_topic11_fanout_loop():
 
 
                 # --------------------------------------------
-                # Album completion guard.
+                # Give Telegram albums time to finish.
+                # Text signals are NOT delayed by this.
                 # --------------------------------------------
 
                 if grouped_id:
@@ -3284,14 +3762,14 @@ async def fast_topic11_fanout_loop():
 
                     for item in unit:
 
-                        date_value = getattr(
+                        value = getattr(
                             item,
                             "date",
                             None,
                         )
 
 
-                        if date_value is None:
+                        if value is None:
                             continue
 
 
@@ -3299,7 +3777,7 @@ async def fast_topic11_fanout_loop():
 
                             timestamps.append(
                                 float(
-                                    date_value.timestamp()
+                                    value.timestamp()
                                 )
                             )
 
@@ -3316,225 +3794,107 @@ async def fast_topic11_fanout_loop():
                         )
 
 
-                        if age < 2.0:
+                        if age < 1.5:
 
                             log.info(
-                                "[FAST11 ALBUM HOLD] "
-                                f"grouped_id={grouped_id} "
+                                "[FASTVIP ALBUM HOLD] "
+                                f"source={source_chat}_{source_topic} "
                                 f"ids={ids} "
                                 f"age={age:.2f}s"
                             )
 
-                            # Do not pass an unfinished album.
                             break
 
 
-                all_destinations_handled = True
-
-
                 # =================================================
-                # DELIVER SAME SOURCE UNIT TO BOTH DESTINATIONS
+                # Special paired-provider first-copy-wins lock.
                 # =================================================
 
-                for route in routes:
+                pair_key = None
+                pair_reserved = False
 
-                    dest = (
-                        int(route["dest_chat"]),
-                        int(route["dest_topic"]),
+
+                if (
+                    len(routes) == 1
+                    and is_fast_vip_pair_route(
+                        routes[0]
+                    )
+                ):
+
+                    pair_key = (
+                        fast_vip_pair_canonical_key(
+                            first,
+                            routes[0],
+                        )
                     )
 
 
-                    try:
-
-                        mapped_flags = [
-                            bool(
-                                existing_destination_ids(
-                                    item,
-                                    route,
-                                )
-                            )
-                            for item in unit
-                        ]
-
-
-                        # ----------------------------------------
-                        # Already delivered to THIS destination.
-                        # ----------------------------------------
-
-                        if all(mapped_flags):
-
-                            log.info(
-                                "[FAST11 DEST ALREADY COPIED] "
-                                f"ids={ids} "
-                                f"dest={dest[0]}_{dest[1]}"
-                            )
-
-                            continue
-
-
-                        # ----------------------------------------
-                        # Never reconstruct a partial old album.
-                        # ----------------------------------------
-
-                        if (
-                            grouped_id
-                            and any(mapped_flags)
-                        ):
-
-                            raise RuntimeError(
-                                "partial album mapping detected "
-                                f"ids={ids} "
-                                f"mapped={mapped_flags}"
-                            )
-
-
-                        # ----------------------------------------
-                        # Normal hard sender protections.
-                        # ----------------------------------------
-
-                        blocked_sender = any(
-                            should_hard_block_sender(
-                                item,
-                                "fast11",
-                                route,
-                            )
-                            for item in unit
+                    pair_reserved = (
+                        await fast_vip_pair_reserve(
+                            pair_key
                         )
+                    )
 
 
-                        if blocked_sender:
-
-                            log.warning(
-                                "[FAST11 HARD-SENDER SKIP] "
-                                f"ids={ids} "
-                                f"dest={dest[0]}_{dest[1]}"
-                            )
-
-                            continue
-
-
-                        blocked_vip_source = any(
-                            should_hard_block_2521699926_from_vip(
-                                item,
-                                route,
-                            )
-                            for item in unit
-                        )
-
-
-                        if blocked_vip_source:
-
-                            log.warning(
-                                "[FAST11 VIP-SOURCE SKIP] "
-                                f"ids={ids} "
-                                f"dest={dest[0]}_{dest[1]}"
-                            )
-
-                            continue
-
-
-                        # ----------------------------------------
-                        # Loop guard is destination-specific.
-                        # ----------------------------------------
-
-                        blocked_loop = any(
-                            should_block_private_peer_loop(
-                                item,
-                                route,
-                            )
-                            for item in unit
-                        )
-
-
-                        if blocked_loop:
-
-                            log.warning(
-                                "[FAST11 LOOP SKIP] "
-                                f"ids={ids} "
-                                f"dest={dest[0]}_{dest[1]}"
-                            )
-
-                            continue
-
-
-                        # ----------------------------------------
-                        # SEND
-                        # ----------------------------------------
-
-                        if (
-                            grouped_id
-                            and len(unit) > 1
-                        ):
-
-                            sent = await copy_album_with_retry(
-                                unit,
-                                route,
-                            )
-
-                            kind = (
-                                f"ALBUM items={len(unit)}"
-                            )
-
-
-                        else:
-
-                            sent = await copy_one_with_retry(
-                                first,
-                                route,
-                                edited=False,
-                            )
-
-                            kind = "SINGLE"
-
-
-                        if not sent:
-
-                            raise RuntimeError(
-                                "copy returned no "
-                                "destination message"
-                            )
-
+                    if not pair_reserved:
 
                         log.warning(
-                            "[FAST11 COPIED] "
-                            f"source={FAST_TOPIC11_SOURCE_CHAT}_"
-                            f"{FAST_TOPIC11_SOURCE_TOPIC} "
+                            "[FASTVIP PAIR EXACT DUPLICATE SKIPPED] "
+                            f"source={source_chat}_{source_topic} "
                             f"ids={ids} "
-                            f"kind={kind} "
-                            f"dest={dest[0]}_{dest[1]}"
+                            f"canonical={pair_key}"
                         )
 
 
-                    except Exception as exc:
-
-                        all_destinations_handled = False
-
-
-                        log.exception(
-                            "[FAST11 DEST FAILED] "
-                            f"ids={ids} "
-                            f"dest={dest[0]}_{dest[1]} "
-                            f"{type(exc).__name__}: {exc}"
+                        last_id = max(
+                            last_id,
+                            max_mid,
                         )
 
+                        continue
+
 
                 # =================================================
-                # Advance source checkpoint ONLY after BOTH routes
-                # are safely handled.
-                #
-                # If one failed, next loop retries this same source
-                # message. Destination mapping prevents the other
-                # successful destination from receiving a duplicate.
+                # FAN OUT ALL DESTINATIONS CONCURRENTLY.
                 # =================================================
 
-                if not all_destinations_handled:
+                results = await asyncio.gather(
+                    *[
+                        fast_vip_deliver_route(
+                            route,
+                            unit,
+                        )
+                        for route in routes
+                    ],
+                    return_exceptions=False,
+                )
+
+
+                all_handled = all(
+                    result is True
+                    for result in results
+                )
+
+
+                if not all_handled:
+
+                    if pair_reserved:
+
+                        await fast_vip_pair_release(
+                            pair_key
+                        )
+
 
                     log.warning(
-                        "[FAST11 RETAINING SOURCE CHECKPOINT] "
+                        "[FASTVIP RETAINING SOURCE CHECKPOINT] "
+                        f"source={source_chat}_{source_topic} "
                         f"last_id={last_id} "
                         f"failed_unit={ids}"
                     )
 
+
+                    # Preserve ordering.
+                    # Retry this source unit before newer messages.
                     break
 
 
@@ -3545,25 +3905,165 @@ async def fast_topic11_fanout_loop():
 
 
                 log.info(
-                    "[FAST11 SOURCE COMMITTED] "
+                    "[FASTVIP SOURCE COMMITTED] "
+                    f"source={source_chat}_{source_topic} "
                     f"ids={ids} "
                     f"last_id={last_id}"
                 )
 
 
+        except FloodWaitError as exc:
+
+            wait_for = max(
+                1,
+                int(exc.seconds),
+            )
+
+
+            log.warning(
+                "[FASTVIP FLOODWAIT] "
+                f"source={source_chat}_{source_topic} "
+                f"wait={wait_for}s"
+            )
+
+
+            await asyncio.sleep(
+                wait_for
+            )
+
+
         except Exception as exc:
 
             log.exception(
-                "[FAST11 POLL ERROR] "
+                "[FASTVIP SOURCE ERROR] "
+                f"source={source_chat}_{source_topic} "
                 f"{type(exc).__name__}: {exc}"
             )
 
 
         await asyncio.sleep(
-            FAST_TOPIC11_POLL_SECONDS
+            FAST_VIP_POLL_SECONDS
         )
 
-# END FAST_TOPIC11_FANOUT_V1
+
+async def fast_vip_router_v1():
+
+    routes = fast_vip_routes()
+
+    groups = fast_vip_route_groups()
+
+
+    if not routes:
+
+        log.error(
+            "[FASTVIP FATAL CONFIG] "
+            "No VIP live routes found"
+        )
+
+        return
+
+
+    # Every route touching the VIP must be live_only.
+    # If not, fail closed rather than risk two writers.
+    non_live_touching_vip = []
+
+
+    for route in ROUTES:
+
+        try:
+
+            touches = (
+                int(route.get("source_chat", 0))
+                == FAST_VIP_CHAT
+                or int(route.get("dest_chat", 0))
+                == FAST_VIP_CHAT
+            )
+
+        except Exception:
+
+            touches = False
+
+
+        if (
+            touches
+            and not route.get("live_only")
+        ):
+
+            non_live_touching_vip.append(
+                route
+            )
+
+
+    if non_live_touching_vip:
+
+        log.error(
+            "[FASTVIP FATAL CONFIG] "
+            "VIP has non-live routes; refusing mixed ownership: "
+            f"{[r.get('name') for r in non_live_touching_vip]}"
+        )
+
+        return
+
+
+    log.warning(
+        "[FASTVIP STARTING] "
+        f"vip={FAST_VIP_CHAT} "
+        f"routes={len(routes)} "
+        f"source_groups={len(groups)} "
+        f"poll={FAST_VIP_POLL_SECONDS}s "
+        f"fetch_concurrency={FAST_VIP_FETCH_CONCURRENCY} "
+        "NO_HISTORY=True "
+        "CONCURRENT=True "
+        "SINGLE_WRITER=True"
+    )
+
+
+    tasks = []
+
+
+    for source_key, source_routes in groups.items():
+
+        tasks.append(
+            asyncio.create_task(
+                fast_vip_source_loop_v1(
+                    source_key,
+                    source_routes,
+                )
+            )
+        )
+
+
+    # Report when ALL current VIP source groups have safe
+    # startup baselines.
+    while True:
+
+        if len(
+            FAST_VIP_READY_SOURCES
+        ) == len(groups):
+
+            log.warning(
+                "[FASTVIP ALL READY] "
+                f"vip={FAST_VIP_CHAT} "
+                f"routes={len(routes)} "
+                f"source_groups={len(groups)} "
+                f"poll={FAST_VIP_POLL_SECONDS}s "
+                "COPIED_HISTORY=0 "
+                "PRIORITY_ROUTING=True"
+            )
+
+            break
+
+
+        await asyncio.sleep(
+            0.25
+        )
+
+
+    await asyncio.gather(
+        *tasks
+    )
+
+# END FAST_VIP_ROUTER_V1
 
 
 async def new_mirror_poll_loop():
@@ -6079,7 +6579,7 @@ async def main():
     await cleanup_existing_blocked_sender_copies_once()
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())
-    asyncio.create_task(fast_topic11_fanout_loop())
+    asyncio.create_task(fast_vip_router_v1())
     vip_topic_move_task = asyncio.create_task(vip_topic_move_last50_v1())
     market_slayers_last50_v2_task = asyncio.create_task(market_slayers_last50_v2())
     log.info("Imperium fixed Telegram worker running...")

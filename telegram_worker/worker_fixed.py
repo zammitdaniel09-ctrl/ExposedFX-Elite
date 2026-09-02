@@ -2010,6 +2010,33 @@ async def forward_polled_new_mirror_message(route, msg, reason):
     forwarded_any = False
 
     for matched_route in routes:
+
+        # LIVE_ONLY_GENERIC_POLL_HARD_SKIP_V1
+        #
+        # CRITICAL SINGLE-WRITER PROTECTION:
+        #
+        # The outer new_mirror_routes() selector already excludes
+        # live_only routes, but routes_for(...) above may return a
+        # live_only route sharing the same source chat.
+        #
+        # Never let this generic backup poller copy it.
+        # live_only routes belong exclusively to the dedicated
+        # private/FASTVIP writer.
+        if matched_route.get("live_only"):
+
+            log.info(
+                "[NEW MIRROR POLL LIVE-ONLY HARD SKIP] "
+                f"route={matched_route.get('name')} "
+                f"source={chat_id}_{topic_id} "
+                f"msg={getattr(msg, 'id', None)} "
+                f"dest={matched_route.get('dest_chat')}_"
+                f"{matched_route.get('dest_topic')} "
+                "SOLE_WRITER=PRIVATE_OR_FASTVIP"
+            )
+
+            continue
+
+
         if int(matched_route.get("source_chat")) not in NEW_MIRROR_DEBUG_CHATS:
             continue
 

@@ -4093,6 +4093,1061 @@ async def fast_vip_router_v1():
 # END FAST_VIP_ROUTER_V1
 
 
+# BEGIN FAST_VIP_EVENT_ROUTER_V2
+
+# ============================================================
+# FASTVIP EVENT ROUTER V2
+#
+# PRIMARY:
+#   Telegram updates pushed directly to this process.
+#
+# FALLBACK:
+#   Separate polling watchdog.
+#
+# The watchdog NEVER owns the event queue and NEVER blocks
+# NewMessage / Album delivery.
+# ============================================================
+
+FASTVIP2_WATCHDOG_SECONDS = max(
+    2.0,
+    float(
+        os.environ.get(
+            "FASTVIP2_WATCHDOG_SECONDS",
+            "5",
+        )
+    ),
+)
+
+FASTVIP2_WATCHDOG_LIMIT = max(
+    50,
+    int(
+        os.environ.get(
+            "FASTVIP2_WATCHDOG_LIMIT",
+            "300",
+        )
+    ),
+)
+
+FASTVIP2_WATCHDOG_CONCURRENCY = max(
+    1,
+    int(
+        os.environ.get(
+            "FASTVIP2_WATCHDOG_CONCURRENCY",
+            "3",
+        )
+    ),
+)
+
+
+FASTVIP2_GROUPS = fast_vip_route_groups()
+
+FASTVIP2_SOURCE_CHATS = sorted({
+    int(source_chat)
+    for source_chat, source_topic
+    in FASTVIP2_GROUPS.keys()
+})
+
+
+FASTVIP2_QUEUES = {}
+
+# Units already sitting in an event queue.
+FASTVIP2_QUEUED = set()
+
+# Units successfully handled during this process lifetime.
+FASTVIP2_HANDLED = {}
+
+# Startup baseline for WATCHDOG ONLY.
+# Event updates do not depend on this baseline.
+FASTVIP2_WATCHDOG_BASELINES = {}
+
+FASTVIP2_WATCHDOG_SEMAPHORE = asyncio.Semaphore(
+    FASTVIP2_WATCHDOG_CONCURRENCY
+)
+
+
+def fastvip2_queue_for(
+    source_key,
+):
+
+    queue = FASTVIP2_QUEUES.get(
+        source_key
+    )
+
+    if queue is None:
+
+        queue = asyncio.Queue()
+
+        FASTVIP2_QUEUES[
+            source_key
+        ] = queue
+
+    return queue
+
+
+def fastvip2_unit_ids(
+    unit,
+):
+
+    return tuple(
+        int(
+            getattr(
+                item,
+                "id",
+                0,
+            )
+            or 0
+        )
+        for item in unit
+    )
+
+
+def fastvip2_token(
+    source_key,
+    unit,
+):
+
+    return (
+        source_key,
+        fastvip2_unit_ids(
+            unit
+        ),
+    )
+
+
+def fastvip2_prune_handled():
+
+    now = time.time()
+
+    expired = [
+        token
+        for token, timestamp
+        in FASTVIP2_HANDLED.items()
+        if (
+            now
+            - float(timestamp)
+        ) > 7200
+    ]
+
+    for token in expired:
+
+        FASTVIP2_HANDLED.pop(
+            token,
+            None,
+        )
+
+
+def fastvip2_routes_fully_mapped(
+    routes,
+    unit,
+):
+
+    for route in routes:
+
+        for message in unit:
+
+            if not existing_destination_ids(
+                message,
+                route,
+            ):
+
+                return False
+
+    return True
+
+
+def fastvip2_matching_groups(
+    chat_id,
+    message,
+):
+
+    try:
+
+        chat_id = int(
+            chat_id
+        )
+
+    except Exception:
+
+        return []
+
+
+    try:
+
+        topic_id = topic_of(
+            message,
+            chat_id,
+        )
+
+    except Exception:
+
+        topic_id = None
+
+
+    matches = []
+
+
+    for source_key, routes in FASTVIP2_GROUPS.items():
+
+        source_chat, source_topic = source_key
+
+
+        if int(source_chat) != chat_id:
+            continue
+
+
+        # Whole-chat source route.
+        if source_topic is None:
+
+            matches.append(
+                (
+                    source_key,
+                    routes,
+                )
+            )
+
+            continue
+
+
+        try:
+
+            same_topic = (
+                int(source_topic)
+                == int(topic_id)
+            )
+
+        except Exception:
+
+            same_topic = False
+
+
+        if same_topic:
+
+            matches.append(
+                (
+                    source_key,
+                    routes,
+                )
+            )
+
+
+    return matches
+
+
+async def fastvip2_enqueue(
+    source_key,
+    routes,
+    unit,
+    reason,
+):
+
+    unit = list(
+        unit or []
+    )
+
+
+    if not unit:
+        return False
+
+
+    unit.sort(
+        key=lambda message: int(
+            getattr(
+                message,
+                "id",
+                0,
+            )
+            or 0
+        )
+    )
+
+
+    token = fastvip2_token(
+        source_key,
+        unit,
+    )
+
+
+    fastvip2_prune_handled()
+
+
+    if token in FASTVIP2_HANDLED:
+
+        return False
+
+
+    if token in FASTVIP2_QUEUED:
+
+        return False
+
+
+    # Message map is the durable first duplicate barrier.
+    if fastvip2_routes_fully_mapped(
+        routes,
+        unit,
+    ):
+
+        FASTVIP2_HANDLED[
+            token
+        ] = time.time()
+
+        return False
+
+
+    FASTVIP2_QUEUED.add(
+        token
+    )
+
+
+    queued_at = time.monotonic()
+
+
+    await fastvip2_queue_for(
+        source_key
+    ).put(
+        (
+            routes,
+            unit,
+            reason,
+            token,
+            queued_at,
+        )
+    )
+
+
+    log.info(
+        "[FASTVIP2 QUEUED] "
+        f"source={source_key[0]}_"
+        f"{source_key[1]} "
+        f"ids={list(fastvip2_unit_ids(unit))} "
+        f"reason={reason}"
+    )
+
+
+    return True
+
+
+async def fastvip2_process_unit(
+    source_key,
+    routes,
+    unit,
+    reason,
+):
+
+    ids = list(
+        fastvip2_unit_ids(
+            unit
+        )
+    )
+
+
+    if not ids:
+        return True
+
+
+    first = unit[0]
+
+
+    # ========================================================
+    # Preserve old VIP migration suppression semantics.
+    # ========================================================
+
+    if (
+        int(source_key[0])
+        == VIP_TOPIC_MOVE_NEW_CHAT
+    ):
+
+        try:
+
+            source_topic = (
+                int(source_key[1])
+                if source_key[1] is not None
+                else None
+            )
+
+        except Exception:
+
+            source_topic = None
+
+
+        if (
+            source_topic
+            in VIP_TOPIC_MOVE_ACTIVE_TOPICS
+        ):
+
+            log.warning(
+                "[FASTVIP2 MIGRATION PAUSED] "
+                f"source={source_key[0]}_"
+                f"{source_key[1]} "
+                f"ids={ids}"
+            )
+
+            return False
+
+
+        migration_flags = [
+            message_id
+            in VIP_TOPIC_MOVE_SUPPRESS_IDS
+            for message_id in ids
+        ]
+
+
+        if migration_flags and all(
+            migration_flags
+        ):
+
+            log.warning(
+                "[FASTVIP2 MIGRATION HISTORY SUPPRESSED] "
+                f"source={source_key[0]}_"
+                f"{source_key[1]} "
+                f"ids={ids}"
+            )
+
+            return True
+
+
+        if any(
+            migration_flags
+        ):
+
+            log.error(
+                "[FASTVIP2 MIXED MIGRATION UNIT] "
+                f"source={source_key[0]}_"
+                f"{source_key[1]} "
+                f"ids={ids} "
+                f"flags={migration_flags}"
+            )
+
+            return False
+
+
+    # ========================================================
+    # Special exact first-copy-wins rule for provider pair.
+    # ========================================================
+
+    pair_key = None
+    pair_reserved = False
+
+
+    if (
+        len(routes) == 1
+        and is_fast_vip_pair_route(
+            routes[0]
+        )
+    ):
+
+        pair_key = (
+            fast_vip_pair_canonical_key(
+                first,
+                routes[0],
+            )
+        )
+
+
+        pair_reserved = (
+            await fast_vip_pair_reserve(
+                pair_key
+            )
+        )
+
+
+        if not pair_reserved:
+
+            log.warning(
+                "[FASTVIP2 PAIR EXACT DUPLICATE SKIPPED] "
+                f"source={source_key[0]}_"
+                f"{source_key[1]} "
+                f"ids={ids} "
+                f"canonical={pair_key}"
+            )
+
+            return True
+
+
+    # ========================================================
+    # Fan out all destinations concurrently.
+    # ========================================================
+
+    results = await asyncio.gather(
+        *[
+            fast_vip_deliver_route(
+                route,
+                unit,
+            )
+            for route in routes
+        ],
+        return_exceptions=False,
+    )
+
+
+    success = all(
+        result is True
+        for result in results
+    )
+
+
+    if (
+        not success
+        and pair_reserved
+    ):
+
+        await fast_vip_pair_release(
+            pair_key
+        )
+
+
+    if success:
+
+        log.info(
+            "[FASTVIP2 UNIT SUCCESS] "
+            f"source={source_key[0]}_"
+            f"{source_key[1]} "
+            f"ids={ids} "
+            f"reason={reason}"
+        )
+
+
+    return success
+
+
+async def fastvip2_source_worker(
+    source_key,
+):
+
+    queue = fastvip2_queue_for(
+        source_key
+    )
+
+
+    log.warning(
+        "[FASTVIP2 EVENT SOURCE READY] "
+        f"source={source_key[0]}_"
+        f"{source_key[1]} "
+        "PRIMARY=TELEGRAM_PUSH"
+    )
+
+
+    while True:
+
+        (
+            routes,
+            unit,
+            reason,
+            token,
+            queued_at,
+        ) = await queue.get()
+
+
+        try:
+
+            success = await fastvip2_process_unit(
+                source_key,
+                routes,
+                unit,
+                reason,
+            )
+
+
+            ids = list(
+                fastvip2_unit_ids(
+                    unit
+                )
+            )
+
+
+            if success:
+
+                FASTVIP2_HANDLED[
+                    token
+                ] = time.time()
+
+
+                queue_ms = (
+                    time.monotonic()
+                    - queued_at
+                ) * 1000.0
+
+
+                telegram_age_ms = None
+
+
+                first = unit[0]
+
+                message_date = getattr(
+                    first,
+                    "date",
+                    None,
+                )
+
+
+                if message_date is not None:
+
+                    try:
+
+                        telegram_age_ms = max(
+                            0.0,
+                            (
+                                time.time()
+                                - float(
+                                    message_date.timestamp()
+                                )
+                            )
+                            * 1000.0,
+                        )
+
+                    except Exception:
+
+                        telegram_age_ms = None
+
+
+                log.warning(
+                    "[FASTVIP2 EVENT COMMITTED] "
+                    f"source={source_key[0]}_"
+                    f"{source_key[1]} "
+                    f"ids={ids} "
+                    f"reason={reason} "
+                    f"queue_ms={queue_ms:.1f} "
+                    f"telegram_age_ms="
+                    f"{telegram_age_ms if telegram_age_ms is not None else 'unknown'}"
+                )
+
+
+            else:
+
+                # Do NOT hold newer trading messages behind this one.
+                #
+                # Watchdog will retry the failed/missed unit separately.
+                log.error(
+                    "[FASTVIP2 EVENT DELIVERY FAILED - WATCHDOG RECOVERY] "
+                    f"source={source_key[0]}_"
+                    f"{source_key[1]} "
+                    f"ids={ids}"
+                )
+
+
+        except Exception as exc:
+
+            log.exception(
+                "[FASTVIP2 EVENT WORKER ERROR] "
+                f"source={source_key[0]}_"
+                f"{source_key[1]} "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+
+        finally:
+
+            FASTVIP2_QUEUED.discard(
+                token
+            )
+
+            queue.task_done()
+
+
+async def fastvip2_watchdog(
+    source_key,
+    routes,
+):
+
+    source_chat, source_topic = source_key
+
+
+    # Make every exact-topic watchdog fail closed.
+    # Never fall back to whole-chat history.
+    probe_route = dict(
+        routes[0]
+    )
+
+
+    if source_topic is not None:
+
+        probe_route[
+            "strict_source_topic"
+        ] = True
+
+
+    baseline = None
+
+
+    # ========================================================
+    # SAFE WATCHDOG BASELINE.
+    #
+    # The watchdog never forwards anything from this snapshot.
+    # ========================================================
+
+    while baseline is None:
+
+        try:
+
+            async with FASTVIP2_WATCHDOG_SEMAPHORE:
+
+                messages = await get_route_poll_messages(
+                    probe_route,
+                    50,
+                )
+
+
+            messages = list(
+                messages or []
+            )
+
+
+            baseline = max(
+                [
+                    int(
+                        getattr(
+                            message,
+                            "id",
+                            0,
+                        )
+                        or 0
+                    )
+                    for message in messages
+                ]
+                or [0]
+            )
+
+
+            FASTVIP2_WATCHDOG_BASELINES[
+                source_key
+            ] = baseline
+
+
+            log.warning(
+                "[FASTVIP2 WATCHDOG BASELINE] "
+                f"source={source_chat}_"
+                f"{source_topic} "
+                f"baseline={baseline} "
+                "COPIED_HISTORY=0"
+            )
+
+
+        except Exception as exc:
+
+            log.warning(
+                "[FASTVIP2 WATCHDOG BASELINE FAILED] "
+                f"source={source_chat}_"
+                f"{source_topic} "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+
+            await asyncio.sleep(
+                2
+            )
+
+
+    while True:
+
+        await asyncio.sleep(
+            FASTVIP2_WATCHDOG_SECONDS
+        )
+
+
+        try:
+
+            async with FASTVIP2_WATCHDOG_SEMAPHORE:
+
+                messages = await get_route_poll_messages(
+                    probe_route,
+                    FASTVIP2_WATCHDOG_LIMIT,
+                )
+
+
+            messages = list(
+                messages or []
+            )
+
+
+            newer = [
+                message
+                for message in messages
+                if int(
+                    getattr(
+                        message,
+                        "id",
+                        0,
+                    )
+                    or 0
+                ) > baseline
+            ]
+
+
+            newer.sort(
+                key=lambda message: int(
+                    getattr(
+                        message,
+                        "id",
+                        0,
+                    )
+                    or 0
+                )
+            )
+
+
+            units = await fast_vip_build_units(
+                newer
+            )
+
+
+            recovered = 0
+
+
+            for unit in units:
+
+                token = fastvip2_token(
+                    source_key,
+                    unit,
+                )
+
+
+                if token in FASTVIP2_HANDLED:
+                    continue
+
+
+                if token in FASTVIP2_QUEUED:
+                    continue
+
+
+                if fastvip2_routes_fully_mapped(
+                    routes,
+                    unit,
+                ):
+
+                    FASTVIP2_HANDLED[
+                        token
+                    ] = time.time()
+
+                    continue
+
+
+                queued = await fastvip2_enqueue(
+                    source_key,
+                    routes,
+                    unit,
+                    "watchdog_recovery",
+                )
+
+
+                if queued:
+
+                    recovered += 1
+
+
+            if recovered:
+
+                log.warning(
+                    "[FASTVIP2 WATCHDOG RECOVERY QUEUED] "
+                    f"source={source_chat}_"
+                    f"{source_topic} "
+                    f"units={recovered}"
+                )
+
+
+        except FloodWaitError as exc:
+
+            log.warning(
+                "[FASTVIP2 WATCHDOG FLOODWAIT] "
+                f"source={source_chat}_"
+                f"{source_topic} "
+                f"wait={int(exc.seconds)}s "
+                "LIVE_EVENTS_UNAFFECTED=True"
+            )
+
+
+            await asyncio.sleep(
+                max(
+                    1,
+                    int(exc.seconds),
+                )
+            )
+
+
+        except Exception as exc:
+
+            log.warning(
+                "[FASTVIP2 WATCHDOG ERROR] "
+                f"source={source_chat}_"
+                f"{source_topic} "
+                f"{type(exc).__name__}: {exc} "
+                "LIVE_EVENTS_UNAFFECTED=True"
+            )
+
+
+# ============================================================
+# LIVE TELEGRAM UPDATE HANDLERS
+# ============================================================
+
+@client.on(
+    events.NewMessage(
+        chats=FASTVIP2_SOURCE_CHATS
+    )
+)
+async def fastvip2_new_message_handler(
+    event,
+):
+
+    try:
+
+        message = event.message
+
+
+        # Albums are handled once by events.Album below.
+        if getattr(
+            message,
+            "grouped_id",
+            None,
+        ):
+
+            return
+
+
+        matches = fastvip2_matching_groups(
+            event.chat_id,
+            message,
+        )
+
+
+        for source_key, routes in matches:
+
+            await fastvip2_enqueue(
+                source_key,
+                routes,
+                [message],
+                "telegram_newmessage",
+            )
+
+
+    except Exception as exc:
+
+        log.exception(
+            "[FASTVIP2 NEWMESSAGE HANDLER ERROR] "
+            f"chat={getattr(event, 'chat_id', None)} "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+
+@client.on(
+    events.Album(
+        chats=FASTVIP2_SOURCE_CHATS
+    )
+)
+async def fastvip2_album_handler(
+    event,
+):
+
+    try:
+
+        unit = list(
+            event.messages
+            or []
+        )
+
+
+        if not unit:
+            return
+
+
+        unit.sort(
+            key=lambda message: int(
+                getattr(
+                    message,
+                    "id",
+                    0,
+                )
+                or 0
+            )
+        )
+
+
+        first = unit[0]
+
+
+        matches = fastvip2_matching_groups(
+            event.chat_id,
+            first,
+        )
+
+
+        for source_key, routes in matches:
+
+            await fastvip2_enqueue(
+                source_key,
+                routes,
+                unit,
+                "telegram_album",
+            )
+
+
+    except Exception as exc:
+
+        log.exception(
+            "[FASTVIP2 ALBUM HANDLER ERROR] "
+            f"chat={getattr(event, 'chat_id', None)} "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+
+async def fast_vip_event_router_v2():
+
+    groups = FASTVIP2_GROUPS
+
+
+    if not groups:
+
+        log.error(
+            "[FASTVIP2 FATAL CONFIG] "
+            "No VIP source groups"
+        )
+
+        return
+
+
+    # Safety assertion:
+    # The legacy V1 router must NOT be started at runtime.
+    log.warning(
+        "[FASTVIP2 EVENT ROUTER READY] "
+        f"vip={FAST_VIP_CHAT} "
+        f"source_groups={len(groups)} "
+        f"source_chats={FASTVIP2_SOURCE_CHATS} "
+        "PRIMARY=TELEGRAM_PUSH "
+        f"WATCHDOG={FASTVIP2_WATCHDOG_SECONDS}s "
+        "WATCHDOG_ISOLATED=True "
+        "NO_HISTORY=True "
+        "SINGLE_WRITER=True"
+    )
+
+
+    tasks = []
+
+
+    for source_key, routes in groups.items():
+
+        tasks.append(
+            asyncio.create_task(
+                fastvip2_source_worker(
+                    source_key
+                )
+            )
+        )
+
+        tasks.append(
+            asyncio.create_task(
+                fastvip2_watchdog(
+                    source_key,
+                    routes,
+                )
+            )
+        )
+
+
+    await asyncio.gather(
+        *tasks
+    )
+
+
+# END FAST_VIP_EVENT_ROUTER_V2
+
+
 async def new_mirror_poll_loop():
     if not NEW_MIRROR_POLLING_ENABLED:
         return
@@ -6606,7 +7661,7 @@ async def main():
     await cleanup_existing_blocked_sender_copies_once()
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())
-    asyncio.create_task(fast_vip_router_v1())
+    asyncio.create_task(fast_vip_event_router_v2())
     vip_topic_move_task = asyncio.create_task(vip_topic_move_last50_v1())
     market_slayers_last50_v2_task = asyncio.create_task(market_slayers_last50_v2())
     log.info("Imperium fixed Telegram worker running...")

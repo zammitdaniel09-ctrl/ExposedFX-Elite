@@ -7602,6 +7602,559 @@ async def vip_topic_move_last50_v1():
 # END VIP_TOPIC_MOVE_LAST50_V1
 
 
+
+# BEGIN RELAY2_TO_VIP1364_LAST50_V3
+
+RELAY2_VIP1364_LAST50_V3_ENABLED = (
+    os.environ.get(
+        "ALLOW_RELAY2_TO_VIP1364_LAST50_V3",
+        "0",
+    ).strip()
+    == "1"
+)
+
+RELAY2_VIP1364_V3_SOURCE_CHAT = -1004367822325
+RELAY2_VIP1364_V3_SOURCE_TOPIC = 2
+
+RELAY2_VIP1364_V3_DEST_CHAT = -1003726286301
+RELAY2_VIP1364_V3_DEST_TOPIC = 1364
+
+RELAY2_VIP1364_V3_COUNT = 50
+
+RELAY2_VIP1364_V3_DONE = (
+    DATA_DIR
+    / "relay2_to_vip1364_last50_v3.done.json"
+)
+
+RELAY2_VIP1364_V3_PROGRESS = (
+    DATA_DIR
+    / "relay2_to_vip1364_last50_v3.progress.json"
+)
+
+
+def relay2_vip1364_v3_route():
+
+    matches = [
+        route
+        for route in ROUTES
+        if (
+            int(route.get("source_chat", 0))
+            == RELAY2_VIP1364_V3_SOURCE_CHAT
+            and int(route.get("source_topic", 0) or 0)
+            == RELAY2_VIP1364_V3_SOURCE_TOPIC
+            and int(route.get("dest_chat", 0))
+            == RELAY2_VIP1364_V3_DEST_CHAT
+            and int(route.get("dest_topic", 0))
+            == RELAY2_VIP1364_V3_DEST_TOPIC
+        )
+    ]
+
+
+    if len(matches) != 1:
+
+        raise RuntimeError(
+            "Relay2->VIP1364 V3 expected one route; "
+            f"found={len(matches)}"
+        )
+
+
+    return matches[0]
+
+
+def relay2_vip1364_v3_key(
+    unit,
+):
+
+    return ",".join(
+        str(int(message.id))
+        for message in unit
+    )
+
+
+def relay2_vip1364_v3_mapped(
+    route,
+    message,
+):
+
+    key = map_key(
+        route["source_chat"],
+        message.id,
+        route["dest_chat"],
+        route["dest_topic"],
+    )
+
+
+    return bool(
+        message_map.get(key)
+    )
+
+
+async def relay2_to_vip1364_last50_v3():
+
+    if not RELAY2_VIP1364_LAST50_V3_ENABLED:
+
+        return False
+
+
+    if RELAY2_VIP1364_V3_DONE.exists():
+
+        log.warning(
+            "[RELAY2 VIP1364 V3 ALREADY DONE] "
+            "RESENT=False"
+        )
+
+        return True
+
+
+    route = relay2_vip1364_v3_route()
+
+
+    # --------------------------------------------------------
+    # ACCESS
+    # --------------------------------------------------------
+
+    source_entity = await client.get_entity(
+        RELAY2_VIP1364_V3_SOURCE_CHAT
+    )
+
+    dest_entity = await client.get_entity(
+        RELAY2_VIP1364_V3_DEST_CHAT
+    )
+
+
+    source_topic_root = await client.get_messages(
+        RELAY2_VIP1364_V3_SOURCE_CHAT,
+        ids=RELAY2_VIP1364_V3_SOURCE_TOPIC,
+    )
+
+
+    dest_topic_root = await client.get_messages(
+        RELAY2_VIP1364_V3_DEST_CHAT,
+        ids=RELAY2_VIP1364_V3_DEST_TOPIC,
+    )
+
+
+    if not source_topic_root:
+
+        raise RuntimeError(
+            "Main account cannot access relay topic 2"
+        )
+
+
+    if not dest_topic_root:
+
+        raise RuntimeError(
+            "Main account cannot access VIP topic 1364"
+        )
+
+
+    log.warning(
+        "[RELAY2 VIP1364 V3 ACCESS OK] "
+        f"source_title="
+        f"{getattr(source_entity, 'title', None)!r} "
+        f"dest_title="
+        f"{getattr(dest_entity, 'title', None)!r}"
+    )
+
+
+    # --------------------------------------------------------
+    # EXACT SOURCE TOPIC SNAPSHOT
+    #
+    # Anything arriving AFTER baseline belongs to normal
+    # FASTVIP2 live forwarding.
+    # --------------------------------------------------------
+
+    probe = dict(
+        route
+    )
+
+    probe[
+        "strict_source_topic"
+    ] = True
+
+
+    fetched = list(
+        await get_route_poll_messages(
+            probe,
+            1000,
+        )
+        or []
+    )
+
+
+    if not fetched:
+
+        raise RuntimeError(
+            "Relay topic 2 returned no messages"
+        )
+
+
+    baseline = max(
+        int(message.id)
+        for message in fetched
+    )
+
+
+    fetched = [
+        message
+        for message in fetched
+        if int(message.id) <= baseline
+    ]
+
+
+    fetched.sort(
+        key=lambda message: int(
+            message.id
+        )
+    )
+
+
+    units = await fast_vip_build_units(
+        fetched
+    )
+
+
+    units = [
+        unit
+        for unit in units
+        if (
+            unit
+            and any(
+                bool(text_of(message))
+                or is_real_media(message)
+                for message in unit
+            )
+        )
+    ]
+
+
+    selected = units[
+        -RELAY2_VIP1364_V3_COUNT:
+    ]
+
+
+    selected.sort(
+        key=lambda unit: min(
+            int(message.id)
+            for message in unit
+        )
+    )
+
+
+    if not selected:
+
+        raise RuntimeError(
+            "No copyable relay-topic posts found"
+        )
+
+
+    selected_keys = [
+        relay2_vip1364_v3_key(
+            unit
+        )
+        for unit in selected
+    ]
+
+
+    completed = set()
+
+
+    if RELAY2_VIP1364_V3_PROGRESS.exists():
+
+        try:
+
+            state = json.loads(
+                RELAY2_VIP1364_V3_PROGRESS.read_text(
+                    encoding="utf-8"
+                )
+            )
+
+
+            if state.get(
+                "selected"
+            ) == selected_keys:
+
+                completed = set(
+                    state.get(
+                        "completed",
+                        [],
+                    )
+                )
+
+
+        except Exception:
+
+            completed = set()
+
+
+    log.warning(
+        "[RELAY2 VIP1364 V3 LAST50 START] "
+        f"requested=50 "
+        f"selected={len(selected)} "
+        f"baseline={baseline} "
+        f"resume={len(completed)} "
+        "ORDER=OLDEST_TO_NEWEST "
+        "LIVE_FORWARDING=True"
+    )
+
+
+    # --------------------------------------------------------
+    # COPY
+    # --------------------------------------------------------
+
+    for index, unit in enumerate(
+        selected,
+        start=1,
+    ):
+
+        unit_key = relay2_vip1364_v3_key(
+            unit
+        )
+
+
+        ids = [
+            int(message.id)
+            for message in unit
+        ]
+
+
+        if unit_key in completed:
+
+            continue
+
+
+        mapped = [
+            relay2_vip1364_v3_mapped(
+                route,
+                message,
+            )
+            for message in unit
+        ]
+
+
+        # Live route may have won a race.
+        if all(mapped):
+
+            completed.add(
+                unit_key
+            )
+
+
+            RELAY2_VIP1364_V3_PROGRESS.write_text(
+                json.dumps({
+                    "selected": selected_keys,
+                    "completed": sorted(completed),
+                }),
+                encoding="utf-8",
+            )
+
+
+            log.warning(
+                "[RELAY2 VIP1364 V3 ALREADY MAPPED] "
+                f"post={index}/{len(selected)} "
+                f"ids={ids}"
+            )
+
+
+            continue
+
+
+        if len(unit) > 1 and any(mapped):
+
+            raise RuntimeError(
+                "Partial album mapping detected "
+                f"ids={ids}"
+            )
+
+
+        success = False
+        last_error = None
+
+
+        for attempt in range(
+            1,
+            4,
+        ):
+
+            try:
+
+                first = unit[0]
+
+
+                if (
+                    len(unit) > 1
+                    and getattr(
+                        first,
+                        "grouped_id",
+                        None,
+                    )
+                ):
+
+                    sent = await copy_album(
+                        unit,
+                        route,
+                    )
+
+                    kind = (
+                        f"ALBUM({len(unit)})"
+                    )
+
+
+                else:
+
+                    # NEVER import old reply parents.
+                    sent = await copy_one(
+                        first,
+                        route,
+                        edited=False,
+                        ensure_reply=False,
+                    )
+
+                    kind = "SINGLE"
+
+
+                if not sent:
+
+                    raise RuntimeError(
+                        "copy returned no destination message"
+                    )
+
+
+                completed.add(
+                    unit_key
+                )
+
+
+                RELAY2_VIP1364_V3_PROGRESS.write_text(
+                    json.dumps({
+                        "selected": selected_keys,
+                        "completed": sorted(completed),
+                    }),
+                    encoding="utf-8",
+                )
+
+
+                log.warning(
+                    "[RELAY2 VIP1364 V3 LAST50 COPIED] "
+                    f"post={index}/{len(selected)} "
+                    f"source_ids={ids} "
+                    f"kind={kind}"
+                )
+
+
+                success = True
+
+                break
+
+
+            except FloodWaitError as exc:
+
+                last_error = exc
+
+                wait_for = min(
+                    int(exc.seconds) + 1,
+                    120,
+                )
+
+
+                log.warning(
+                    "[RELAY2 VIP1364 V3 FLOODWAIT] "
+                    f"post={index}/{len(selected)} "
+                    f"wait={wait_for}s"
+                )
+
+
+                await asyncio.sleep(
+                    wait_for
+                )
+
+
+            except Exception as exc:
+
+                last_error = exc
+
+
+                log.exception(
+                    "[RELAY2 VIP1364 V3 RETRY] "
+                    f"post={index}/{len(selected)} "
+                    f"ids={ids} "
+                    f"attempt={attempt}/3 "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+
+                if attempt < 3:
+
+                    await asyncio.sleep(
+                        2
+                    )
+
+
+        if not success:
+
+            raise RuntimeError(
+                "Last50 stopped at "
+                f"post={index} ids={ids}: "
+                f"{last_error}"
+            )
+
+
+        await asyncio.sleep(
+            0.35
+        )
+
+
+    if not all(
+        key in completed
+        for key in selected_keys
+    ):
+
+        raise RuntimeError(
+            "Last50 completion validation failed"
+        )
+
+
+    RELAY2_VIP1364_V3_DONE.write_text(
+        json.dumps({
+            "done": True,
+            "source_chat": (
+                RELAY2_VIP1364_V3_SOURCE_CHAT
+            ),
+            "source_topic": (
+                RELAY2_VIP1364_V3_SOURCE_TOPIC
+            ),
+            "dest_chat": (
+                RELAY2_VIP1364_V3_DEST_CHAT
+            ),
+            "dest_topic": (
+                RELAY2_VIP1364_V3_DEST_TOPIC
+            ),
+            "baseline": baseline,
+            "requested": 50,
+            "selected": len(selected),
+            "completed": len(completed),
+            "completed_at": time.time(),
+        }),
+        encoding="utf-8",
+    )
+
+
+    log.warning(
+        "[RELAY2 VIP1364 V3 LAST50 DONE] "
+        f"selected={len(selected)} "
+        f"baseline={baseline} "
+        "HISTORY_COMPLETE=True "
+        "LIVE_FORWARDING=True "
+        "RERUN_BLOCKED=True"
+    )
+
+
+    return True
+
+
+# END RELAY2_TO_VIP1364_LAST50_V3
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -7662,6 +8215,7 @@ async def main():
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())
     asyncio.create_task(fast_vip_event_router_v2())
+    relay2_vip1364_v3_task = asyncio.create_task(relay2_to_vip1364_last50_v3())
     vip_topic_move_task = asyncio.create_task(vip_topic_move_last50_v1())
     market_slayers_last50_v2_task = asyncio.create_task(market_slayers_last50_v2())
     log.info("Imperium fixed Telegram worker running...")

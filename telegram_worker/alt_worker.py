@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -132,6 +133,59 @@ ALT_LAST50_PROGRESS_FILE = (
 )
 
 # END ALT_LAST50_ONCE_CONFIG_V1
+
+
+
+# BEGIN ALT_PREMIUM_HISTORY_ONCE_CONFIG_V1
+
+ALT_HISTORY_ONCE = (
+    os.environ.get(
+        "ALT_HISTORY_ONCE",
+        "0",
+    ).strip()
+    == "1"
+)
+
+ALT_HISTORY_RUN_ID = (
+    os.environ.get(
+        "ALT_HISTORY_RUN_ID",
+        "",
+    ).strip()
+)
+
+ALT_HISTORY_COUNT = max(
+    1,
+    int(
+        os.environ.get(
+            "ALT_HISTORY_COUNT",
+            "50",
+        )
+    ),
+)
+
+ALT_HISTORY_FETCH_LIMIT = max(
+    200,
+    int(
+        os.environ.get(
+            "ALT_HISTORY_FETCH_LIMIT",
+            "1000",
+        )
+    ),
+)
+
+ALT_HISTORY_REQUIRE_PREMIUM = (
+    os.environ.get(
+        "ALT_HISTORY_REQUIRE_PREMIUM",
+        "1",
+    ).strip()
+    == "1"
+)
+
+ALT_HISTORY_SOURCE_CHAT = -1003364661276
+ALT_HISTORY_DEST_CHAT = -1004367822325
+ALT_HISTORY_DEST_TOPIC = 2
+
+# END ALT_PREMIUM_HISTORY_ONCE_CONFIG_V1
 
 
 # ==============================================================
@@ -1920,6 +1974,423 @@ async def run_alt_last50_once():
 # END ALT_LAST50_ONCE_HELPER_V1
 
 
+
+# BEGIN ALT_PREMIUM_HISTORY_ONCE_HELPER_V1
+
+
+def alt_history_safe_run_id():
+    value = re.sub(
+        r"[^A-Za-z0-9_.-]+",
+        "_",
+        ALT_HISTORY_RUN_ID,
+    ).strip("._")
+
+    if not value:
+        raise RuntimeError(
+            "ALT_HISTORY_RUN_ID is empty/invalid"
+        )
+
+    return value
+
+
+def alt_history_done_file():
+    return (
+        DATA_DIR
+        / (
+            "history_"
+            + alt_history_safe_run_id()
+            + ".done.json"
+        )
+    )
+
+
+def alt_history_progress_file():
+    return (
+        DATA_DIR
+        / (
+            "history_"
+            + alt_history_safe_run_id()
+            + ".progress.json"
+        )
+    )
+
+
+def alt_history_route():
+    matches = [
+        route
+        for route in ROUTES
+        if (
+            int(route["source_chat"])
+            == ALT_HISTORY_SOURCE_CHAT
+            and route["source_topic"] is None
+            and int(route["dest_chat"])
+            == ALT_HISTORY_DEST_CHAT
+            and int(route["dest_topic"])
+            == ALT_HISTORY_DEST_TOPIC
+        )
+    ]
+
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Premium history expected exactly one matching "
+            f"route; found={len(matches)}"
+        )
+
+    return matches[0]
+
+
+def alt_history_copyable(unit):
+    return any(
+        bool(text_of(message))
+        or real_media(message)
+        for message in unit
+    )
+
+
+async def run_alt_history_once():
+
+    if not ALT_HISTORY_ONCE:
+        return False
+
+
+    route = alt_history_route()
+
+    done_file = alt_history_done_file()
+    progress_file = alt_history_progress_file()
+
+
+    # --------------------------------------------------------
+    # ONE-TIME DURABLE BLOCK
+    # --------------------------------------------------------
+
+    if done_file.exists():
+
+        log.warning(
+            "[ALT HISTORY ALREADY DONE] "
+            f"run_id={ALT_HISTORY_RUN_ID} "
+            "RERUN=False"
+        )
+
+        return True
+
+
+    # --------------------------------------------------------
+    # PREMIUM CHECK BEFORE SENDING ANYTHING
+    # --------------------------------------------------------
+
+    me = await client.get_me()
+
+    premium = bool(
+        getattr(
+            me,
+            "premium",
+            False,
+        )
+    )
+
+
+    log.warning(
+        "[ALT HISTORY PREMIUM CHECK] "
+        f"run_id={ALT_HISTORY_RUN_ID} "
+        f"premium={premium}"
+    )
+
+
+    if (
+        ALT_HISTORY_REQUIRE_PREMIUM
+        and not premium
+    ):
+
+        raise RuntimeError(
+            "Telegram reports ALT account Premium=False. "
+            "Nothing was sent."
+        )
+
+
+    # --------------------------------------------------------
+    # SNAPSHOT CURRENT SOURCE
+    # --------------------------------------------------------
+
+    fetched = list(
+        await fetch_route_messages(
+            route,
+            ALT_HISTORY_FETCH_LIMIT,
+        )
+        or []
+    )
+
+
+    if not fetched:
+        raise RuntimeError(
+            "Source returned zero messages"
+        )
+
+
+    # Snapshot cutoff means anything newer is owned only by
+    # normal live forwarding.
+    cutoff_id = max(
+        int(message.id)
+        for message in fetched
+    )
+
+
+    units = build_units(
+        fetched
+    )
+
+
+    units = [
+        unit
+        for unit in units
+        if (
+            unit
+            and alt_history_copyable(unit)
+            and max(
+                int(message.id)
+                for message in unit
+            )
+            <= cutoff_id
+        )
+    ]
+
+
+    # Latest N posts/units.
+    selected = units[
+        -ALT_HISTORY_COUNT:
+    ]
+
+
+    selected = sorted(
+        selected,
+        key=lambda unit: min(
+            int(message.id)
+            for message in unit
+        ),
+    )
+
+
+    if not selected:
+        raise RuntimeError(
+            "No copyable history posts found"
+        )
+
+
+    already_mapped = sum(
+        1
+        for unit in selected
+        if all(
+            bool(
+                mapped_ids(
+                    route,
+                    message.id,
+                )
+            )
+            for message in unit
+        )
+    )
+
+
+    progress = {
+        "run_id": ALT_HISTORY_RUN_ID,
+        "status": "running",
+        "premium": premium,
+        "requested": ALT_HISTORY_COUNT,
+        "selected": len(selected),
+        "already_mapped": already_mapped,
+        "completed": 0,
+        "cutoff_id": cutoff_id,
+        "started_at": time.time(),
+    }
+
+
+    save_json(
+        progress_file,
+        progress,
+    )
+
+
+    log.warning(
+        "[ALT HISTORY START] "
+        f"run_id={ALT_HISTORY_RUN_ID} "
+        f"premium={premium} "
+        f"requested={ALT_HISTORY_COUNT} "
+        f"selected={len(selected)} "
+        f"already_mapped={already_mapped} "
+        f"cutoff_id={cutoff_id} "
+        "ORDER=OLDEST_TO_NEWEST "
+        "LIVE_FORWARDING=True"
+    )
+
+
+    completed = 0
+
+
+    # --------------------------------------------------------
+    # COPY
+    # --------------------------------------------------------
+
+    for index, unit in enumerate(
+        selected,
+        start=1,
+    ):
+
+        ids = [
+            int(message.id)
+            for message in unit
+        ]
+
+
+        success = False
+
+
+        # Conservative retry ladder.
+        delays = [
+            0,
+            3,
+            10,
+            30,
+            60,
+        ]
+
+
+        for attempt, delay in enumerate(
+            delays,
+            start=1,
+        ):
+
+            if delay:
+                await asyncio.sleep(
+                    delay
+                )
+
+
+            success = await copy_unit(
+                route,
+                unit,
+                "premium_history_last50",
+            )
+
+
+            if success:
+                break
+
+
+            log.warning(
+                "[ALT HISTORY RETRY] "
+                f"run_id={ALT_HISTORY_RUN_ID} "
+                f"index={index}/{len(selected)} "
+                f"ids={ids} "
+                f"attempt={attempt}"
+            )
+
+
+        if not success:
+
+            progress.update({
+                "status": "failed",
+                "completed": completed,
+                "failed_ids": ids,
+                "failed_at": time.time(),
+            })
+
+
+            save_json(
+                progress_file,
+                progress,
+            )
+
+
+            raise RuntimeError(
+                "Premium history failed safely at "
+                f"index={index} ids={ids}"
+            )
+
+
+        completed += 1
+
+
+        progress.update({
+            "completed": completed,
+            "last_ids": ids,
+            "updated_at": time.time(),
+        })
+
+
+        save_json(
+            progress_file,
+            progress,
+        )
+
+
+        log.warning(
+            "[ALT HISTORY PROGRESS] "
+            f"run_id={ALT_HISTORY_RUN_ID} "
+            f"{completed}/{len(selected)} "
+            f"ids={ids}"
+        )
+
+
+        # Reduce flood pressure.
+        await asyncio.sleep(
+            0.65
+        )
+
+
+    # --------------------------------------------------------
+    # DURABLE SUCCESS
+    # --------------------------------------------------------
+
+    result = {
+        "run_id": ALT_HISTORY_RUN_ID,
+        "status": "done",
+        "premium": premium,
+        "requested": ALT_HISTORY_COUNT,
+        "selected": len(selected),
+        "completed": completed,
+        "already_mapped": already_mapped,
+        "cutoff_id": cutoff_id,
+        "completed_at": time.time(),
+    }
+
+
+    save_json(
+        done_file,
+        result,
+    )
+
+
+    progress.update({
+        "status": "done",
+        "completed": completed,
+        "completed_at": time.time(),
+    })
+
+
+    save_json(
+        progress_file,
+        progress,
+    )
+
+
+    log.warning(
+        "[ALT HISTORY DONE] "
+        f"run_id={ALT_HISTORY_RUN_ID} "
+        f"premium={premium} "
+        f"requested={ALT_HISTORY_COUNT} "
+        f"selected={len(selected)} "
+        f"completed={completed} "
+        f"already_mapped={already_mapped} "
+        "RERUN_BLOCKED=True "
+        "LIVE_FORWARDING=True"
+    )
+
+
+    return True
+
+
+# END ALT_PREMIUM_HISTORY_ONCE_HELPER_V1
+
+
 # ==============================================================
 # MAIN
 # ==============================================================
@@ -2018,6 +2489,25 @@ async def main():
         except Exception as exc:
             log.exception(
                 "[ALT LAST50 FAILED SAFE] "
+                f"{type(exc).__name__}: {exc} "
+                "LIVE_FORWARDING_CONTINUES=True"
+            )
+
+    # ----------------------------------------------------------
+    # OPTIONAL GUARDED HISTORY RUN
+    # ----------------------------------------------------------
+
+    if ALT_HISTORY_ONCE:
+
+        try:
+
+            await run_alt_history_once()
+
+        except Exception as exc:
+
+            log.exception(
+                "[ALT HISTORY FAILED SAFE] "
+                f"run_id={ALT_HISTORY_RUN_ID} "
                 f"{type(exc).__name__}: {exc} "
                 "LIVE_FORWARDING_CONTINUES=True"
             )

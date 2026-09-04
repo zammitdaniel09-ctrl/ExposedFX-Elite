@@ -1,0 +1,1633 @@
+﻿import asyncio
+import json
+import logging
+import os
+import time
+from pathlib import Path
+
+from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
+from telethon.sessions import StringSession
+from telethon.tl.types import MessageMediaWebPage
+
+
+# ==============================================================
+# LOGGING
+# ==============================================================
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+
+log = logging.getLogger("imperium-alt-worker")
+
+
+# ==============================================================
+# ENV
+# ==============================================================
+
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+
+SESSION_STRING = os.environ["ALT_SESSION_STRING"].strip()
+
+EXPECTED_USER_ID = int(
+    os.environ.get("ALT_EXPECTED_USER_ID", "0") or 0
+)
+
+DATA_DIR = Path(
+    os.environ.get("DATA_DIR", "/data-alt")
+)
+
+DATA_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+MAP_FILE = DATA_DIR / "message_map.json"
+STATE_FILE = DATA_DIR / "route_state.json"
+MEDIA_DIR = DATA_DIR / "media_cache"
+
+MEDIA_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+CONNECT_DELAY = max(
+    0,
+    int(
+        os.environ.get(
+            "TELEGRAM_CONNECT_DELAY_SECONDS",
+            "5",
+        )
+    ),
+)
+
+WATCHDOG_SECONDS = max(
+    2.0,
+    float(
+        os.environ.get(
+            "ALT_WATCHDOG_SECONDS",
+            "5",
+        )
+    ),
+)
+
+WATCHDOG_LIMIT = max(
+    50,
+    int(
+        os.environ.get(
+            "ALT_WATCHDOG_LIMIT",
+            "500",
+        )
+    ),
+)
+
+
+# ==============================================================
+# ROUTES
+# ==============================================================
+
+def load_routes():
+    raw = os.environ.get(
+        "ALT_ROUTES_JSON",
+        "",
+    ).strip()
+
+    if not raw:
+        raise RuntimeError(
+            "ALT_ROUTES_JSON is empty"
+        )
+
+    parsed = json.loads(raw)
+
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+
+    if not isinstance(parsed, list):
+        raise RuntimeError(
+            "ALT_ROUTES_JSON must be a JSON list"
+        )
+
+    routes = []
+
+    for index, item in enumerate(
+        parsed,
+        start=1,
+    ):
+        source_topic = item.get(
+            "source_topic"
+        )
+
+        if source_topic not in (None, ""):
+            source_topic = int(source_topic)
+        else:
+            source_topic = None
+
+        routes.append({
+            "name": f"ALT RELAY {index}",
+            "source_chat": int(
+                item["source_chat"]
+            ),
+            "source_topic": source_topic,
+            "dest_chat": int(
+                item["dest_chat"]
+            ),
+            "dest_topic": int(
+                item["dest_topic"]
+            ),
+        })
+
+    if not routes:
+        raise RuntimeError(
+            "No ALT routes configured"
+        )
+
+    return routes
+
+
+ROUTES = load_routes()
+
+SOURCE_CHATS = sorted({
+    route["source_chat"]
+    for route in ROUTES
+})
+
+
+# ==============================================================
+# CLIENT
+# ==============================================================
+
+client = TelegramClient(
+    StringSession(
+        SESSION_STRING
+    ),
+    API_ID,
+    API_HASH,
+)
+
+
+# ==============================================================
+# JSON STORAGE
+# ==============================================================
+
+def load_json(path):
+    if not path.exists():
+        return {}
+
+    try:
+        value = json.loads(
+            path.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        if isinstance(value, dict):
+            return value
+
+    except Exception as exc:
+        log.warning(
+            f"[ALT STORAGE LOAD FAILED] "
+            f"path={path} "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    return {}
+
+
+def save_json(path, value):
+    temp = path.with_suffix(
+        path.suffix + ".tmp"
+    )
+
+    temp.write_text(
+        json.dumps(
+            value,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+    temp.replace(path)
+
+
+message_map = load_json(
+    MAP_FILE
+)
+
+route_state = load_json(
+    STATE_FILE
+)
+
+
+# ==============================================================
+# ROUTE / MAP KEYS
+# ==============================================================
+
+def route_key(route):
+    return (
+        f"{route['source_chat']}:"
+        f"{route['source_topic']}:"
+        f"{route['dest_chat']}:"
+        f"{route['dest_topic']}"
+    )
+
+
+def map_key(
+    route,
+    source_message_id,
+):
+    return (
+        f"{route['source_chat']}:"
+        f"{int(source_message_id)}:"
+        f"{route['dest_chat']}:"
+        f"{route['dest_topic']}"
+    )
+
+
+def mapped_ids(
+    route,
+    source_message_id,
+):
+    value = message_map.get(
+        map_key(
+            route,
+            source_message_id,
+        )
+    )
+
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        result = []
+
+        for item in value:
+            try:
+                result.append(
+                    int(item)
+                )
+            except Exception:
+                pass
+
+        return result
+
+    try:
+        return [int(value)]
+
+    except Exception:
+        return []
+
+
+def checkpoint(route):
+    try:
+        return int(
+            route_state.get(
+                route_key(route),
+                0,
+            )
+            or 0
+        )
+
+    except Exception:
+        return 0
+
+
+def update_checkpoint(
+    route,
+    source_message_id,
+):
+    current = checkpoint(route)
+    new_value = max(
+        current,
+        int(source_message_id),
+    )
+
+    if new_value == current:
+        return
+
+    route_state[
+        route_key(route)
+    ] = new_value
+
+    save_json(
+        STATE_FILE,
+        route_state,
+    )
+
+
+def remember(
+    route,
+    source_message,
+    destination_message,
+):
+    if (
+        source_message is None
+        or destination_message is None
+    ):
+        return
+
+    if isinstance(
+        destination_message,
+        list,
+    ):
+        ids = [
+            int(item.id)
+            for item in destination_message
+            if getattr(
+                item,
+                "id",
+                None,
+            )
+        ]
+
+        if not ids:
+            return
+
+        value = (
+            ids[0]
+            if len(ids) == 1
+            else ids
+        )
+
+    else:
+        destination_id = getattr(
+            destination_message,
+            "id",
+            None,
+        )
+
+        if not destination_id:
+            return
+
+        value = int(
+            destination_id
+        )
+
+    message_map[
+        map_key(
+            route,
+            source_message.id,
+        )
+    ] = value
+
+    save_json(
+        MAP_FILE,
+        message_map,
+    )
+
+    update_checkpoint(
+        route,
+        source_message.id,
+    )
+
+
+# ==============================================================
+# TELEGRAM MESSAGE HELPERS
+# ==============================================================
+
+def text_of(message):
+    return (
+        getattr(
+            message,
+            "message",
+            None,
+        )
+        or ""
+    )
+
+
+def entities_of(message):
+    return getattr(
+        message,
+        "entities",
+        None,
+    )
+
+
+def real_media(message):
+    media = getattr(
+        message,
+        "media",
+        None,
+    )
+
+    if not media:
+        return False
+
+    return not isinstance(
+        media,
+        MessageMediaWebPage,
+    )
+
+
+def known_topics(chat_id):
+    return {
+        int(route["source_topic"])
+        for route in ROUTES
+        if (
+            int(route["source_chat"])
+            == int(chat_id)
+            and route["source_topic"]
+            is not None
+        )
+    }
+
+
+def topic_of(
+    message,
+    chat_id,
+):
+    topics = known_topics(
+        chat_id
+    )
+
+    for attr in (
+        "reply_to_top_id",
+        "top_msg_id",
+    ):
+        value = getattr(
+            message,
+            attr,
+            None,
+        )
+
+        if value:
+            try:
+                return int(value)
+            except Exception:
+                pass
+
+    reply = getattr(
+        message,
+        "reply_to",
+        None,
+    )
+
+    if reply:
+        for attr in (
+            "reply_to_top_id",
+            "top_msg_id",
+        ):
+            value = getattr(
+                reply,
+                attr,
+                None,
+            )
+
+            if value:
+                try:
+                    return int(value)
+                except Exception:
+                    pass
+
+    direct_reply = getattr(
+        message,
+        "reply_to_msg_id",
+        None,
+    )
+
+    if direct_reply:
+        try:
+            direct_reply = int(
+                direct_reply
+            )
+
+            if (
+                not topics
+                or direct_reply in topics
+            ):
+                return direct_reply
+
+        except Exception:
+            pass
+
+    return None
+
+
+def matching_routes(
+    chat_id,
+    message,
+):
+    chat_id = int(chat_id)
+
+    source_topic = topic_of(
+        message,
+        chat_id,
+    )
+
+    result = []
+
+    for route in ROUTES:
+        if (
+            route["source_chat"]
+            != chat_id
+        ):
+            continue
+
+        wanted_topic = route[
+            "source_topic"
+        ]
+
+        if (
+            wanted_topic is not None
+            and wanted_topic
+            != source_topic
+        ):
+            continue
+
+        result.append(route)
+
+    return result
+
+
+# ==============================================================
+# SINGLE-WRITER LOCKS
+# ==============================================================
+
+COPY_LOCKS = {}
+EDIT_LOCKS = {}
+
+
+def copy_lock(
+    route,
+    messages,
+):
+    first = messages[0]
+
+    grouped_id = getattr(
+        first,
+        "grouped_id",
+        None,
+    )
+
+    if grouped_id:
+        message_token = (
+            f"album:{grouped_id}"
+        )
+    else:
+        message_token = (
+            f"msg:{int(first.id)}"
+        )
+
+    key = (
+        f"{route_key(route)}:"
+        f"{message_token}"
+    )
+
+    lock = COPY_LOCKS.get(key)
+
+    if lock is None:
+        lock = asyncio.Lock()
+        COPY_LOCKS[key] = lock
+
+    return lock
+
+
+def edit_lock(
+    route,
+    source_message_id,
+):
+    key = map_key(
+        route,
+        source_message_id,
+    )
+
+    lock = EDIT_LOCKS.get(key)
+
+    if lock is None:
+        lock = asyncio.Lock()
+        EDIT_LOCKS[key] = lock
+
+    return lock
+
+
+# ==============================================================
+# MEDIA SENDERS
+# ==============================================================
+
+async def send_single(
+    route,
+    message,
+):
+    text = text_of(message)
+    entities = entities_of(message)
+
+    if not real_media(message):
+        if not text:
+            return None
+
+        return await client.send_message(
+            route["dest_chat"],
+            text,
+            formatting_entities=entities,
+            parse_mode=None,
+            reply_to=route[
+                "dest_topic"
+            ],
+            link_preview=True,
+        )
+
+    # Direct Telegram media reference first.
+    try:
+        return await client.send_file(
+            route["dest_chat"],
+            message.media,
+            caption=(
+                text
+                if text
+                else None
+            ),
+            formatting_entities=(
+                entities
+                if text
+                else None
+            ),
+            parse_mode=None,
+            reply_to=route[
+                "dest_topic"
+            ],
+        )
+
+    except Exception as exc:
+        log.warning(
+            "[ALT DIRECT MEDIA FAILED - "
+            "USING REUPLOAD] "
+            f"source_msg={message.id} "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    downloaded = await message.download_media(
+        file=str(
+            MEDIA_DIR
+            / f"single_{message.id}"
+        )
+    )
+
+    if not downloaded:
+        raise RuntimeError(
+            "Media download fallback returned nothing"
+        )
+
+    try:
+        return await client.send_file(
+            route["dest_chat"],
+            downloaded,
+            caption=(
+                text
+                if text
+                else None
+            ),
+            formatting_entities=(
+                entities
+                if text
+                else None
+            ),
+            parse_mode=None,
+            reply_to=route[
+                "dest_topic"
+            ],
+        )
+
+    finally:
+        try:
+            Path(downloaded).unlink(
+                missing_ok=True
+            )
+        except Exception:
+            pass
+
+
+async def send_album(
+    route,
+    messages,
+):
+    caption = ""
+    caption_entities = None
+
+    for message in messages:
+        candidate = text_of(message)
+
+        if candidate:
+            caption = candidate
+            caption_entities = entities_of(
+                message
+            )
+            break
+
+    media_objects = [
+        message.media
+        for message in messages
+        if real_media(message)
+    ]
+
+    if not media_objects:
+        return None
+
+    try:
+        sent = await client.send_file(
+            route["dest_chat"],
+            media_objects,
+            caption=(
+                caption
+                if caption
+                else None
+            ),
+            formatting_entities=(
+                caption_entities
+                if caption
+                else None
+            ),
+            parse_mode=None,
+            reply_to=route[
+                "dest_topic"
+            ],
+        )
+
+        return (
+            sent
+            if isinstance(sent, list)
+            else [sent]
+        )
+
+    except Exception as exc:
+        log.warning(
+            "[ALT DIRECT ALBUM FAILED - "
+            "USING REUPLOAD] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    downloaded_files = []
+
+    try:
+        for message in messages:
+            if not real_media(message):
+                continue
+
+            downloaded = await message.download_media(
+                file=str(
+                    MEDIA_DIR
+                    / f"album_{message.id}"
+                )
+            )
+
+            if not downloaded:
+                raise RuntimeError(
+                    "Album download returned nothing"
+                )
+
+            downloaded_files.append(
+                downloaded
+            )
+
+        sent = await client.send_file(
+            route["dest_chat"],
+            downloaded_files,
+            caption=(
+                caption
+                if caption
+                else None
+            ),
+            formatting_entities=(
+                caption_entities
+                if caption
+                else None
+            ),
+            parse_mode=None,
+            reply_to=route[
+                "dest_topic"
+            ],
+        )
+
+        return (
+            sent
+            if isinstance(sent, list)
+            else [sent]
+        )
+
+    finally:
+        for filename in downloaded_files:
+            try:
+                Path(filename).unlink(
+                    missing_ok=True
+                )
+            except Exception:
+                pass
+
+
+# ==============================================================
+# FORWARD UNIT
+# ==============================================================
+
+async def copy_unit(
+    route,
+    messages,
+    reason,
+):
+    messages = sorted(
+        list(messages),
+        key=lambda message: int(
+            message.id
+        ),
+    )
+
+    if not messages:
+        return True
+
+    async with copy_lock(
+        route,
+        messages,
+    ):
+        mapped = [
+            bool(
+                mapped_ids(
+                    route,
+                    message.id,
+                )
+            )
+            for message in messages
+        ]
+
+        if all(mapped):
+            update_checkpoint(
+                route,
+                max(
+                    int(message.id)
+                    for message in messages
+                ),
+            )
+            return True
+
+        if (
+            len(messages) > 1
+            and any(mapped)
+        ):
+            log.error(
+                "[ALT PARTIAL ALBUM MAP - "
+                "FAIL CLOSED] "
+                f"ids="
+                f"{[m.id for m in messages]}"
+            )
+            return False
+
+        try:
+            if (
+                len(messages) > 1
+                and getattr(
+                    messages[0],
+                    "grouped_id",
+                    None,
+                )
+            ):
+                sent_items = await send_album(
+                    route,
+                    messages,
+                )
+
+                if not sent_items:
+                    raise RuntimeError(
+                        "Album send returned no messages"
+                    )
+
+                if (
+                    len(sent_items)
+                    != len(messages)
+                ):
+                    raise RuntimeError(
+                        "Album destination count mismatch"
+                    )
+
+                for source, destination in zip(
+                    messages,
+                    sent_items,
+                ):
+                    remember(
+                        route,
+                        source,
+                        destination,
+                    )
+
+                log.warning(
+                    "[ALT COPIED] "
+                    f"route={route['name']} "
+                    f"ids="
+                    f"{[m.id for m in messages]} "
+                    "kind=ALBUM "
+                    f"reason={reason}"
+                )
+
+                return True
+
+            message = messages[0]
+
+            sent = await send_single(
+                route,
+                message,
+            )
+
+            if sent is None:
+                update_checkpoint(
+                    route,
+                    message.id,
+                )
+
+                log.info(
+                    "[ALT EMPTY MESSAGE SKIPPED] "
+                    f"source_msg={message.id}"
+                )
+
+                return True
+
+            remember(
+                route,
+                message,
+                sent,
+            )
+
+            log.warning(
+                "[ALT COPIED] "
+                f"route={route['name']} "
+                f"source_msg={message.id} "
+                f"dest_msg="
+                f"{getattr(sent, 'id', None)} "
+                f"reason={reason}"
+            )
+
+            return True
+
+        except FloodWaitError as exc:
+            log.warning(
+                "[ALT FLOODWAIT] "
+                f"route={route['name']} "
+                f"seconds={int(exc.seconds)}"
+            )
+
+            return False
+
+        except Exception as exc:
+            log.exception(
+                "[ALT COPY FAILED] "
+                f"route={route['name']} "
+                f"ids="
+                f"{[m.id for m in messages]} "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            return False
+
+
+# ==============================================================
+# TRUE IN-PLACE EDITS
+# ==============================================================
+
+async def edit_existing(
+    route,
+    source_message,
+):
+    async with edit_lock(
+        route,
+        source_message.id,
+    ):
+        # The source may edit almost immediately after sending.
+        # Give NewMessage forwarding time to create its mapping.
+        deadline = (
+            time.monotonic()
+            + 10.0
+        )
+
+        ids = []
+
+        while time.monotonic() < deadline:
+            ids = mapped_ids(
+                route,
+                source_message.id,
+            )
+
+            if ids:
+                break
+
+            await asyncio.sleep(0.1)
+
+        # Never import an old edit.
+        if not ids:
+            log.warning(
+                "[ALT EDIT SKIPPED - NO MAP] "
+                f"source_msg={source_message.id}"
+            )
+            return False
+
+        if len(ids) != 1:
+            log.warning(
+                "[ALT EDIT SKIPPED - "
+                "AMBIGUOUS MAP] "
+                f"source_msg={source_message.id} "
+                f"dest_ids={ids}"
+            )
+            return False
+
+        destination_id = int(
+            ids[0]
+        )
+
+        try:
+            destination_message = (
+                await client.get_messages(
+                    route["dest_chat"],
+                    ids=destination_id,
+                )
+            )
+
+            if not destination_message:
+                log.warning(
+                    "[ALT EDIT DESTINATION MISSING] "
+                    f"dest_msg={destination_id}"
+                )
+                return False
+
+            # Text -> text and caption -> caption are okay.
+            # We deliberately never delete/resend to change
+            # the media structure.
+            if (
+                real_media(source_message)
+                != real_media(
+                    destination_message
+                )
+            ):
+                log.warning(
+                    "[ALT EDIT MEDIA STRUCTURE "
+                    "CHANGE SKIPPED] "
+                    f"source_msg="
+                    f"{source_message.id} "
+                    "NO_DELETE=True "
+                    "NO_RESEND=True"
+                )
+                return False
+
+            new_text = text_of(
+                source_message
+            )
+
+            if (
+                not real_media(source_message)
+                and not new_text
+            ):
+                return False
+
+            try:
+                await client.edit_message(
+                    route["dest_chat"],
+                    destination_id,
+                    new_text or "",
+                    formatting_entities=(
+                        entities_of(
+                            source_message
+                        )
+                        if new_text
+                        else None
+                    ),
+                    parse_mode=None,
+                    link_preview=True,
+                )
+
+            except Exception as exc:
+                if (
+                    type(exc).__name__
+                    == "MessageNotModifiedError"
+                ):
+                    return True
+
+                raise
+
+            log.warning(
+                "[ALT EDITED IN PLACE] "
+                f"route={route['name']} "
+                f"source_msg="
+                f"{source_message.id} "
+                f"dest_msg={destination_id} "
+                "SAME_MESSAGE_ID=True "
+                "DELETED=False "
+                "RESENT=False"
+            )
+
+            return True
+
+        except Exception as exc:
+            log.exception(
+                "[ALT EDIT FAILED] "
+                f"source_msg="
+                f"{source_message.id} "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            return False
+
+
+# ==============================================================
+# TELEGRAM PUSH EVENTS
+# ==============================================================
+
+@client.on(
+    events.NewMessage(
+        chats=SOURCE_CHATS
+    )
+)
+async def new_message_handler(event):
+    try:
+        message = event.message
+
+        # Album event owns grouped messages.
+        if getattr(
+            message,
+            "grouped_id",
+            None,
+        ):
+            return
+
+        routes = matching_routes(
+            event.chat_id,
+            message,
+        )
+
+        if not routes:
+            return
+
+        await asyncio.gather(
+            *[
+                copy_unit(
+                    route,
+                    [message],
+                    "telegram_push",
+                )
+                for route in routes
+            ]
+        )
+
+    except Exception as exc:
+        log.exception(
+            "[ALT NEW MESSAGE HANDLER ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+
+@client.on(
+    events.Album(
+        chats=SOURCE_CHATS
+    )
+)
+async def album_handler(event):
+    try:
+        messages = sorted(
+            list(
+                event.messages
+                or []
+            ),
+            key=lambda message: int(
+                message.id
+            ),
+        )
+
+        if not messages:
+            return
+
+        routes = matching_routes(
+            event.chat_id,
+            messages[0],
+        )
+
+        if not routes:
+            return
+
+        await asyncio.gather(
+            *[
+                copy_unit(
+                    route,
+                    messages,
+                    "telegram_album",
+                )
+                for route in routes
+            ]
+        )
+
+    except Exception as exc:
+        log.exception(
+            "[ALT ALBUM HANDLER ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+
+@client.on(
+    events.MessageEdited(
+        chats=SOURCE_CHATS
+    )
+)
+async def edited_handler(event):
+    try:
+        routes = matching_routes(
+            event.chat_id,
+            event.message,
+        )
+
+        if not routes:
+            return
+
+        await asyncio.gather(
+            *[
+                edit_existing(
+                    route,
+                    event.message,
+                )
+                for route in routes
+            ]
+        )
+
+    except Exception as exc:
+        log.exception(
+            "[ALT EDIT HANDLER ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+
+# ==============================================================
+# WATCHDOG / DEPLOYMENT RECOVERY
+# ==============================================================
+
+async def fetch_route_messages(
+    route,
+    limit,
+):
+    if (
+        route["source_topic"]
+        is not None
+    ):
+        # Exact topic only. Never whole-chat fallback.
+        return await client.get_messages(
+            route["source_chat"],
+            limit=int(limit),
+            reply_to=int(
+                route["source_topic"]
+            ),
+        )
+
+    return await client.get_messages(
+        route["source_chat"],
+        limit=int(limit),
+    )
+
+
+def build_units(messages):
+    messages = sorted(
+        list(messages),
+        key=lambda message: int(
+            message.id
+        ),
+    )
+
+    units = []
+    used_ids = set()
+
+    for message in messages:
+        message_id = int(
+            message.id
+        )
+
+        if message_id in used_ids:
+            continue
+
+        grouped_id = getattr(
+            message,
+            "grouped_id",
+            None,
+        )
+
+        if grouped_id:
+            unit = [
+                candidate
+                for candidate in messages
+                if getattr(
+                    candidate,
+                    "grouped_id",
+                    None,
+                )
+                == grouped_id
+            ]
+        else:
+            unit = [message]
+
+        unit = sorted(
+            unit,
+            key=lambda item: int(
+                item.id
+            ),
+        )
+
+        for item in unit:
+            used_ids.add(
+                int(item.id)
+            )
+
+        units.append(unit)
+
+    return units
+
+
+async def watchdog(route):
+    stored_checkpoint = checkpoint(
+        route
+    )
+
+    # ----------------------------------------------------------
+    # FIRST EVER START
+    #
+    # No persistent checkpoint exists:
+    # Snapshot current newest message and copy NOTHING.
+    # ----------------------------------------------------------
+
+    if stored_checkpoint <= 0:
+        while True:
+            try:
+                current = list(
+                    await fetch_route_messages(
+                        route,
+                        50,
+                    )
+                    or []
+                )
+
+                stored_checkpoint = max(
+                    [
+                        int(message.id)
+                        for message in current
+                    ]
+                    or [0]
+                )
+
+                route_state[
+                    route_key(route)
+                ] = stored_checkpoint
+
+                save_json(
+                    STATE_FILE,
+                    route_state,
+                )
+
+                log.warning(
+                    "[ALT WATCHDOG FIRST BASELINE] "
+                    f"route={route['name']} "
+                    f"baseline={stored_checkpoint} "
+                    "COPIED_HISTORY=0"
+                )
+
+                break
+
+            except Exception as exc:
+                log.warning(
+                    "[ALT WATCHDOG BASELINE FAILED] "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+                await asyncio.sleep(2)
+
+    else:
+        # ------------------------------------------------------
+        # RESTART / FUTURE DEPLOY
+        #
+        # Continue from durable checkpoint instead of taking a
+        # new baseline. Anything missed during deployment can
+        # therefore be recovered.
+        # ------------------------------------------------------
+
+        log.warning(
+            "[ALT WATCHDOG RESTORE] "
+            f"route={route['name']} "
+            f"checkpoint={stored_checkpoint} "
+            "DEPLOYMENT_GAP_RECOVERY=True"
+        )
+
+    last_id = int(
+        stored_checkpoint
+    )
+
+    while True:
+        await asyncio.sleep(
+            WATCHDOG_SECONDS
+        )
+
+        try:
+            current = list(
+                await fetch_route_messages(
+                    route,
+                    WATCHDOG_LIMIT,
+                )
+                or []
+            )
+
+            fresh = [
+                message
+                for message in current
+                if int(message.id) > last_id
+            ]
+
+            for unit in build_units(
+                fresh
+            ):
+                if not unit:
+                    continue
+
+                # Give Telegram a moment to finish albums.
+                grouped_id = getattr(
+                    unit[0],
+                    "grouped_id",
+                    None,
+                )
+
+                if grouped_id:
+                    timestamps = []
+
+                    for item in unit:
+                        value = getattr(
+                            item,
+                            "date",
+                            None,
+                        )
+
+                        if value:
+                            try:
+                                timestamps.append(
+                                    float(
+                                        value.timestamp()
+                                    )
+                                )
+                            except Exception:
+                                pass
+
+                    if (
+                        timestamps
+                        and (
+                            time.time()
+                            - max(timestamps)
+                        ) < 1.5
+                    ):
+                        break
+
+                max_id = max(
+                    int(message.id)
+                    for message in unit
+                )
+
+                success = await copy_unit(
+                    route,
+                    unit,
+                    "watchdog_recovery",
+                )
+
+                if not success:
+                    # Preserve ordering.
+                    break
+
+                last_id = max(
+                    last_id,
+                    max_id,
+                )
+
+                update_checkpoint(
+                    route,
+                    last_id,
+                )
+
+        except FloodWaitError as exc:
+            wait_for = max(
+                1,
+                int(exc.seconds),
+            )
+
+            log.warning(
+                "[ALT WATCHDOG FLOODWAIT] "
+                f"wait={wait_for}s "
+                "LIVE_PUSH_UNAFFECTED=True"
+            )
+
+            await asyncio.sleep(
+                wait_for
+            )
+
+        except Exception as exc:
+            log.warning(
+                "[ALT WATCHDOG ERROR] "
+                f"{type(exc).__name__}: {exc} "
+                "LIVE_PUSH_UNAFFECTED=True"
+            )
+
+
+# ==============================================================
+# MAIN
+# ==============================================================
+
+async def main():
+    if CONNECT_DELAY:
+        log.warning(
+            "[ALT CONNECT GUARD] "
+            f"waiting={CONNECT_DELAY}s"
+        )
+
+        await asyncio.sleep(
+            CONNECT_DELAY
+        )
+
+    await client.connect()
+
+    if not await client.is_user_authorized():
+        raise RuntimeError(
+            "ALT Telegram StringSession is unauthorized"
+        )
+
+    me = await client.get_me()
+
+    if (
+        EXPECTED_USER_ID
+        and int(me.id)
+        != EXPECTED_USER_ID
+    ):
+        raise RuntimeError(
+            "WRONG TELEGRAM ACCOUNT LOADED: "
+            f"expected={EXPECTED_USER_ID} "
+            f"actual={me.id}"
+        )
+
+    await client.get_dialogs(
+        limit=None
+    )
+
+    # ----------------------------------------------------------
+    # ACCESS PREFLIGHT
+    # ----------------------------------------------------------
+
+    for route in ROUTES:
+        source = await client.get_entity(
+            route["source_chat"]
+        )
+
+        destination = await client.get_entity(
+            route["dest_chat"]
+        )
+
+        if (
+            route["source_topic"]
+            is not None
+        ):
+            await client.get_messages(
+                route["source_chat"],
+                limit=1,
+                reply_to=int(
+                    route["source_topic"]
+                ),
+            )
+
+        topic_root = await client.get_messages(
+            route["dest_chat"],
+            ids=int(
+                route["dest_topic"]
+            ),
+        )
+
+        if not topic_root:
+            raise RuntimeError(
+                "Relay topic does not exist: "
+                f"{route['dest_chat']}_"
+                f"{route['dest_topic']}"
+            )
+
+        log.warning(
+            "[ALT ROUTE ACCESS OK] "
+            f"route={route['name']} "
+            f"source_title="
+            f"{getattr(source, 'title', None)!r} "
+            f"dest_title="
+            f"{getattr(destination, 'title', None)!r}"
+        )
+
+    # Recovery tasks.
+    for route in ROUTES:
+        asyncio.create_task(
+            watchdog(route)
+        )
+
+    log.warning(
+        "[ALT RELAY READY] "
+        f"user_id={me.id} "
+        f"routes={len(ROUTES)} "
+        f"sources={SOURCE_CHATS} "
+        "PRIMARY=TELEGRAM_PUSH "
+        f"WATCHDOG={WATCHDOG_SECONDS}s "
+        "FIRST_START_NO_HISTORY=True "
+        "RESTART_RECOVERY=True "
+        "EDIT_IN_PLACE=True "
+        "PERSISTENT_MAPPING=True"
+    )
+
+    await client.run_until_disconnected()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

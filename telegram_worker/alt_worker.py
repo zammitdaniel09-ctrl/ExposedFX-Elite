@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import logging
 import os
@@ -84,6 +84,54 @@ WATCHDOG_LIMIT = max(
         )
     ),
 )
+
+
+
+# BEGIN ALT_LAST50_ONCE_CONFIG_V1
+
+ALT_LAST50_ONCE = (
+    os.environ.get(
+        "ALT_LAST50_ONCE",
+        "0",
+    ).strip()
+    == "1"
+)
+
+ALT_LAST50_COUNT = max(
+    1,
+    int(
+        os.environ.get(
+            "ALT_LAST50_COUNT",
+            "50",
+        )
+    ),
+)
+
+ALT_LAST50_FETCH_LIMIT = max(
+    200,
+    int(
+        os.environ.get(
+            "ALT_LAST50_FETCH_LIMIT",
+            "1000",
+        )
+    ),
+)
+
+ALT_LAST50_SOURCE_CHAT = -1003364661276
+ALT_LAST50_DEST_CHAT = -1004367822325
+ALT_LAST50_DEST_TOPIC = 2
+
+ALT_LAST50_DONE_FILE = (
+    DATA_DIR
+    / "alt_last50_3364661276_to_4367822325_2.done.json"
+)
+
+ALT_LAST50_PROGRESS_FILE = (
+    DATA_DIR
+    / "alt_last50_3364661276_to_4367822325_2.progress.json"
+)
+
+# END ALT_LAST50_ONCE_CONFIG_V1
 
 
 # ==============================================================
@@ -1520,6 +1568,358 @@ async def watchdog(route):
             )
 
 
+
+# BEGIN ALT_LAST50_ONCE_HELPER_V1
+
+def alt_last50_target_route():
+    matches = [
+        route
+        for route in ROUTES
+        if (
+            int(route["source_chat"])
+            == ALT_LAST50_SOURCE_CHAT
+            and route["source_topic"] is None
+            and int(route["dest_chat"])
+            == ALT_LAST50_DEST_CHAT
+            and int(route["dest_topic"])
+            == ALT_LAST50_DEST_TOPIC
+        )
+    ]
+
+    if len(matches) != 1:
+        raise RuntimeError(
+            "ALT last50 expected exactly one route "
+            f"but found {len(matches)}"
+        )
+
+    return matches[0]
+
+
+def alt_last50_unit_copyable(unit):
+    return any(
+        bool(text_of(message))
+        or real_media(message)
+        for message in unit
+    )
+
+
+async def run_alt_last50_once():
+    if not ALT_LAST50_ONCE:
+        return False
+
+
+    route = alt_last50_target_route()
+
+
+    # --------------------------------------------------------
+    # DURABLE ONE-TIME GUARD
+    # --------------------------------------------------------
+
+    if ALT_LAST50_DONE_FILE.exists():
+        log.warning(
+            "[ALT LAST50 ALREADY DONE] "
+            f"done_file={ALT_LAST50_DONE_FILE} "
+            "COPIED_AGAIN=False"
+        )
+
+        return True
+
+
+    log.warning(
+        "[ALT LAST50 STARTING] "
+        f"source={ALT_LAST50_SOURCE_CHAT} "
+        f"dest={ALT_LAST50_DEST_CHAT}_"
+        f"{ALT_LAST50_DEST_TOPIC} "
+        f"requested={ALT_LAST50_COUNT} "
+        "LIVE_FORWARDING_CONTINUES=True"
+    )
+
+
+    # --------------------------------------------------------
+    # SNAPSHOT SOURCE
+    #
+    # Fetch ONCE. Anything Telegram sends after this snapshot
+    # belongs to the normal live NewMessage handler.
+    # --------------------------------------------------------
+
+    fetched = list(
+        await fetch_route_messages(
+            route,
+            ALT_LAST50_FETCH_LIMIT,
+        )
+        or []
+    )
+
+
+    if not fetched:
+        raise RuntimeError(
+            "ALT last50 source returned zero messages"
+        )
+
+
+    cutoff_id = max(
+        int(message.id)
+        for message in fetched
+    )
+
+
+    units = build_units(
+        fetched
+    )
+
+
+    copyable_units = [
+        unit
+        for unit in units
+        if (
+            unit
+            and alt_last50_unit_copyable(
+                unit
+            )
+            and max(
+                int(message.id)
+                for message in unit
+            )
+            <= cutoff_id
+        )
+    ]
+
+
+    selected = copyable_units[
+        -ALT_LAST50_COUNT:
+    ]
+
+
+    if not selected:
+        raise RuntimeError(
+            "ALT last50 found no copyable posts"
+        )
+
+
+    # build_units() is oldest -> newest.
+    selected = sorted(
+        selected,
+        key=lambda unit: min(
+            int(message.id)
+            for message in unit
+        ),
+    )
+
+
+    already_present = 0
+
+    for unit in selected:
+        if all(
+            bool(
+                mapped_ids(
+                    route,
+                    message.id,
+                )
+            )
+            for message in unit
+        ):
+            already_present += 1
+
+
+    progress = {
+        "status": "running",
+        "requested_posts": ALT_LAST50_COUNT,
+        "selected_posts": len(selected),
+        "source_chat": ALT_LAST50_SOURCE_CHAT,
+        "dest_chat": ALT_LAST50_DEST_CHAT,
+        "dest_topic": ALT_LAST50_DEST_TOPIC,
+        "cutoff_id": cutoff_id,
+        "already_present_before_start": already_present,
+        "completed_posts": 0,
+        "started_at": time.time(),
+    }
+
+
+    save_json(
+        ALT_LAST50_PROGRESS_FILE,
+        progress,
+    )
+
+
+    log.warning(
+        "[ALT LAST50 SNAPSHOT] "
+        f"cutoff_id={cutoff_id} "
+        f"selected_posts={len(selected)} "
+        f"already_present={already_present} "
+        "ORDER=OLDEST_TO_NEWEST"
+    )
+
+
+    completed = 0
+
+
+    # --------------------------------------------------------
+    # COPY OLDEST -> NEWEST
+    #
+    # copy_unit() provides:
+    #   - message-map duplicate prevention
+    #   - album safety
+    #   - persistent mapping
+    #   - Telegram media handling
+    # --------------------------------------------------------
+
+    for index, unit in enumerate(
+        selected,
+        start=1,
+    ):
+
+        ids = [
+            int(message.id)
+            for message in unit
+        ]
+
+
+        success = False
+
+
+        # A failed send is retried conservatively.
+        retry_waits = [
+            0,
+            5,
+            15,
+            30,
+            60,
+        ]
+
+
+        for attempt, wait_for in enumerate(
+            retry_waits,
+            start=1,
+        ):
+
+            if wait_for:
+                await asyncio.sleep(
+                    wait_for
+                )
+
+
+            success = await copy_unit(
+                route,
+                unit,
+                "history_last50_once",
+            )
+
+
+            if success:
+                break
+
+
+            log.warning(
+                "[ALT LAST50 RETRY] "
+                f"index={index}/{len(selected)} "
+                f"ids={ids} "
+                f"attempt={attempt}"
+            )
+
+
+        if not success:
+            progress.update({
+                "status": "failed",
+                "completed_posts": completed,
+                "failed_ids": ids,
+                "failed_at": time.time(),
+            })
+
+            save_json(
+                ALT_LAST50_PROGRESS_FILE,
+                progress,
+            )
+
+            raise RuntimeError(
+                "ALT last50 stopped safely at "
+                f"index={index} ids={ids}"
+            )
+
+
+        completed += 1
+
+
+        progress.update({
+            "status": "running",
+            "completed_posts": completed,
+            "last_completed_ids": ids,
+            "updated_at": time.time(),
+        })
+
+
+        save_json(
+            ALT_LAST50_PROGRESS_FILE,
+            progress,
+        )
+
+
+        log.warning(
+            "[ALT LAST50 PROGRESS] "
+            f"{completed}/{len(selected)} "
+            f"ids={ids}"
+        )
+
+
+        # Small pacing delay to reduce Telegram flood pressure.
+        await asyncio.sleep(
+            0.35
+        )
+
+
+    # --------------------------------------------------------
+    # DURABLE DONE FLAG
+    # --------------------------------------------------------
+
+    done = {
+        "status": "done",
+        "requested_posts": ALT_LAST50_COUNT,
+        "selected_posts": len(selected),
+        "completed_posts": completed,
+        "already_present_before_start": already_present,
+        "source_chat": ALT_LAST50_SOURCE_CHAT,
+        "dest_chat": ALT_LAST50_DEST_CHAT,
+        "dest_topic": ALT_LAST50_DEST_TOPIC,
+        "cutoff_id": cutoff_id,
+        "completed_at": time.time(),
+    }
+
+
+    save_json(
+        ALT_LAST50_DONE_FILE,
+        done,
+    )
+
+
+    progress.update({
+        "status": "done",
+        "completed_posts": completed,
+        "completed_at": time.time(),
+    })
+
+
+    save_json(
+        ALT_LAST50_PROGRESS_FILE,
+        progress,
+    )
+
+
+    log.warning(
+        "[ALT LAST50 DONE] "
+        f"requested={ALT_LAST50_COUNT} "
+        f"selected={len(selected)} "
+        f"completed={completed} "
+        f"already_present={already_present} "
+        f"cutoff_id={cutoff_id} "
+        "LIVE_FORWARDING=True "
+        "RERUN_BLOCKED=True"
+    )
+
+
+    return True
+
+# END ALT_LAST50_ONCE_HELPER_V1
+
+
 # ==============================================================
 # MAIN
 # ==============================================================
@@ -1606,6 +2006,21 @@ async def main():
             f"dest_title="
             f"{getattr(destination, 'title', None)!r}"
         )
+
+    # ----------------------------------------------------------
+    # GUARDED ONE-TIME LAST 50
+    # ----------------------------------------------------------
+
+    if ALT_LAST50_ONCE:
+        try:
+            await run_alt_last50_once()
+
+        except Exception as exc:
+            log.exception(
+                "[ALT LAST50 FAILED SAFE] "
+                f"{type(exc).__name__}: {exc} "
+                "LIVE_FORWARDING_CONTINUES=True"
+            )
 
     # Recovery tasks.
     for route in ROUTES:

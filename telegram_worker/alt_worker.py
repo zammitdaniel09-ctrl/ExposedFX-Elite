@@ -2391,6 +2391,775 @@ async def run_alt_history_once():
 # END ALT_PREMIUM_HISTORY_ONCE_HELPER_V1
 
 
+
+# BEGIN ALT_FORCE50_V3
+
+ALT_FORCE50_ONCE = (
+    os.environ.get(
+        "ALT_FORCE50_ONCE",
+        "0",
+    ).strip()
+    == "1"
+)
+
+ALT_FORCE50_RUN_ID = (
+    os.environ.get(
+        "ALT_FORCE50_RUN_ID",
+        "",
+    ).strip()
+)
+
+ALT_FORCE50_COUNT = max(
+    1,
+    int(
+        os.environ.get(
+            "ALT_FORCE50_COUNT",
+            "50",
+        )
+    ),
+)
+
+ALT_FORCE50_FETCH_LIMIT = max(
+    200,
+    int(
+        os.environ.get(
+            "ALT_FORCE50_FETCH_LIMIT",
+            "1000",
+        )
+    ),
+)
+
+ALT_FORCE50_SOURCE_CHAT = -1003364661276
+ALT_FORCE50_DEST_CHAT = -1004367822325
+ALT_FORCE50_DEST_TOPIC = 2
+
+
+def alt_force50_clean_run_id():
+
+    value = ALT_FORCE50_RUN_ID.strip()
+
+    if not value:
+
+        raise RuntimeError(
+            "ALT_FORCE50_RUN_ID is empty"
+        )
+
+
+    value = "".join(
+        character
+        if (
+            character.isalnum()
+            or character in "._-"
+        )
+        else "_"
+        for character in value
+    )
+
+
+    if not value:
+
+        raise RuntimeError(
+            "ALT_FORCE50_RUN_ID became empty"
+        )
+
+
+    return value
+
+
+def alt_force50_done_file():
+
+    return (
+        DATA_DIR
+        / (
+            "force50_"
+            + alt_force50_clean_run_id()
+            + ".done.json"
+        )
+    )
+
+
+def alt_force50_progress_file():
+
+    return (
+        DATA_DIR
+        / (
+            "force50_"
+            + alt_force50_clean_run_id()
+            + ".progress.json"
+        )
+    )
+
+
+def alt_force50_route():
+
+    matches = [
+        route
+        for route in ROUTES
+        if (
+            int(route["source_chat"])
+            == ALT_FORCE50_SOURCE_CHAT
+            and route["source_topic"] is None
+            and int(route["dest_chat"])
+            == ALT_FORCE50_DEST_CHAT
+            and int(route["dest_topic"])
+            == ALT_FORCE50_DEST_TOPIC
+        )
+    ]
+
+
+    if len(matches) != 1:
+
+        raise RuntimeError(
+            "ALT FORCE50 expected exactly one route; "
+            f"found={len(matches)}"
+        )
+
+
+    return matches[0]
+
+
+def alt_force50_copyable(
+    unit,
+):
+
+    return any(
+        bool(
+            text_of(message)
+        )
+        or real_media(
+            message
+        )
+        for message in unit
+    )
+
+
+def alt_force50_token(
+    unit,
+):
+
+    return ",".join(
+        str(
+            int(message.id)
+        )
+        for message in unit
+    )
+
+
+async def alt_force50_send_fresh(
+    route,
+    unit,
+):
+    """
+    Intentionally sends directly through send_single/send_album.
+
+    Existing historical message mappings are NOT consulted as
+    a reason to skip this one-time resend.
+
+    After Telegram confirms the new send, remember() updates the
+    source -> destination mapping to the new relay message.
+    """
+
+    unit = sorted(
+        list(unit),
+        key=lambda message: int(
+            message.id
+        ),
+    )
+
+
+    if not unit:
+
+        raise RuntimeError(
+            "Force50 received empty unit"
+        )
+
+
+    old_mapping = {
+        str(
+            int(message.id)
+        ): list(
+            mapped_ids(
+                route,
+                message.id,
+            )
+        )
+        for message in unit
+    }
+
+
+    async with copy_lock(
+        route,
+        unit,
+    ):
+
+        grouped_id = getattr(
+            unit[0],
+            "grouped_id",
+            None,
+        )
+
+
+        # ----------------------------------------------------
+        # ALBUM
+        # ----------------------------------------------------
+
+        if (
+            len(unit) > 1
+            and grouped_id
+        ):
+
+            sent_items = await send_album(
+                route,
+                unit,
+            )
+
+
+            if not sent_items:
+
+                raise RuntimeError(
+                    "Album send returned no destination messages"
+                )
+
+
+            if not isinstance(
+                sent_items,
+                list,
+            ):
+
+                sent_items = [
+                    sent_items
+                ]
+
+
+            if (
+                len(sent_items)
+                != len(unit)
+            ):
+
+                raise RuntimeError(
+                    "Album destination item count mismatch: "
+                    f"source={len(unit)} "
+                    f"dest={len(sent_items)}"
+                )
+
+
+            for source, destination in zip(
+                unit,
+                sent_items,
+            ):
+
+                remember(
+                    route,
+                    source,
+                    destination,
+                )
+
+
+            return {
+                "kind": "ALBUM",
+                "old_mapping": old_mapping,
+                "new_destination_ids": [
+                    int(
+                        destination.id
+                    )
+                    for destination in sent_items
+                ],
+            }
+
+
+        # ----------------------------------------------------
+        # SINGLE
+        # ----------------------------------------------------
+
+        message = unit[0]
+
+
+        sent = await send_single(
+            route,
+            message,
+        )
+
+
+        if sent is None:
+
+            raise RuntimeError(
+                "Single send returned no destination message"
+            )
+
+
+        remember(
+            route,
+            message,
+            sent,
+        )
+
+
+        return {
+            "kind": "SINGLE",
+            "old_mapping": old_mapping,
+            "new_destination_ids": [
+                int(
+                    sent.id
+                )
+            ],
+        }
+
+
+async def run_alt_force50_v3():
+
+    if not ALT_FORCE50_ONCE:
+
+        return False
+
+
+    route = alt_force50_route()
+
+    done_file = alt_force50_done_file()
+    progress_file = alt_force50_progress_file()
+
+
+    # ========================================================
+    # DURABLE COMPLETION GUARD
+    # ========================================================
+
+    if done_file.exists():
+
+        log.warning(
+            "[ALT FORCE50 V3 ALREADY DONE] "
+            f"run_id={ALT_FORCE50_RUN_ID} "
+            "NEW_SEND=False"
+        )
+
+        return True
+
+
+    # ========================================================
+    # PREMIUM MUST BE ACTIVE
+    # ========================================================
+
+    me = await client.get_me()
+
+    premium = bool(
+        getattr(
+            me,
+            "premium",
+            False,
+        )
+    )
+
+
+    log.warning(
+        "[ALT FORCE50 V3 PREMIUM CHECK] "
+        f"run_id={ALT_FORCE50_RUN_ID} "
+        f"premium={premium}"
+    )
+
+
+    if not premium:
+
+        raise RuntimeError(
+            "Telegram reports Premium=False. "
+            "Nothing was sent."
+        )
+
+
+    # ========================================================
+    # SOURCE SNAPSHOT
+    # ========================================================
+
+    fetched = list(
+        await fetch_route_messages(
+            route,
+            ALT_FORCE50_FETCH_LIMIT,
+        )
+        or []
+    )
+
+
+    if not fetched:
+
+        raise RuntimeError(
+            "Source returned zero messages"
+        )
+
+
+    cutoff_id = max(
+        int(
+            message.id
+        )
+        for message in fetched
+    )
+
+
+    units = build_units(
+        fetched
+    )
+
+
+    units = [
+        unit
+        for unit in units
+        if (
+            unit
+            and alt_force50_copyable(
+                unit
+            )
+            and max(
+                int(message.id)
+                for message in unit
+            )
+            <= cutoff_id
+        )
+    ]
+
+
+    # build_units sorts source IDs ascending.
+    # Therefore last N units are the newest N posts.
+    selected = units[
+        -ALT_FORCE50_COUNT:
+    ]
+
+
+    selected = sorted(
+        selected,
+        key=lambda unit: min(
+            int(message.id)
+            for message in unit
+        ),
+    )
+
+
+    if not selected:
+
+        raise RuntimeError(
+            "No copyable posts found"
+        )
+
+
+    mapped_before = sum(
+        1
+        for unit in selected
+        if all(
+            bool(
+                mapped_ids(
+                    route,
+                    message.id,
+                )
+            )
+            for message in unit
+        )
+    )
+
+
+    # ========================================================
+    # RESUME STATE
+    # ========================================================
+
+    progress = load_json(
+        progress_file
+    )
+
+
+    if (
+        progress.get("run_id")
+        != ALT_FORCE50_RUN_ID
+    ):
+
+        progress = {
+            "run_id": ALT_FORCE50_RUN_ID,
+            "status": "running",
+            "premium": premium,
+            "requested": ALT_FORCE50_COUNT,
+            "selected": len(selected),
+            "mapped_before": mapped_before,
+            "cutoff_id": cutoff_id,
+            "sent_tokens": [],
+            "started_at": time.time(),
+        }
+
+
+        save_json(
+            progress_file,
+            progress,
+        )
+
+
+    sent_tokens = set(
+        progress.get(
+            "sent_tokens",
+            [],
+        )
+    )
+
+
+    log.warning(
+        "[ALT FORCE50 V3 START] "
+        f"run_id={ALT_FORCE50_RUN_ID} "
+        f"premium={premium} "
+        f"requested={ALT_FORCE50_COUNT} "
+        f"selected={len(selected)} "
+        f"mapped_before={mapped_before} "
+        f"resume_sent={len(sent_tokens)} "
+        f"cutoff_id={cutoff_id} "
+        "STALE_MAP_BYPASS=True "
+        "ORDER=OLDEST_TO_NEWEST "
+        "ACTUAL_NEW_SEND=True"
+    )
+
+
+    completed = len(
+        sent_tokens
+    )
+
+
+    # ========================================================
+    # FRESH SENDS
+    # ========================================================
+
+    for index, unit in enumerate(
+        selected,
+        start=1,
+    ):
+
+        token = alt_force50_token(
+            unit
+        )
+
+
+        ids = [
+            int(
+                message.id
+            )
+            for message in unit
+        ]
+
+
+        if token in sent_tokens:
+
+            log.warning(
+                "[ALT FORCE50 V3 RESUME SKIP] "
+                f"index={index}/{len(selected)} "
+                f"ids={ids}"
+            )
+
+            continue
+
+
+        result = None
+        success = False
+
+
+        for attempt in range(
+            1,
+            6,
+        ):
+
+            try:
+
+                result = await alt_force50_send_fresh(
+                    route,
+                    unit,
+                )
+
+
+                success = True
+
+                break
+
+
+            except FloodWaitError as exc:
+
+                wait_for = max(
+                    1,
+                    int(
+                        exc.seconds
+                    )
+                    + 1,
+                )
+
+
+                log.warning(
+                    "[ALT FORCE50 V3 FLOODWAIT] "
+                    f"index={index}/{len(selected)} "
+                    f"ids={ids} "
+                    f"wait={wait_for}s"
+                )
+
+
+                await asyncio.sleep(
+                    wait_for
+                )
+
+
+            except Exception as exc:
+
+                if attempt >= 5:
+
+                    log.exception(
+                        "[ALT FORCE50 V3 SEND FAILED] "
+                        f"index={index}/{len(selected)} "
+                        f"ids={ids} "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+                    break
+
+
+                delays = [
+                    3,
+                    8,
+                    20,
+                    45,
+                ]
+
+
+                wait_for = delays[
+                    attempt - 1
+                ]
+
+
+                log.warning(
+                    "[ALT FORCE50 V3 RETRY] "
+                    f"index={index}/{len(selected)} "
+                    f"ids={ids} "
+                    f"attempt={attempt} "
+                    f"wait={wait_for}s "
+                    f"error={type(exc).__name__}: {exc}"
+                )
+
+
+                await asyncio.sleep(
+                    wait_for
+                )
+
+
+        if not success:
+
+            progress.update({
+                "status": "failed",
+                "failed_index": index,
+                "failed_ids": ids,
+                "failed_at": time.time(),
+            })
+
+
+            save_json(
+                progress_file,
+                progress,
+            )
+
+
+            raise RuntimeError(
+                "Force50 stopped safely at "
+                f"index={index} ids={ids}"
+            )
+
+
+        sent_tokens.add(
+            token
+        )
+
+
+        completed += 1
+
+
+        progress.update({
+            "status": "running",
+            "sent_tokens": sorted(
+                sent_tokens
+            ),
+            "completed": completed,
+            "last_source_ids": ids,
+            "last_new_destination_ids": (
+                result[
+                    "new_destination_ids"
+                ]
+            ),
+            "updated_at": time.time(),
+        })
+
+
+        save_json(
+            progress_file,
+            progress,
+        )
+
+
+        log.warning(
+            "[ALT FORCE50 V3 SENT] "
+            f"index={index}/{len(selected)} "
+            f"source_ids={ids} "
+            f"kind={result['kind']} "
+            f"old_mapping={result['old_mapping']} "
+            f"new_destination_ids="
+            f"{result['new_destination_ids']} "
+            "ACTUAL_NEW_SEND=True "
+            "MAPPING_REPLACED=True"
+        )
+
+
+        # Conservative pacing.
+        await asyncio.sleep(
+            1.0
+        )
+
+
+    # ========================================================
+    # DURABLE DONE
+    # ========================================================
+
+    done = {
+        "run_id": ALT_FORCE50_RUN_ID,
+        "status": "done",
+        "premium": premium,
+        "requested": ALT_FORCE50_COUNT,
+        "selected": len(selected),
+        "completed": completed,
+        "mapped_before": mapped_before,
+        "cutoff_id": cutoff_id,
+        "completed_at": time.time(),
+    }
+
+
+    save_json(
+        done_file,
+        done,
+    )
+
+
+    progress.update({
+        "status": "done",
+        "completed": completed,
+        "completed_at": time.time(),
+    })
+
+
+    save_json(
+        progress_file,
+        progress,
+    )
+
+
+    log.warning(
+        "[ALT FORCE50 V3 DONE] "
+        f"run_id={ALT_FORCE50_RUN_ID} "
+        f"premium={premium} "
+        f"selected={len(selected)} "
+        f"completed={completed} "
+        f"mapped_before={mapped_before} "
+        "ACTUAL_NEW_SEND=True "
+        "MAPPINGS_NOW_POINT_TO_NEW_COPIES=True "
+        "RERUN_BLOCKED=True "
+        "LIVE_FORWARDING=True"
+    )
+
+
+    return True
+
+
+# END ALT_FORCE50_V3
+
+
 # ==============================================================
 # MAIN
 # ==============================================================
@@ -2477,6 +3246,25 @@ async def main():
             f"dest_title="
             f"{getattr(destination, 'title', None)!r}"
         )
+
+    # ----------------------------------------------------------
+    # TRUE FORCE50 V3
+    # ----------------------------------------------------------
+
+    if ALT_FORCE50_ONCE:
+
+        try:
+
+            await run_alt_force50_v3()
+
+        except Exception as exc:
+
+            log.exception(
+                "[ALT FORCE50 V3 FAILED SAFE] "
+                f"run_id={ALT_FORCE50_RUN_ID} "
+                f"{type(exc).__name__}: {exc} "
+                "LIVE_FORWARDING_CONTINUES=True"
+            )
 
     # ----------------------------------------------------------
     # GUARDED ONE-TIME LAST 50

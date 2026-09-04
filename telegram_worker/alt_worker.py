@@ -1,5 +1,6 @@
 import asyncio
 import json
+import hashlib
 import logging
 import os
 import re
@@ -229,7 +230,7 @@ def load_routes():
             source_topic = None
 
         routes.append({
-            "name": f"ALT RELAY {index}",
+            "name": str(item.get("name") or f"ALT RELAY {index}"),
             "source_chat": int(
                 item["source_chat"]
             ),
@@ -1226,6 +1227,759 @@ async def edit_existing(
             return False
 
 
+
+# BEGIN ALT_PAIR106_ORIGINAL_DEDUPE_V1
+
+ALT_PAIR106_SOURCE_CHATS = {
+    -1003252087470,
+    -1002438454194,
+}
+
+ALT_PAIR106_DEST_CHAT = -1004367822325
+ALT_PAIR106_DEST_TOPIC = 106
+
+ALT_PAIR106_SEEN_FILE = (
+    DATA_DIR
+    / "pair106_original_dedupe.json"
+)
+
+ALT_PAIR106_SEEN = load_json(
+    ALT_PAIR106_SEEN_FILE
+)
+
+ALT_PAIR106_LOCK = asyncio.Lock()
+
+# Pair routes are not allowed to process Telegram updates until
+# their first-start no-history baseline has been established.
+ALT_PAIR106_READY_ROUTE_KEYS = set()
+
+
+def alt_pair106_route(
+    route,
+):
+
+    try:
+
+        return (
+            int(route["source_chat"])
+            in ALT_PAIR106_SOURCE_CHATS
+            and route["source_topic"] is None
+            and int(route["dest_chat"])
+            == ALT_PAIR106_DEST_CHAT
+            and int(route["dest_topic"])
+            == ALT_PAIR106_DEST_TOPIC
+        )
+
+    except Exception:
+
+        return False
+
+
+def alt_pair106_channel_id_from_chat(
+    chat_id,
+):
+
+    raw = str(
+        abs(
+            int(chat_id)
+        )
+    )
+
+
+    # Telegram full channel IDs are represented as:
+    # -1003252087470
+    #
+    # PeerChannel.channel_id is:
+    # 3252087470
+    if raw.startswith("100"):
+
+        raw = raw[3:]
+
+
+    return int(
+        raw
+    )
+
+
+def alt_pair106_peer_identity(
+    peer,
+):
+
+    if peer is None:
+
+        return None
+
+
+    channel_id = getattr(
+        peer,
+        "channel_id",
+        None,
+    )
+
+
+    if channel_id:
+
+        return (
+            "channel",
+            int(channel_id),
+        )
+
+
+    chat_id = getattr(
+        peer,
+        "chat_id",
+        None,
+    )
+
+
+    if chat_id:
+
+        return (
+            "chat",
+            int(chat_id),
+        )
+
+
+    user_id = getattr(
+        peer,
+        "user_id",
+        None,
+    )
+
+
+    if user_id:
+
+        return (
+            "user",
+            int(user_id),
+        )
+
+
+    return None
+
+
+def alt_pair106_forward_identity(
+    message,
+):
+    """
+    Resolve Telegram's ORIGINAL forwarded post.
+
+    Examples this catches:
+
+    A original post -> B forwards A
+    A and B both forward same third-party channel post
+    B original post -> A forwards B
+    """
+
+    forward = getattr(
+        message,
+        "fwd_from",
+        None,
+    )
+
+
+    if not forward:
+
+        return None
+
+
+    channel_post = getattr(
+        forward,
+        "channel_post",
+        None,
+    )
+
+
+    peer = getattr(
+        forward,
+        "from_id",
+        None,
+    )
+
+
+    peer_identity = alt_pair106_peer_identity(
+        peer
+    )
+
+
+    if (
+        peer_identity
+        and channel_post
+    ):
+
+        return (
+            peer_identity[0],
+            peer_identity[1],
+            int(channel_post),
+        )
+
+
+    saved_peer = getattr(
+        forward,
+        "saved_from_peer",
+        None,
+    )
+
+
+    saved_message = getattr(
+        forward,
+        "saved_from_msg_id",
+        None,
+    )
+
+
+    saved_identity = alt_pair106_peer_identity(
+        saved_peer
+    )
+
+
+    if (
+        saved_identity
+        and saved_message
+    ):
+
+        return (
+            saved_identity[0],
+            saved_identity[1],
+            int(saved_message),
+        )
+
+
+    return None
+
+
+def alt_pair106_direct_identity(
+    route,
+    message,
+):
+
+    return (
+        "channel",
+        alt_pair106_channel_id_from_chat(
+            route["source_chat"]
+        ),
+        int(message.id),
+    )
+
+
+def alt_pair106_hash_identity_list(
+    identities,
+):
+
+    encoded = json.dumps(
+        identities,
+        separators=(",", ":"),
+        sort_keys=False,
+    ).encode(
+        "utf-8"
+    )
+
+
+    return hashlib.sha256(
+        encoded
+    ).hexdigest()
+
+
+def alt_pair106_candidate_tokens(
+    route,
+    messages,
+):
+    """
+    Store/check BOTH identities:
+
+    1. Direct source Telegram post IDs.
+    2. Forwarded-original Telegram post IDs.
+
+    This is important because:
+
+      A posts #100 directly
+      B forwards A #100
+
+    A's direct token and B's forwarded-original token become
+    the exact same token.
+
+    It also handles nested forwarding better because a winner
+    can be indexed under both its own source post and the
+    original forwarded post.
+    """
+
+    messages = sorted(
+        list(messages),
+        key=lambda item: int(
+            item.id
+        ),
+    )
+
+
+    direct_identities = [
+        alt_pair106_direct_identity(
+            route,
+            message,
+        )
+        for message in messages
+    ]
+
+
+    tokens = {
+        "direct:"
+        + alt_pair106_hash_identity_list(
+            direct_identities
+        )
+    }
+
+
+    forward_identities = [
+        alt_pair106_forward_identity(
+            message
+        )
+        for message in messages
+    ]
+
+
+    if (
+        forward_identities
+        and all(
+            identity is not None
+            for identity in forward_identities
+        )
+    ):
+
+        tokens.add(
+            "original:"
+            + alt_pair106_hash_identity_list(
+                forward_identities
+            )
+        )
+
+
+        # Also index the forward origin using the SAME token
+        # namespace as a direct source post.
+        #
+        # This is what makes:
+        #
+        # direct A post == B's forward of A post.
+        tokens.add(
+            "direct:"
+            + alt_pair106_hash_identity_list(
+                forward_identities
+            )
+        )
+
+
+    return sorted(
+        tokens
+    )
+
+
+def alt_pair106_find_seen(
+    tokens,
+):
+
+    for token in tokens:
+
+        entry = ALT_PAIR106_SEEN.get(
+            token
+        )
+
+
+        if isinstance(
+            entry,
+            dict,
+        ):
+
+            return token, entry
+
+
+    return None, None
+
+
+def alt_pair106_store_seen(
+    tokens,
+    route,
+    messages,
+    destination_ids,
+):
+
+    entry = {
+        "winner_source_chat": int(
+            route["source_chat"]
+        ),
+        "winner_source_ids": [
+            int(message.id)
+            for message in messages
+        ],
+        "destination_ids": [
+            int(value)
+            for value in destination_ids
+        ],
+        "created_at": time.time(),
+    }
+
+
+    for token in tokens:
+
+        ALT_PAIR106_SEEN[
+            token
+        ] = entry
+
+
+    save_json(
+        ALT_PAIR106_SEEN_FILE,
+        ALT_PAIR106_SEEN,
+    )
+
+
+def alt_pair106_alias_mapping(
+    route,
+    messages,
+    entry,
+):
+    """
+    A duplicate is NOT sent.
+
+    But we alias its source IDs to the already-existing relay
+    message IDs. This means the normal edit machinery can still
+    find the destination copy for the duplicate source post.
+    """
+
+    destination_ids = [
+        int(value)
+        for value in entry.get(
+            "destination_ids",
+            [],
+        )
+    ]
+
+
+    messages = sorted(
+        list(messages),
+        key=lambda item: int(
+            item.id
+        ),
+    )
+
+
+    if (
+        len(destination_ids)
+        != len(messages)
+    ):
+
+        return False
+
+
+    for message, destination_id in zip(
+        messages,
+        destination_ids,
+    ):
+
+        message_map[
+            map_key(
+                route,
+                message.id,
+            )
+        ] = int(
+            destination_id
+        )
+
+
+    save_json(
+        MAP_FILE,
+        message_map,
+    )
+
+
+    update_checkpoint(
+        route,
+        max(
+            int(message.id)
+            for message in messages
+        ),
+    )
+
+
+    return True
+
+
+async def copy_unit_pair_deduped(
+    route,
+    messages,
+    reason,
+):
+
+    if not alt_pair106_route(
+        route
+    ):
+
+        return await copy_unit(
+            route,
+            messages,
+            reason,
+        )
+
+
+    route_identity = route_key(
+        route
+    )
+
+
+    # --------------------------------------------------------
+    # STRICT FIRST-START NO-HISTORY GATE
+    # --------------------------------------------------------
+
+    if (
+        route_identity
+        not in ALT_PAIR106_READY_ROUTE_KEYS
+    ):
+
+        log.warning(
+            "[ALT PAIR106 BEFORE BASELINE SKIPPED] "
+            f"source={route['source_chat']} "
+            f"ids="
+            f"{[int(m.id) for m in messages]} "
+            f"reason={reason} "
+            "COPIED=False "
+            "PAST_IMPORT_BLOCK=True"
+        )
+
+        return False
+
+
+    messages = sorted(
+        list(messages),
+        key=lambda item: int(
+            item.id
+        ),
+    )
+
+
+    tokens = alt_pair106_candidate_tokens(
+        route,
+        messages,
+    )
+
+
+    async with ALT_PAIR106_LOCK:
+
+        matched_token, seen_entry = (
+            alt_pair106_find_seen(
+                tokens
+            )
+        )
+
+
+        if seen_entry:
+
+            alias_ok = (
+                alt_pair106_alias_mapping(
+                    route,
+                    messages,
+                    seen_entry,
+                )
+            )
+
+
+            log.warning(
+                "[ALT PAIR106 DUPLICATE IGNORED] "
+                f"source={route['source_chat']} "
+                f"ids="
+                f"{[int(m.id) for m in messages]} "
+                f"winner_source="
+                f"{seen_entry.get('winner_source_chat')} "
+                f"winner_ids="
+                f"{seen_entry.get('winner_source_ids')} "
+                f"dest_ids="
+                f"{seen_entry.get('destination_ids')} "
+                f"token={matched_token} "
+                f"alias_mapping={alias_ok} "
+                "SENT=False "
+                "FIRST_COPY_WINS=True"
+            )
+
+
+            return True
+
+
+        # ----------------------------------------------------
+        # FIRST COPY WINS
+        # ----------------------------------------------------
+
+        success = await copy_unit(
+            route,
+            messages,
+            reason,
+        )
+
+
+        if not success:
+
+            return False
+
+
+        destination_ids = []
+
+
+        for message in messages:
+
+            ids = mapped_ids(
+                route,
+                message.id,
+            )
+
+
+            if not ids:
+
+                # Nothing was actually sent/mapped
+                # (e.g. unsupported empty service message).
+                return True
+
+
+            destination_ids.append(
+                int(ids[0])
+            )
+
+
+        alt_pair106_store_seen(
+            tokens,
+            route,
+            messages,
+            destination_ids,
+        )
+
+
+        log.warning(
+            "[ALT PAIR106 FIRST COPY WON] "
+            f"source={route['source_chat']} "
+            f"ids="
+            f"{[int(m.id) for m in messages]} "
+            f"dest_ids={destination_ids} "
+            f"tokens={tokens} "
+            "FIRST_COPY_WINS=True"
+        )
+
+
+        return True
+
+
+async def initialise_alt_pair106_no_history():
+    """
+    First installation:
+
+      snapshot current newest message
+      save checkpoint
+      copy NOTHING
+
+    Future restart:
+
+      restore durable checkpoint
+      watchdog can recover only genuinely newer messages.
+    """
+
+    pair_routes = [
+        route
+        for route in ROUTES
+        if alt_pair106_route(
+            route
+        )
+    ]
+
+
+    if len(pair_routes) != 2:
+
+        raise RuntimeError(
+            "ALT PAIR106 expected exactly 2 routes; "
+            f"found={len(pair_routes)}"
+        )
+
+
+    for route in pair_routes:
+
+        key = route_key(
+            route
+        )
+
+
+        stored = checkpoint(
+            route
+        )
+
+
+        if stored > 0:
+
+            ALT_PAIR106_READY_ROUTE_KEYS.add(
+                key
+            )
+
+
+            log.warning(
+                "[ALT PAIR106 BASELINE RESTORED] "
+                f"source={route['source_chat']} "
+                f"checkpoint={stored} "
+                "COPIED_HISTORY=0 "
+                "RESTART_RECOVERY=True"
+            )
+
+
+            continue
+
+
+        current = list(
+            await fetch_route_messages(
+                route,
+                50,
+            )
+            or []
+        )
+
+
+        baseline = max(
+            [
+                int(message.id)
+                for message in current
+            ]
+            or [0]
+        )
+
+
+        route_state[
+            key
+        ] = int(
+            baseline
+        )
+
+
+        save_json(
+            STATE_FILE,
+            route_state,
+        )
+
+
+        ALT_PAIR106_READY_ROUTE_KEYS.add(
+            key
+        )
+
+
+        log.warning(
+            "[ALT PAIR106 FIRST BASELINE] "
+            f"source={route['source_chat']} "
+            f"baseline={baseline} "
+            "COPIED_HISTORY=0 "
+            "PAST_IMPORT_BLOCK=True"
+        )
+
+
+    log.warning(
+        "[ALT PAIR106 DEDUPE READY] "
+        "sources=[-1003252087470,-1002438454194] "
+        "dest=-1004367822325_106 "
+        "MODE=TELEGRAM_ORIGINAL_FIRST_COPY_WINS "
+        "PERSISTENT=True "
+        "NO_HISTORY=True"
+    )
+
+
+# END ALT_PAIR106_ORIGINAL_DEDUPE_V1
+
+
 # ==============================================================
 # TELEGRAM PUSH EVENTS
 # ==============================================================
@@ -1257,7 +2011,7 @@ async def new_message_handler(event):
 
         await asyncio.gather(
             *[
-                copy_unit(
+                copy_unit_pair_deduped(
                     route,
                     [message],
                     "telegram_push",
@@ -1303,7 +2057,7 @@ async def album_handler(event):
 
         await asyncio.gather(
             *[
-                copy_unit(
+                copy_unit_pair_deduped(
                     route,
                     messages,
                     "telegram_album",
@@ -1578,7 +2332,7 @@ async def watchdog(route):
                     for message in unit
                 )
 
-                success = await copy_unit(
+                success = await copy_unit_pair_deduped(
                     route,
                     unit,
                     "watchdog_recovery",
@@ -3246,6 +4000,12 @@ async def main():
             f"dest_title="
             f"{getattr(destination, 'title', None)!r}"
         )
+
+    # ----------------------------------------------------------
+    # PAIR106 STRICT NO-HISTORY INITIALISATION
+    # ----------------------------------------------------------
+
+    await initialise_alt_pair106_no_history()
 
     # ----------------------------------------------------------
     # TRUE FORCE50 V3

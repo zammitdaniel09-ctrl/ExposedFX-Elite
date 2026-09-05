@@ -473,6 +473,122 @@ def entities_of(message):
     return getattr(message, "entities", None) or []
 
 
+# BEGIN USERNAME_MENTION_FILTER_V2
+
+FILTER_USERNAME_MENTIONS = (
+    os.environ.get(
+        "FILTER_USERNAME_MENTIONS",
+        "1",
+    ).strip()
+    == "1"
+)
+
+
+def has_username_mention(
+    message,
+):
+    """
+    Exact Telegram entity check.
+
+    MessageEntityMention = actual @username mention.
+
+    We intentionally DO NOT scan raw text for '@'.
+    Therefore email addresses and other normal text are not
+    filtered by this rule.
+    """
+
+    if not FILTER_USERNAME_MENTIONS:
+        return False
+
+
+    entities = (
+        getattr(
+            message,
+            "entities",
+            None,
+        )
+        or []
+    )
+
+
+    for entity in entities:
+
+        if (
+            type(entity).__name__
+            == "MessageEntityMention"
+        ):
+
+            return True
+
+
+    return False
+
+
+def unit_has_username_mention(
+    messages,
+):
+
+    return any(
+        has_username_mention(
+            message
+        )
+        for message in (
+            messages
+            or []
+        )
+    )
+
+
+def log_username_filter_main(
+    messages,
+    context,
+    route=None,
+    source_chat=None,
+    source_topic=None,
+):
+
+    messages = list(
+        messages
+        or []
+    )
+
+
+    ids = [
+        int(
+            getattr(
+                message,
+                "id",
+                0,
+            )
+            or 0
+        )
+        for message in messages
+    ]
+
+
+    route_name = (
+        route.get("name")
+        if isinstance(route, dict)
+        else None
+    )
+
+
+    log.warning(
+        "[USERNAME MENTION FILTERED] "
+        "account=MAIN "
+        f"context={context} "
+        f"source={source_chat}_{source_topic} "
+        f"ids={ids} "
+        f"route={route_name} "
+        "SENT=False "
+        "FILTER=MessageEntityMention"
+    )
+
+
+# END USERNAME_MENTION_FILTER_V2
+
+
+
 
 
 
@@ -1337,6 +1453,18 @@ async def ensure_replied_message_copied(message, route, depth=0):
             if should_hard_block_sender(parent, "reply_parent", route):
                 continue
 
+            if has_username_mention(parent):
+
+                log_username_filter_main(
+                    [parent],
+                    "reply_parent",
+                    route=route,
+                    source_chat=route.get("source_chat"),
+                    source_topic=route.get("source_topic"),
+                )
+
+                continue
+
             await copy_one(parent, route, edited=False, ensure_reply=False)
             log.info(
                 f"[reply parent copied] route={route['name']} "
@@ -1518,6 +1646,18 @@ async def repair_bad_mirror_structure(message, route, target_reply, text, entiti
 
 
 async def copy_one(message, route, edited=False, ensure_reply=True):
+    if has_username_mention(message):
+
+        log_username_filter_main(
+            [message],
+            "copy_one_hard_guard",
+            route=route,
+            source_chat=route.get("source_chat"),
+            source_topic=route.get("source_topic"),
+        )
+
+        return None
+
     if should_hard_block_sender(message, "copy_one", route):
         return None
 
@@ -1570,6 +1710,18 @@ async def copy_one(message, route, edited=False, ensure_reply=True):
 
 
 async def copy_album(messages, route):
+    if unit_has_username_mention(messages):
+
+        log_username_filter_main(
+            messages,
+            "copy_album_hard_guard",
+            route=route,
+            source_chat=route.get("source_chat"),
+            source_topic=route.get("source_topic"),
+        )
+
+        return None
+
     for item in messages:
         if should_hard_block_sender(item, "album", route):
             return None
@@ -1980,6 +2132,18 @@ async def cleanup_existing_blocked_sender_copies_once():
 
 
 async def forward_polled_new_mirror_message(route, msg, reason):
+    if has_username_mention(msg):
+
+        log_username_filter_main(
+            [msg],
+            "generic_poll",
+            route=route,
+            source_chat=route.get("source_chat"),
+            source_topic=route.get("source_topic"),
+        )
+
+        return True
+
     if "backfill" in str(reason).lower():
         log.error(
             "[NO HISTORY HARD BLOCK] "
@@ -3029,6 +3193,36 @@ async def private_live_route_poll_loop():
                             break
 
                     # END VIP_TOPIC_MOVE_SUPPRESS_V1
+
+                    # --------------------------------------------
+                    # USERNAME MENTION FILTER V2
+                    # --------------------------------------------
+
+                    if unit_has_username_mention(
+                        unit
+                    ):
+
+                        PRIVATE_LIVE_POLL_LAST_IDS[key] = max(
+                            int(
+                                PRIVATE_LIVE_POLL_LAST_IDS.get(
+                                    key,
+                                    0,
+                                )
+                                or 0
+                            ),
+                            max_mid,
+                        )
+
+                        log_username_filter_main(
+                            unit,
+                            "private_live",
+                            route=route,
+                            source_chat=route.get("source_chat"),
+                            source_topic=route.get("source_topic"),
+                        )
+
+                        continue
+
 
                     # --------------------------------------------
                     # Already fully mapped?
@@ -4367,6 +4561,24 @@ async def fastvip2_enqueue(
     )
 
 
+    if unit_has_username_mention(
+        unit
+    ):
+
+        FASTVIP2_HANDLED[
+            token
+        ] = time.time()
+
+        log_username_filter_main(
+            unit,
+            "fastvip2",
+            source_chat=source_key[0],
+            source_topic=source_key[1],
+        )
+
+        return False
+
+
     fastvip2_prune_handled()
 
 
@@ -5268,6 +5480,17 @@ async def new_mirror_poll_loop():
 async def handle_single_message(event, edited=False):
     message = event.message
     chat_id = event.chat_id
+
+    if has_username_mention(message):
+
+        log_username_filter_main(
+            [message],
+            "normal_event",
+            source_chat=chat_id,
+            source_topic=None,
+        )
+
+        return
     topic_id = topic_of(message, chat_id)
     text = text_of(message)
 
@@ -5406,6 +5629,19 @@ async def on_album(event):
         if not ENABLE_ALBUM_HANDLER:
             return
         if not event.messages:
+            return
+
+        if unit_has_username_mention(
+            event.messages
+        ):
+
+            log_username_filter_main(
+                event.messages,
+                "normal_album",
+                source_chat=event.chat_id,
+                source_topic=None,
+            )
+
             return
 
         first = event.messages[0]

@@ -574,7 +574,20 @@ ROUTES = [{'name': 'Triad FX',
   'copy_reply_parent': False,
   'strict_source_topic': True,
   'ordered_private': True,
-  'loop_guard_peers': [-1004367822325, -1003726286301]}]
+  'loop_guard_peers': [-1004367822325, -1003726286301]},
+ {'name': 'VIP RELAY Topic115 To VIP1375',
+  'source_chat': -1004367822325,
+  'source_topic': 115,
+  'dest_chat': -1003726286301,
+  'dest_topic': 1375,
+  'verify_title': False,
+  'anonymous_send_as': False,
+  'live_only': True,
+  'copy_reply_parent': False,
+  'strict_source_topic': True,
+  'ordered_private': True,
+  'loop_guard_peers': [-1004367822325, -1003726286301]}
+]
 
 if os.environ.get("DISABLE_PROVIDER_ROUTES", "0").strip() == "1":
     ROUTES = []

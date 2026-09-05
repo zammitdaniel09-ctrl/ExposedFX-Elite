@@ -8416,6 +8416,744 @@ async def relay2_to_vip1364_last50_v3():
 # END RELAY2_TO_VIP1364_LAST50_V3
 
 
+
+# BEGIN RELAY115_VIP1375_LAST50_V1
+
+RELAY115_VIP1375_LAST50_ONCE = (
+    os.environ.get(
+        "RELAY115_VIP1375_LAST50_ONCE",
+        "0",
+    ).strip()
+    == "1"
+)
+
+RELAY115_VIP1375_SOURCE_CHAT = -1004367822325
+RELAY115_VIP1375_SOURCE_TOPIC = 115
+
+RELAY115_VIP1375_DEST_CHAT = -1003726286301
+RELAY115_VIP1375_DEST_TOPIC = 1375
+
+RELAY115_VIP1375_COUNT = 50
+
+RELAY115_VIP1375_DONE_FILE = (
+    DATA_DIR
+    / "relay115_to_vip1375_last50_v1.done.json"
+)
+
+RELAY115_VIP1375_PROGRESS_FILE = (
+    DATA_DIR
+    / "relay115_to_vip1375_last50_v1.progress.json"
+)
+
+
+def relay115_vip1375_write_json(
+    path,
+    value,
+):
+
+    temporary = path.with_suffix(
+        path.suffix + ".tmp"
+    )
+
+
+    temporary.write_text(
+        json.dumps(
+            value,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+
+    temporary.replace(
+        path
+    )
+
+
+def relay115_vip1375_read_json(
+    path,
+):
+
+    if not path.exists():
+
+        return {}
+
+
+    try:
+
+        value = json.loads(
+            path.read_text(
+                encoding="utf-8"
+            )
+        )
+
+
+        if isinstance(
+            value,
+            dict,
+        ):
+
+            return value
+
+
+    except Exception:
+
+        pass
+
+
+    return {}
+
+
+def relay115_vip1375_route():
+
+    matches = [
+        route
+        for route in ROUTES
+        if (
+            int(
+                route.get(
+                    "source_chat",
+                    0,
+                )
+            )
+            == RELAY115_VIP1375_SOURCE_CHAT
+            and int(
+                route.get(
+                    "source_topic",
+                    0,
+                )
+                or 0
+            )
+            == RELAY115_VIP1375_SOURCE_TOPIC
+            and int(
+                route.get(
+                    "dest_chat",
+                    0,
+                )
+            )
+            == RELAY115_VIP1375_DEST_CHAT
+            and int(
+                route.get(
+                    "dest_topic",
+                    0,
+                )
+            )
+            == RELAY115_VIP1375_DEST_TOPIC
+        )
+    ]
+
+
+    if len(matches) != 1:
+
+        raise RuntimeError(
+            "Relay115->VIP1375 expected exactly "
+            f"one route; found={len(matches)}"
+        )
+
+
+    return matches[0]
+
+
+def relay115_vip1375_copyable(
+    unit,
+):
+
+    return any(
+        bool(
+            text_of(
+                message
+            )
+        )
+        or is_real_media(
+            message
+        )
+        for message in unit
+    )
+
+
+def relay115_vip1375_token(
+    ids,
+):
+
+    return ",".join(
+        str(
+            int(value)
+        )
+        for value in ids
+    )
+
+
+async def relay115_vip1375_reload_unit(
+    route,
+    ids,
+):
+
+    raw = await client.get_messages(
+        route["source_chat"],
+        ids=[
+            int(value)
+            for value in ids
+        ],
+    )
+
+
+    if isinstance(
+        raw,
+        list,
+    ):
+
+        messages = [
+            message
+            for message in raw
+            if message is not None
+        ]
+
+    else:
+
+        messages = (
+            [raw]
+            if raw is not None
+            else []
+        )
+
+
+    messages.sort(
+        key=lambda message: int(
+            message.id
+        )
+    )
+
+
+    if (
+        len(messages)
+        != len(ids)
+    ):
+
+        raise RuntimeError(
+            "Could not reload complete history unit "
+            f"ids={ids}"
+        )
+
+
+    return messages
+
+
+async def run_relay115_vip1375_last50_once():
+
+    if not RELAY115_VIP1375_LAST50_ONCE:
+
+        return False
+
+
+    if RELAY115_VIP1375_DONE_FILE.exists():
+
+        log.warning(
+            "[RELAY115 VIP1375 HISTORY ALREADY DONE] "
+            "RESENT=False"
+        )
+
+        return True
+
+
+    route = relay115_vip1375_route()
+
+
+    # ========================================================
+    # ACCESS PREFLIGHT
+    # ========================================================
+
+    source_entity = await client.get_entity(
+        RELAY115_VIP1375_SOURCE_CHAT
+    )
+
+    dest_entity = await client.get_entity(
+        RELAY115_VIP1375_DEST_CHAT
+    )
+
+
+    source_topic_root = await client.get_messages(
+        RELAY115_VIP1375_SOURCE_CHAT,
+        ids=RELAY115_VIP1375_SOURCE_TOPIC,
+    )
+
+
+    dest_topic_root = await client.get_messages(
+        RELAY115_VIP1375_DEST_CHAT,
+        ids=RELAY115_VIP1375_DEST_TOPIC,
+    )
+
+
+    if not source_topic_root:
+
+        raise RuntimeError(
+            "Main account cannot access relay topic 115"
+        )
+
+
+    if not dest_topic_root:
+
+        raise RuntimeError(
+            "Main account cannot access VIP topic 1375"
+        )
+
+
+    log.warning(
+        "[RELAY115 VIP1375 ACCESS OK] "
+        f"source_title="
+        f"{getattr(source_entity, 'title', None)!r} "
+        f"dest_title="
+        f"{getattr(dest_entity, 'title', None)!r}"
+    )
+
+
+    progress = relay115_vip1375_read_json(
+        RELAY115_VIP1375_PROGRESS_FILE
+    )
+
+
+    selected_units = progress.get(
+        "selected_units"
+    )
+
+
+    # ========================================================
+    # FIRST RUN SNAPSHOT
+    #
+    # Exact topic only because route has:
+    # strict_source_topic=True
+    #
+    # Anything arriving after cutoff belongs to FASTVIP2 live.
+    # ========================================================
+
+    if (
+        not isinstance(
+            selected_units,
+            list,
+        )
+        or not selected_units
+    ):
+
+        fetched = list(
+            await get_route_poll_messages(
+                route,
+                1000,
+            )
+            or []
+        )
+
+
+        if not fetched:
+
+            raise RuntimeError(
+                "Relay topic 115 returned zero messages"
+            )
+
+
+        cutoff_id = max(
+            int(
+                message.id
+            )
+            for message in fetched
+        )
+
+
+        fetched = [
+            message
+            for message in fetched
+            if int(
+                message.id
+            )
+            <= cutoff_id
+        ]
+
+
+        fetched.sort(
+            key=lambda message: int(
+                message.id
+            )
+        )
+
+
+        units = await fast_vip_build_units(
+            fetched
+        )
+
+
+        units = [
+            unit
+            for unit in units
+            if (
+                unit
+                and relay115_vip1375_copyable(
+                    unit
+                )
+            )
+        ]
+
+
+        selected = units[
+            -RELAY115_VIP1375_COUNT:
+        ]
+
+
+        selected.sort(
+            key=lambda unit: min(
+                int(
+                    message.id
+                )
+                for message in unit
+            )
+        )
+
+
+        if not selected:
+
+            raise RuntimeError(
+                "No copyable posts found in relay topic 115"
+            )
+
+
+        selected_units = [
+            [
+                int(
+                    message.id
+                )
+                for message in unit
+            ]
+            for unit in selected
+        ]
+
+
+        progress = {
+            "status": "running",
+            "source_chat": (
+                RELAY115_VIP1375_SOURCE_CHAT
+            ),
+            "source_topic": (
+                RELAY115_VIP1375_SOURCE_TOPIC
+            ),
+            "dest_chat": (
+                RELAY115_VIP1375_DEST_CHAT
+            ),
+            "dest_topic": (
+                RELAY115_VIP1375_DEST_TOPIC
+            ),
+            "requested": (
+                RELAY115_VIP1375_COUNT
+            ),
+            "selected": len(
+                selected_units
+            ),
+            "selected_units": (
+                selected_units
+            ),
+            "cutoff_id": cutoff_id,
+            "completed_tokens": [],
+            "filtered_tokens": [],
+            "started_at": time.time(),
+        }
+
+
+        relay115_vip1375_write_json(
+            RELAY115_VIP1375_PROGRESS_FILE,
+            progress,
+        )
+
+
+        log.warning(
+            "[RELAY115 VIP1375 HISTORY SNAPSHOT] "
+            f"cutoff_id={cutoff_id} "
+            f"selected={len(selected_units)} "
+            "ORDER=OLDEST_TO_NEWEST "
+            "LIVE_AFTER_CUTOFF=FASTVIP2"
+        )
+
+
+    completed_tokens = set(
+        str(value)
+        for value in progress.get(
+            "completed_tokens",
+            [],
+        )
+    )
+
+
+    filtered_tokens = set(
+        str(value)
+        for value in progress.get(
+            "filtered_tokens",
+            [],
+        )
+    )
+
+
+    log.warning(
+        "[RELAY115 VIP1375 HISTORY START] "
+        f"requested={RELAY115_VIP1375_COUNT} "
+        f"selected={len(selected_units)} "
+        f"resume={len(completed_tokens)} "
+        "ORDER=OLDEST_TO_NEWEST "
+        "SAME_DELIVERY_FUNCTION_AS_LIVE=True"
+    )
+
+
+    # ========================================================
+    # COPY OLDEST -> NEWEST
+    # ========================================================
+
+    for index, ids in enumerate(
+        selected_units,
+        start=1,
+    ):
+
+        ids = [
+            int(value)
+            for value in ids
+        ]
+
+
+        token = relay115_vip1375_token(
+            ids
+        )
+
+
+        if token in completed_tokens:
+
+            continue
+
+
+        unit = await relay115_vip1375_reload_unit(
+            route,
+            ids,
+        )
+
+
+        # Same @username policy as live FASTVIP2.
+        if unit_has_username_mention(
+            unit
+        ):
+
+            completed_tokens.add(
+                token
+            )
+
+            filtered_tokens.add(
+                token
+            )
+
+
+            progress.update({
+                "completed_tokens": sorted(
+                    completed_tokens
+                ),
+                "filtered_tokens": sorted(
+                    filtered_tokens
+                ),
+                "updated_at": time.time(),
+            })
+
+
+            relay115_vip1375_write_json(
+                RELAY115_VIP1375_PROGRESS_FILE,
+                progress,
+            )
+
+
+            log.warning(
+                "[RELAY115 VIP1375 HISTORY FILTERED] "
+                f"index={index}/{len(selected_units)} "
+                f"ids={ids} "
+                "USERNAME_FILTER=True "
+                "SENT=False"
+            )
+
+
+            continue
+
+
+        success = False
+
+
+        delays = [
+            0,
+            2,
+            5,
+            10,
+            20,
+        ]
+
+
+        for attempt, delay in enumerate(
+            delays,
+            start=1,
+        ):
+
+            if delay:
+
+                await asyncio.sleep(
+                    delay
+                )
+
+
+            success = await fast_vip_deliver_route(
+                route,
+                unit,
+            )
+
+
+            if success:
+
+                break
+
+
+            log.warning(
+                "[RELAY115 VIP1375 HISTORY RETRY] "
+                f"index={index}/{len(selected_units)} "
+                f"ids={ids} "
+                f"attempt={attempt}"
+            )
+
+
+        if not success:
+
+            progress.update({
+                "status": "failed",
+                "failed_index": index,
+                "failed_ids": ids,
+                "failed_at": time.time(),
+            })
+
+
+            relay115_vip1375_write_json(
+                RELAY115_VIP1375_PROGRESS_FILE,
+                progress,
+            )
+
+
+            raise RuntimeError(
+                "Relay115 history stopped safely "
+                f"at index={index} ids={ids}"
+            )
+
+
+        completed_tokens.add(
+            token
+        )
+
+
+        progress.update({
+            "status": "running",
+            "completed_tokens": sorted(
+                completed_tokens
+            ),
+            "completed": len(
+                completed_tokens
+            ),
+            "last_completed_ids": ids,
+            "updated_at": time.time(),
+        })
+
+
+        relay115_vip1375_write_json(
+            RELAY115_VIP1375_PROGRESS_FILE,
+            progress,
+        )
+
+
+        log.warning(
+            "[RELAY115 VIP1375 HISTORY PROGRESS] "
+            f"{len(completed_tokens)}/"
+            f"{len(selected_units)} "
+            f"source_ids={ids}"
+        )
+
+
+        await asyncio.sleep(
+            0.35
+        )
+
+
+    if len(
+        completed_tokens
+    ) != len(
+        selected_units
+    ):
+
+        raise RuntimeError(
+            "History completion validation failed"
+        )
+
+
+    done = {
+        "status": "done",
+        "source_chat": (
+            RELAY115_VIP1375_SOURCE_CHAT
+        ),
+        "source_topic": (
+            RELAY115_VIP1375_SOURCE_TOPIC
+        ),
+        "dest_chat": (
+            RELAY115_VIP1375_DEST_CHAT
+        ),
+        "dest_topic": (
+            RELAY115_VIP1375_DEST_TOPIC
+        ),
+        "requested": (
+            RELAY115_VIP1375_COUNT
+        ),
+        "selected": len(
+            selected_units
+        ),
+        "completed": len(
+            completed_tokens
+        ),
+        "filtered": len(
+            filtered_tokens
+        ),
+        "completed_at": time.time(),
+        "delivery_path": "fast_vip_deliver_route",
+    }
+
+
+    relay115_vip1375_write_json(
+        RELAY115_VIP1375_DONE_FILE,
+        done,
+    )
+
+
+    progress.update({
+        "status": "done",
+        "completed": len(
+            completed_tokens
+        ),
+        "completed_at": time.time(),
+    })
+
+
+    relay115_vip1375_write_json(
+        RELAY115_VIP1375_PROGRESS_FILE,
+        progress,
+    )
+
+
+    log.warning(
+        "[RELAY115 VIP1375 HISTORY DONE] "
+        f"selected={len(selected_units)} "
+        f"completed={len(completed_tokens)} "
+        f"filtered={len(filtered_tokens)} "
+        "ORDER=OLDEST_TO_NEWEST "
+        "SAME_DELIVERY_FUNCTION_AS_LIVE=True "
+        "RERUN_BLOCKED=True "
+        "LIVE_FORWARDING=True"
+    )
+
+
+    return True
+
+
+# END RELAY115_VIP1375_LAST50_V1
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -8476,6 +9214,7 @@ async def main():
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())
     asyncio.create_task(fast_vip_event_router_v2())
+    relay115_vip1375_history_task = asyncio.create_task(run_relay115_vip1375_last50_once())
     relay2_vip1364_v3_task = asyncio.create_task(relay2_to_vip1364_last50_v3())
     vip_topic_move_task = asyncio.create_task(vip_topic_move_last50_v1())
     market_slayers_last50_v2_task = asyncio.create_task(market_slayers_last50_v2())

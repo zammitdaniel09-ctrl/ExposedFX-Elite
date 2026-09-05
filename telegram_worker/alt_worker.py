@@ -521,9 +521,30 @@ FILTER_USERNAME_MENTIONS = (
 )
 
 
+USERNAME_HANDLE_RE = re.compile(
+    r"(?<![A-Za-z0-9._%+\-])"
+    r"@[A-Za-z][A-Za-z0-9_]{4,31}"
+    r"(?![A-Za-z0-9_])"
+)
+
+
 def has_username_mention(
     message,
 ):
+    """
+    Block an actual Telegram-style @username.
+
+    Detection has two layers:
+
+    1. Telegram MessageEntityMention when Telegram provides it.
+
+    2. Safe text fallback for standalone Telegram-style handles
+       when Telegram sends the handle as plain text.
+
+    The fallback deliberately requires the @ not to be preceded
+    by an email/local-part character, so addresses such as
+    test@example.com remain allowed.
+    """
 
     if not FILTER_USERNAME_MENTIONS:
         return False
@@ -549,7 +570,20 @@ def has_username_mention(
             return True
 
 
-    return False
+    text = text_of(
+        message
+    )
+
+
+    if not text:
+        return False
+
+
+    return bool(
+        USERNAME_HANDLE_RE.search(
+            text
+        )
+    )
 
 
 def unit_has_username_mention(
@@ -606,7 +640,7 @@ def log_username_filter_alt(
         f"ids={ids} "
         f"route={route_name} "
         "SENT=False "
-        "FILTER=MessageEntityMention"
+        "FILTER=EntityOrStandaloneUsername"
     )
 
 

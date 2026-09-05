@@ -510,6 +510,110 @@ def entities_of(message):
     )
 
 
+# BEGIN USERNAME_MENTION_FILTER_V2
+
+FILTER_USERNAME_MENTIONS = (
+    os.environ.get(
+        "FILTER_USERNAME_MENTIONS",
+        "1",
+    ).strip()
+    == "1"
+)
+
+
+def has_username_mention(
+    message,
+):
+
+    if not FILTER_USERNAME_MENTIONS:
+        return False
+
+
+    entities = (
+        getattr(
+            message,
+            "entities",
+            None,
+        )
+        or []
+    )
+
+
+    for entity in entities:
+
+        if (
+            type(entity).__name__
+            == "MessageEntityMention"
+        ):
+
+            return True
+
+
+    return False
+
+
+def unit_has_username_mention(
+    messages,
+):
+
+    return any(
+        has_username_mention(
+            message
+        )
+        for message in (
+            messages
+            or []
+        )
+    )
+
+
+def log_username_filter_alt(
+    messages,
+    context,
+    route=None,
+):
+
+    messages = list(
+        messages
+        or []
+    )
+
+
+    ids = [
+        int(
+            getattr(
+                message,
+                "id",
+                0,
+            )
+            or 0
+        )
+        for message in messages
+    ]
+
+
+    route_name = (
+        route.get("name")
+        if isinstance(route, dict)
+        else None
+    )
+
+
+    log.warning(
+        "[USERNAME MENTION FILTERED] "
+        "account=ALT "
+        f"context={context} "
+        f"ids={ids} "
+        f"route={route_name} "
+        "SENT=False "
+        "FILTER=MessageEntityMention"
+    )
+
+
+# END USERNAME_MENTION_FILTER_V2
+
+
+
 def real_media(message):
     media = getattr(
         message,
@@ -715,6 +819,18 @@ async def send_single(
     route,
     message,
 ):
+    if has_username_mention(
+        message
+    ):
+
+        log_username_filter_alt(
+            [message],
+            "send_single_hard_guard",
+            route=route,
+        )
+
+        return None
+
     text = text_of(message)
     entities = entities_of(message)
 
@@ -807,6 +923,18 @@ async def send_album(
     route,
     messages,
 ):
+    if unit_has_username_mention(
+        messages
+    ):
+
+        log_username_filter_alt(
+            messages,
+            "send_album_hard_guard",
+            route=route,
+        )
+
+        return None
+
     caption = ""
     caption_entities = None
 
@@ -937,6 +1065,26 @@ async def copy_unit(
     )
 
     if not messages:
+        return True
+
+    if unit_has_username_mention(
+        messages
+    ):
+
+        update_checkpoint(
+            route,
+            max(
+                int(message.id)
+                for message in messages
+            ),
+        )
+
+        log_username_filter_alt(
+            messages,
+            "copy_unit",
+            route=route,
+        )
+
         return True
 
     async with copy_lock(
@@ -1089,6 +1237,18 @@ async def edit_existing(
     route,
     source_message,
 ):
+    if has_username_mention(
+        source_message
+    ):
+
+        log_username_filter_alt(
+            [source_message],
+            "edit_existing",
+            route=route,
+        )
+
+        return False
+
     async with edit_lock(
         route,
         source_message.id,

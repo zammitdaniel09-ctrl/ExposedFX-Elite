@@ -7,7 +7,7 @@ import re
 import time
 from pathlib import Path
 
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, functions
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 from telethon.tl.types import MessageMediaWebPage
@@ -648,6 +648,349 @@ def log_username_filter_alt(
 
 
 
+
+# BEGIN ALT_ARABIC115_TRANSLATION_V1
+
+ALT_ARABIC115_SOURCE_CHAT = -1002211486103
+ALT_ARABIC115_SOURCE_TOPIC = None
+
+ALT_ARABIC115_DEST_CHAT = -1004367822325
+ALT_ARABIC115_DEST_TOPIC = 115
+
+ALT_ARABIC115_TARGET_LANGUAGE = "en"
+
+ALT_ARABIC115_TRANSLATION_TIMEOUT_SECONDS = max(
+    3.0,
+    float(
+        os.environ.get(
+            "ALT_ARABIC115_TRANSLATION_TIMEOUT_SECONDS",
+            "10",
+        )
+    ),
+)
+
+ALT_ARABIC115_TRANSLATION_CONCURRENCY = max(
+    1,
+    int(
+        os.environ.get(
+            "ALT_ARABIC115_TRANSLATION_CONCURRENCY",
+            "3",
+        )
+    ),
+)
+
+ALT_ARABIC115_TRANSLATION_SEM = asyncio.Semaphore(
+    ALT_ARABIC115_TRANSLATION_CONCURRENCY
+)
+
+ALT_ARABIC_CHAR_RE = re.compile(
+    r"[\u0600-\u06FF"
+    r"\u0750-\u077F"
+    r"\u08A0-\u08FF"
+    r"\uFB50-\uFDFF"
+    r"\uFE70-\uFEFF]"
+)
+
+
+def alt_arabic115_route(
+    route,
+):
+
+    try:
+
+        return (
+            int(route["source_chat"])
+            == ALT_ARABIC115_SOURCE_CHAT
+            and route["source_topic"]
+            is ALT_ARABIC115_SOURCE_TOPIC
+            and int(route["dest_chat"])
+            == ALT_ARABIC115_DEST_CHAT
+            and int(route["dest_topic"])
+            == ALT_ARABIC115_DEST_TOPIC
+        )
+
+    except Exception:
+
+        return False
+
+
+def contains_arabic(
+    text,
+):
+
+    return bool(
+        text
+        and ALT_ARABIC_CHAR_RE.search(
+            text
+        )
+    )
+
+
+async def translated_payload(
+    route,
+    message,
+):
+    """
+    The ONLY translation path used by both:
+      - live Telegram pushes
+      - watchdog recovery
+      - the dedicated last50 history import
+      - edits
+
+    Non-Arabic text is returned byte-for-byte unchanged.
+
+    Arabic is translated through Telegram's own
+    messages.translateText API.
+
+    Translation failure is FAIL-CLOSED:
+      nothing is sent untranslated.
+      The normal retry/watchdog path may retry later.
+    """
+
+    original_text = text_of(
+        message
+    )
+
+    original_entities = entities_of(
+        message
+    )
+
+
+    if not alt_arabic115_route(
+        route
+    ):
+
+        return (
+            original_text,
+            original_entities,
+        )
+
+
+    if not original_text:
+
+        return (
+            original_text,
+            original_entities,
+        )
+
+
+    if not contains_arabic(
+        original_text
+    ):
+
+        return (
+            original_text,
+            original_entities,
+        )
+
+
+    try:
+
+        source_peer = await client.get_input_entity(
+            ALT_ARABIC115_SOURCE_CHAT
+        )
+
+
+        request = (
+            functions.messages.TranslateTextRequest(
+                peer=source_peer,
+                id=[
+                    int(message.id)
+                ],
+                text=None,
+                to_lang=(
+                    ALT_ARABIC115_TARGET_LANGUAGE
+                ),
+            )
+        )
+
+
+        async with ALT_ARABIC115_TRANSLATION_SEM:
+
+            response = await asyncio.wait_for(
+                client(
+                    request
+                ),
+                timeout=(
+                    ALT_ARABIC115_TRANSLATION_TIMEOUT_SECONDS
+                ),
+            )
+
+
+        results = list(
+            getattr(
+                response,
+                "result",
+                None,
+            )
+            or []
+        )
+
+
+        if len(results) != 1:
+
+            raise RuntimeError(
+                "Telegram translation returned "
+                f"{len(results)} results"
+            )
+
+
+        translated = results[0]
+
+
+        translated_text = (
+            getattr(
+                translated,
+                "text",
+                None,
+            )
+            or ""
+        )
+
+
+        translated_entities = (
+            getattr(
+                translated,
+                "entities",
+                None,
+            )
+            or []
+        )
+
+
+        if not translated_text:
+
+            raise RuntimeError(
+                "Telegram translation returned empty text"
+            )
+
+
+        log.warning(
+            "[ALT TRANSLATED TO EN] "
+            f"route={route['name']} "
+            f"source_msg={int(message.id)} "
+            f"before_chars={len(original_text)} "
+            f"after_chars={len(translated_text)} "
+            "ARABIC_TO_ENGLISH=True"
+        )
+
+
+        return (
+            translated_text,
+            translated_entities,
+        )
+
+
+    except Exception as exc:
+
+        log.warning(
+            "[ALT TRANSLATION FAILED CLOSED] "
+            f"route={route.get('name')} "
+            f"source_msg={int(message.id)} "
+            f"{type(exc).__name__}: {exc} "
+            "ORIGINAL_ARABIC_SENT=False"
+        )
+
+        raise
+
+
+async def preflight_arabic115_translation():
+    """
+    Runs BEFORE the route is activated.
+
+    It performs one translation request against a recent Arabic
+    source message, but sends NOTHING.
+
+    This protects all existing ALT routes from an untested
+    translation integration.
+    """
+
+    source = await client.get_entity(
+        ALT_ARABIC115_SOURCE_CHAT
+    )
+
+    me = await client.get_me()
+
+
+    recent = list(
+        await client.get_messages(
+            ALT_ARABIC115_SOURCE_CHAT,
+            limit=50,
+        )
+        or []
+    )
+
+
+    sample = next(
+        (
+            message
+            for message in recent
+            if contains_arabic(
+                text_of(
+                    message
+                )
+            )
+        ),
+        None,
+    )
+
+
+    if sample is None:
+
+        raise RuntimeError(
+            "No recent Arabic text message found "
+            "for translation preflight"
+        )
+
+
+    probe_route = {
+        "name": "ARABIC115 PREFLIGHT",
+        "source_chat": (
+            ALT_ARABIC115_SOURCE_CHAT
+        ),
+        "source_topic": None,
+        "dest_chat": (
+            ALT_ARABIC115_DEST_CHAT
+        ),
+        "dest_topic": (
+            ALT_ARABIC115_DEST_TOPIC
+        ),
+    }
+
+
+    translated_text, _ = await translated_payload(
+        probe_route,
+        sample,
+    )
+
+
+    if not translated_text:
+
+        raise RuntimeError(
+            "Translation preflight returned empty text"
+        )
+
+
+    log.warning(
+        "[ALT ARABIC115 TRANSLATION PREFLIGHT OK] "
+        f"source={ALT_ARABIC115_SOURCE_CHAT} "
+        f"source_title="
+        f"{getattr(source, 'title', None)!r} "
+        f"sample_id={int(sample.id)} "
+        f"premium="
+        f"{bool(getattr(me, 'premium', False))} "
+        "SEND_TEST=False "
+        "TARGET_LANGUAGE=en"
+    )
+
+
+    return True
+
+
+# END ALT_ARABIC115_TRANSLATION_V1
+
+
+
 def real_media(message):
     media = getattr(
         message,
@@ -865,8 +1208,10 @@ async def send_single(
 
         return None
 
-    text = text_of(message)
-    entities = entities_of(message)
+    text, entities = await translated_payload(
+        route,
+        message,
+    )
 
     if not real_media(message):
         if not text:
@@ -971,16 +1316,23 @@ async def send_album(
 
     caption = ""
     caption_entities = None
+    caption_message = None
 
     for message in messages:
         candidate = text_of(message)
 
         if candidate:
-            caption = candidate
-            caption_entities = entities_of(
-                message
-            )
+            caption_message = message
             break
+
+    if caption_message is not None:
+
+        caption, caption_entities = (
+            await translated_payload(
+                route,
+                caption_message,
+            )
+        )
 
     media_objects = [
         message.media
@@ -1362,8 +1714,11 @@ async def edit_existing(
                 )
                 return False
 
-            new_text = text_of(
-                source_message
+            new_text, new_entities = (
+                await translated_payload(
+                    route,
+                    source_message,
+                )
             )
 
             if (
@@ -1378,9 +1733,7 @@ async def edit_existing(
                     destination_id,
                     new_text or "",
                     formatting_entities=(
-                        entities_of(
-                            source_message
-                        )
+                        new_entities
                         if new_text
                         else None
                     ),
@@ -2569,6 +2922,535 @@ async def watchdog(route):
                 "LIVE_PUSH_UNAFFECTED=True"
             )
 
+
+
+
+# BEGIN ALT_ARABIC115_LAST50_V1
+
+ALT_ARABIC115_LAST50_ONCE = (
+    os.environ.get(
+        "ALT_ARABIC115_LAST50_ONCE",
+        "0",
+    ).strip()
+    == "1"
+)
+
+ALT_ARABIC115_LAST50_COUNT = max(
+    1,
+    int(
+        os.environ.get(
+            "ALT_ARABIC115_LAST50_COUNT",
+            "50",
+        )
+    ),
+)
+
+ALT_ARABIC115_LAST50_FETCH_LIMIT = max(
+    200,
+    int(
+        os.environ.get(
+            "ALT_ARABIC115_LAST50_FETCH_LIMIT",
+            "1000",
+        )
+    ),
+)
+
+ALT_ARABIC115_LAST50_DONE_FILE = (
+    DATA_DIR
+    / "arabic115_last50_v1.done.json"
+)
+
+ALT_ARABIC115_LAST50_PROGRESS_FILE = (
+    DATA_DIR
+    / "arabic115_last50_v1.progress.json"
+)
+
+
+def alt_arabic115_target_route():
+
+    matches = [
+        route
+        for route in ROUTES
+        if alt_arabic115_route(
+            route
+        )
+    ]
+
+
+    if len(matches) != 1:
+
+        raise RuntimeError(
+            "ARABIC115 expected exactly one route; "
+            f"found={len(matches)}"
+        )
+
+
+    return matches[0]
+
+
+def alt_arabic115_copyable(
+    unit,
+):
+
+    return any(
+        bool(
+            text_of(
+                message
+            )
+        )
+        or real_media(
+            message
+        )
+        for message in unit
+    )
+
+
+def alt_arabic115_unit_token(
+    ids,
+):
+
+    return ",".join(
+        str(
+            int(value)
+        )
+        for value in ids
+    )
+
+
+async def alt_arabic115_fetch_unit(
+    route,
+    ids,
+):
+
+    raw = await client.get_messages(
+        route["source_chat"],
+        ids=[
+            int(value)
+            for value in ids
+        ],
+    )
+
+
+    if isinstance(
+        raw,
+        list,
+    ):
+
+        messages = [
+            message
+            for message in raw
+            if message is not None
+        ]
+
+    else:
+
+        messages = (
+            [raw]
+            if raw is not None
+            else []
+        )
+
+
+    messages = sorted(
+        messages,
+        key=lambda message: int(
+            message.id
+        ),
+    )
+
+
+    if (
+        len(messages)
+        != len(ids)
+    ):
+
+        raise RuntimeError(
+            "History source unit could not be "
+            f"reloaded completely ids={ids}"
+        )
+
+
+    return messages
+
+
+async def run_alt_arabic115_last50_once():
+    """
+    The selected history posts are passed through copy_unit().
+
+    Therefore history uses EXACTLY the same:
+      - username filtering
+      - Arabic detection
+      - Telegram translation
+      - media handling
+      - album handling
+      - message mapping
+
+    as a live message.
+    """
+
+    if not ALT_ARABIC115_LAST50_ONCE:
+
+        return False
+
+
+    route = alt_arabic115_target_route()
+
+
+    if ALT_ARABIC115_LAST50_DONE_FILE.exists():
+
+        log.warning(
+            "[ALT ARABIC115 HISTORY ALREADY DONE] "
+            "RESENT=False"
+        )
+
+        return True
+
+
+    me = await client.get_me()
+
+
+    progress = load_json(
+        ALT_ARABIC115_LAST50_PROGRESS_FILE
+    )
+
+
+    selected_units = progress.get(
+        "selected_units"
+    )
+
+
+    # --------------------------------------------------------
+    # FIRST RUN: SNAPSHOT LATEST 50 POSTS
+    # --------------------------------------------------------
+
+    if not isinstance(
+        selected_units,
+        list,
+    ) or not selected_units:
+
+        fetched = list(
+            await fetch_route_messages(
+                route,
+                ALT_ARABIC115_LAST50_FETCH_LIMIT,
+            )
+            or []
+        )
+
+
+        if not fetched:
+
+            raise RuntimeError(
+                "Arabic VIP source returned zero messages"
+            )
+
+
+        cutoff_id = max(
+            int(message.id)
+            for message in fetched
+        )
+
+
+        units = build_units(
+            fetched
+        )
+
+
+        units = [
+            unit
+            for unit in units
+            if (
+                unit
+                and alt_arabic115_copyable(
+                    unit
+                )
+                and max(
+                    int(message.id)
+                    for message in unit
+                )
+                <= cutoff_id
+            )
+        ]
+
+
+        selected = units[
+            -ALT_ARABIC115_LAST50_COUNT:
+        ]
+
+
+        selected = sorted(
+            selected,
+            key=lambda unit: min(
+                int(message.id)
+                for message in unit
+            ),
+        )
+
+
+        if not selected:
+
+            raise RuntimeError(
+                "No copyable Arabic VIP history posts"
+            )
+
+
+        selected_units = [
+            [
+                int(message.id)
+                for message in unit
+            ]
+            for unit in selected
+        ]
+
+
+        progress = {
+            "status": "running",
+            "source_chat": (
+                ALT_ARABIC115_SOURCE_CHAT
+            ),
+            "dest_chat": (
+                ALT_ARABIC115_DEST_CHAT
+            ),
+            "dest_topic": (
+                ALT_ARABIC115_DEST_TOPIC
+            ),
+            "requested": (
+                ALT_ARABIC115_LAST50_COUNT
+            ),
+            "selected": len(
+                selected_units
+            ),
+            "selected_units": (
+                selected_units
+            ),
+            "cutoff_id": cutoff_id,
+            "completed_tokens": [],
+            "started_at": time.time(),
+        }
+
+
+        save_json(
+            ALT_ARABIC115_LAST50_PROGRESS_FILE,
+            progress,
+        )
+
+
+    completed_tokens = set(
+        str(value)
+        for value in progress.get(
+            "completed_tokens",
+            [],
+        )
+    )
+
+
+    log.warning(
+        "[ALT ARABIC115 HISTORY START] "
+        f"premium="
+        f"{bool(getattr(me, 'premium', False))} "
+        f"requested={ALT_ARABIC115_LAST50_COUNT} "
+        f"selected={len(selected_units)} "
+        f"resume={len(completed_tokens)} "
+        "ORDER=OLDEST_TO_NEWEST "
+        "SAME_PATH_AS_LIVE=True "
+        "ARABIC_TO_ENGLISH=True"
+    )
+
+
+    completed = len(
+        completed_tokens
+    )
+
+
+    for index, ids in enumerate(
+        selected_units,
+        start=1,
+    ):
+
+        ids = [
+            int(value)
+            for value in ids
+        ]
+
+
+        token = alt_arabic115_unit_token(
+            ids
+        )
+
+
+        if token in completed_tokens:
+
+            continue
+
+
+        success = False
+
+
+        retry_delays = [
+            0,
+            2,
+            5,
+            10,
+            20,
+        ]
+
+
+        for attempt, delay in enumerate(
+            retry_delays,
+            start=1,
+        ):
+
+            if delay:
+
+                await asyncio.sleep(
+                    delay
+                )
+
+
+            messages = (
+                await alt_arabic115_fetch_unit(
+                    route,
+                    ids,
+                )
+            )
+
+
+            success = await copy_unit(
+                route,
+                messages,
+                "arabic115_history_live_path",
+            )
+
+
+            if success:
+
+                break
+
+
+            log.warning(
+                "[ALT ARABIC115 HISTORY RETRY] "
+                f"index={index}/{len(selected_units)} "
+                f"ids={ids} "
+                f"attempt={attempt}"
+            )
+
+
+        if not success:
+
+            progress.update({
+                "status": "failed",
+                "failed_index": index,
+                "failed_ids": ids,
+                "completed": completed,
+                "failed_at": time.time(),
+            })
+
+
+            save_json(
+                ALT_ARABIC115_LAST50_PROGRESS_FILE,
+                progress,
+            )
+
+
+            raise RuntimeError(
+                "Arabic115 history stopped safely "
+                f"at index={index} ids={ids}"
+            )
+
+
+        completed_tokens.add(
+            token
+        )
+
+        completed += 1
+
+
+        progress.update({
+            "status": "running",
+            "completed": completed,
+            "completed_tokens": sorted(
+                completed_tokens
+            ),
+            "last_completed_ids": ids,
+            "updated_at": time.time(),
+        })
+
+
+        save_json(
+            ALT_ARABIC115_LAST50_PROGRESS_FILE,
+            progress,
+        )
+
+
+        log.warning(
+            "[ALT ARABIC115 HISTORY PROGRESS] "
+            f"{completed}/{len(selected_units)} "
+            f"source_ids={ids}"
+        )
+
+
+        await asyncio.sleep(
+            0.35
+        )
+
+
+    done = {
+        "status": "done",
+        "source_chat": (
+            ALT_ARABIC115_SOURCE_CHAT
+        ),
+        "dest_chat": (
+            ALT_ARABIC115_DEST_CHAT
+        ),
+        "dest_topic": (
+            ALT_ARABIC115_DEST_TOPIC
+        ),
+        "requested": (
+            ALT_ARABIC115_LAST50_COUNT
+        ),
+        "selected": len(
+            selected_units
+        ),
+        "completed": completed,
+        "completed_at": time.time(),
+        "same_path_as_live": True,
+        "translated_to": "en",
+    }
+
+
+    save_json(
+        ALT_ARABIC115_LAST50_DONE_FILE,
+        done,
+    )
+
+
+    progress.update({
+        "status": "done",
+        "completed": completed,
+        "completed_at": time.time(),
+    })
+
+
+    save_json(
+        ALT_ARABIC115_LAST50_PROGRESS_FILE,
+        progress,
+    )
+
+
+    log.warning(
+        "[ALT ARABIC115 HISTORY DONE] "
+        f"selected={len(selected_units)} "
+        f"completed={completed} "
+        "ORDER=OLDEST_TO_NEWEST "
+        "SAME_PATH_AS_LIVE=True "
+        "ARABIC_TO_ENGLISH=True "
+        "RERUN_BLOCKED=True"
+    )
+
+
+    return True
+
+
+# END ALT_ARABIC115_LAST50_V1
 
 
 # BEGIN ALT_LAST50_ONCE_HELPER_V1
@@ -4148,6 +5030,24 @@ async def main():
     )
 
     # ----------------------------------------------------------
+    # ARABIC115 TRANSLATION PREFLIGHT
+    #
+    # SENDS NOTHING.
+    # ----------------------------------------------------------
+
+    try:
+
+        await preflight_arabic115_translation()
+
+    except Exception as exc:
+
+        log.exception(
+            "[ALT ARABIC115 TRANSLATION PREFLIGHT FAILED] "
+            f"{type(exc).__name__}: {exc} "
+            "ROUTE_SHOULD_NOT_BE_ACTIVATED=True"
+        )
+
+    # ----------------------------------------------------------
     # ACCESS PREFLIGHT
     # ----------------------------------------------------------
 
@@ -4200,6 +5100,25 @@ async def main():
     # ----------------------------------------------------------
 
     await initialise_alt_pair106_no_history()
+
+    # ----------------------------------------------------------
+    # ARABIC115 GUARDED LAST50
+    # ----------------------------------------------------------
+
+    if ALT_ARABIC115_LAST50_ONCE:
+
+        try:
+
+            await run_alt_arabic115_last50_once()
+
+        except Exception as exc:
+
+            log.exception(
+                "[ALT ARABIC115 HISTORY FAILED SAFE] "
+                f"{type(exc).__name__}: {exc} "
+                "LIVE_FORWARDING_CONTINUES=True "
+                "UNTRANSLATED_FALLBACK=False"
+            )
 
     # ----------------------------------------------------------
     # TRUE FORCE50 V3

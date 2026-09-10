@@ -8,7 +8,17 @@ from telethon import events
 from telethon.tl.types import MessageEntityCustomEmoji
 
 
-_ALIAS_RE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9_-]{0,63})\s*=\s*(.*?)\s*$", re.S)
+# One or many assignments can be placed in the same Saved Message, e.g.
+# GreenTick = <emoji>
+# Boom = <emoji>
+# RedCross = <emoji>
+# Warning = <emoji>
+#
+# Keep this line-based. Telegram entity offsets refer to the exact full message.
+_ASSIGNMENT_LINE_RE = re.compile(
+    r"^[ \t]*([A-Za-z][A-Za-z0-9_-]{0,63})[ \t]*=[ \t]*(.*?)[ \t]*$",
+    re.M,
+)
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z][A-Za-z0-9_-]{0,63})\}")
 
 
@@ -17,19 +27,16 @@ def _utf16_len(value: str) -> int:
 
 
 class CommunityEmojiRegistry:
-    """
-    ExposedFX Community custom emoji registry.
+    """ExposedFX custom emoji registry backed by Telegram Saved Messages.
 
-    Input format in Telegram Saved Messages:
+    Supported input (one assignment per line OR many in one message):
+
         GreenTick = <custom emoji>
         Boom = <custom emoji>
-        RedCross = ❌
+        RedCross = <custom emoji>
+        Warning = <custom emoji>
 
-    The latest message for a given alias wins.
-
-    Telegram can represent what looks like one visual emoji/sticker-style glyph
-    as more than one MessageEntityCustomEmoji. The registry therefore supports
-    both a single custom emoji and a sequence of custom-emoji entities.
+    The latest assignment for a given alias wins.
     """
 
     def __init__(self, data_dir: Path, logger=None):
@@ -67,7 +74,6 @@ class CommunityEmojiRegistry:
         for key, value in self.entries.items():
             if key.casefold() == wanted:
                 return value
-
         return None
 
     def remove(self, alias: str) -> bool:
@@ -83,28 +89,21 @@ class CommunityEmojiRegistry:
         self.save()
         return True
 
-    def capture_message(self, message) -> Tuple[bool, str]:
-        # IMPORTANT: do not strip before reading Telegram entity offsets.
-        # Entity offsets are based on the exact original message UTF-16 text.
-        raw_text = getattr(message, "message", None) or ""
-        match = _ALIAS_RE.match(raw_text)
-
-        if not match:
-            return False, "not_registry_assignment"
-
+    def _capture_assignment(self, message, raw_text: str, match) -> Tuple[bool, str]:
         alias = match.group(1).strip()
         right_side = match.group(2)
+        right_side_clean = right_side.strip()
 
-        if right_side.strip().upper() in {"DELETE", "REMOVE"}:
+        if right_side_clean.upper() in {"DELETE", "REMOVE"}:
             removed = self.remove(alias)
-            return True, f"removed:{alias}" if removed else f"missing:{alias}"
+            result = f"removed:{alias}" if removed else f"missing:{alias}"
+            self.log.warning("[COMMUNITY EMOJI SAVED] %s", result)
+            return True, result
 
+        # Convert this line's RHS character span into Telegram UTF-16 offsets.
         rhs_start_utf16 = _utf16_len(raw_text[:match.start(2)])
         rhs_end_utf16 = _utf16_len(raw_text[:match.end(2)])
 
-        # Only collect custom-emoji entities that actually belong to the
-        # right-hand side of "Alias = ...". This avoids unrelated entities
-        # elsewhere in the message from confusing the registry.
         custom_entities = []
         for entity in (getattr(message, "entities", None) or []):
             if not isinstance(entity, MessageEntityCustomEmoji):
@@ -113,39 +112,34 @@ class CommunityEmojiRegistry:
             entity_start = int(entity.offset)
             entity_end = entity_start + int(entity.length)
 
+            # Entity must overlap THIS assignment's RHS only.
             if entity_end <= rhs_start_utf16 or entity_start >= rhs_end_utf16:
                 continue
 
             custom_entities.append(entity)
 
-        if custom_entities:
-            custom_entities.sort(key=lambda e: int(e.offset))
+        custom_entities.sort(key=lambda e: int(e.offset))
 
-            # One Telegram custom emoji: keep the simple legacy-compatible
-            # entry format.
-            if len(custom_entities) == 1:
-                entity = custom_entities[0]
-                document_id = int(entity.document_id)
+        if len(custom_entities) == 1:
+            entity = custom_entities[0]
+            document_id = int(entity.document_id)
 
-                self.entries[alias] = {
-                    "type": "custom",
-                    "document_id": document_id,
-                    "fallback": right_side or "⭐",
-                    "source_message_id": int(getattr(message, "id", 0) or 0),
-                }
-                self.save()
+            self.entries[alias] = {
+                "type": "custom",
+                "document_id": document_id,
+                "fallback": right_side_clean or "⭐",
+                "source_message_id": int(getattr(message, "id", 0) or 0),
+            }
+            self.save()
 
-                self.log.warning(
-                    "[COMMUNITY EMOJI SAVED] alias=%s type=custom document_id=%s",
-                    alias,
-                    document_id,
-                )
-                return True, f"saved_custom:{alias}:{document_id}"
+            self.log.warning(
+                "[COMMUNITY EMOJI SAVED] alias=%s type=custom document_id=%s",
+                alias,
+                document_id,
+            )
+            return True, f"saved_custom:{alias}:{document_id}"
 
-            # Some premium/custom emoji messages contain multiple custom emoji
-            # entities even when the user considers the RHS one visual token.
-            # Preserve the whole RHS and every Telegram document_id + relative
-            # UTF-16 offset so the exact sequence can be rendered later.
+        if len(custom_entities) > 1:
             sequence_entities = []
             document_ids = []
 
@@ -163,7 +157,7 @@ class CommunityEmojiRegistry:
 
             self.entries[alias] = {
                 "type": "custom_sequence",
-                "text": right_side or "⭐",
+                "text": right_side_clean or "⭐",
                 "entities": sequence_entities,
                 "source_message_id": int(getattr(message, "id", 0) or 0),
             }
@@ -178,10 +172,11 @@ class CommunityEmojiRegistry:
             )
             return True, f"saved_custom_sequence:{alias}:{len(sequence_entities)}:{ids_text}"
 
-        if right_side.strip():
+        # Normal Unicode emoji is still allowed as a fallback.
+        if right_side_clean:
             self.entries[alias] = {
                 "type": "unicode",
-                "text": right_side.strip(),
+                "text": right_side_clean,
                 "source_message_id": int(getattr(message, "id", 0) or 0),
             }
             self.save()
@@ -189,48 +184,68 @@ class CommunityEmojiRegistry:
             self.log.warning(
                 "[COMMUNITY EMOJI SAVED] alias=%s type=unicode text=%r",
                 alias,
-                right_side.strip(),
+                right_side_clean,
             )
             return True, f"saved_unicode:{alias}"
 
         return False, f"no_emoji_found:{alias}"
 
-    async def rebuild_from_saved_messages(self, client, limit: int = 500):
-        """
-        Reconstruct the registry from Telegram Saved Messages.
+    def capture_message(self, message) -> Tuple[bool, str]:
+        # Do not strip: Telegram entity offsets are based on the exact message.
+        raw_text = getattr(message, "message", None) or ""
+        matches = list(_ASSIGNMENT_LINE_RE.finditer(raw_text))
 
-        This means the registry survives Railway redeploys even if local
-        DATA_DIR storage is ephemeral: the Telegram messages are the source
-        of truth and the local JSON file is only a cache.
-        """
+        if not matches:
+            return False, "not_registry_assignment"
+
+        results = []
+        handled_any = False
+
+        for match in matches:
+            handled, result = self._capture_assignment(message, raw_text, match)
+            results.append(result)
+            handled_any = handled_any or handled
+
+        if handled_any:
+            aliases = [m.group(1).strip() for m in matches]
+            self.log.warning(
+                "[COMMUNITY EMOJI MESSAGE CAPTURED] assignments=%s aliases=%s",
+                len(matches),
+                ",".join(aliases),
+            )
+            return True, "saved_batch:" + "|".join(results)
+
+        return False, "|".join(results)
+
+    async def rebuild_from_saved_messages(self, client, limit: int = 500):
+        """Reconstruct the registry from Telegram Saved Messages."""
         messages = list(await client.get_messages("me", limit=max(1, int(limit))) or [])
         messages.reverse()  # oldest -> newest, so latest assignment wins
 
-        rebuilt = 0
+        # Telegram Saved Messages are the source of truth. Drop stale cache data,
+        # including entries produced by older parser versions.
+        self.entries = {}
+        self.save()
+
+        handled_messages = 0
 
         for message in messages:
             handled, _ = self.capture_message(message)
             if handled:
-                rebuilt += 1
+                handled_messages += 1
 
         self.log.warning(
-            "[COMMUNITY EMOJI REBUILD DONE] scanned=%s assignments=%s aliases=%s",
+            "[COMMUNITY EMOJI REBUILD DONE] scanned=%s assignment_messages=%s aliases=%s alias_names=%s",
             len(messages),
-            rebuilt,
+            handled_messages,
             len(self.entries),
+            ",".join(sorted(self.entries.keys(), key=str.casefold)),
         )
 
-        return rebuilt
+        return handled_messages
 
     def render(self, template: str):
-        """
-        Replace {Alias} placeholders with their saved emoji and return:
-            (plain_text, formatting_entities)
-
-        Custom emoji offsets/lengths are calculated in Telegram UTF-16 units.
-        This is ready to pass to Telethon client.send_message(...,
-        formatting_entities=entities, parse_mode=None).
-        """
+        """Replace {Alias} placeholders and return (text, Telegram entities)."""
         output_parts: List[str] = []
         entities = []
         cursor = 0
@@ -290,12 +305,7 @@ async def install_saved_messages_emoji_collector(
     logger=None,
     scan_limit: int = 500,
 ):
-    """
-    Attach a live collector to the logged-in account's Saved Messages.
-
-    It only processes outgoing messages sent to self, so normal DMs and
-    Telegram groups are ignored.
-    """
+    """Attach the live Saved Messages collector to the logged-in account."""
     log = logger or registry.log
     me = await client.get_me()
     me_id = int(me.id)
@@ -311,7 +321,7 @@ async def install_saved_messages_emoji_collector(
 
             if handled:
                 log.warning("[COMMUNITY EMOJI LIVE CAPTURE] %s", result)
-            elif result.startswith("no_emoji_found"):
+            elif "no_emoji_found" in result:
                 log.warning("[COMMUNITY EMOJI INVALID] %s", result)
 
         except Exception as exc:

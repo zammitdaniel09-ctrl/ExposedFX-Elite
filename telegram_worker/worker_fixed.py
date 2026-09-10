@@ -612,6 +612,66 @@ def log_username_filter_main(
 
 # END USERNAME_MENTION_FILTER_V2
 
+# BEGIN GLOBAL_CONTENT_FILTER_V1
+
+FILTER_LINKS = (
+    os.environ.get("FILTER_LINKS", "1").strip() == "1"
+)
+
+URL_SCHEME_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9._%+\-@])(?:https?://|tg://|www\.|t\.me/|telegram\.me/)\S+"
+)
+BARE_DOMAIN_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9._%+\-@])"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z]{2,63}"
+    r"(?::\d{2,5})?"
+    r"(?:/[^\s<>()]*)?"
+)
+
+_original_has_username_mention_v2 = has_username_mention
+
+def has_link(message):
+    if not FILTER_LINKS:
+        return False
+
+    for entity in (getattr(message, "entities", None) or []):
+        entity_name = type(entity).__name__
+
+        if entity_name == "MessageEntityUrl":
+            return True
+
+        if entity_name == "MessageEntityTextUrl":
+            target = str(getattr(entity, "url", "") or "")
+            if target.lower().startswith("mailto:"):
+                continue
+            return True
+
+    text = text_of(message)
+    if not text:
+        return False
+
+    return bool(
+        URL_SCHEME_RE.search(text)
+        or BARE_DOMAIN_RE.search(text)
+    )
+
+def has_username_mention(message):
+    return (
+        _original_has_username_mention_v2(message)
+        or has_link(message)
+    )
+
+def unit_has_username_mention(messages):
+    return any(
+        has_username_mention(message)
+        for message in (messages or [])
+    )
+
+# END GLOBAL_CONTENT_FILTER_V1
+
+
+
 
 
 
@@ -4679,6 +4739,16 @@ async def fastvip2_process_unit(
 
     if not ids:
         return True
+
+    # BEGIN VIP7_REBUILD_FASTVIP_GATE_V1
+    vip7_rebuild_gate = vip7_rebuild_should_hold_or_suppress(
+        source_key,
+        unit,
+    )
+
+    if vip7_rebuild_gate is not None:
+        return bool(vip7_rebuild_gate)
+    # END VIP7_REBUILD_FASTVIP_GATE_V1
 
 
     first = unit[0]
@@ -9154,6 +9224,893 @@ async def run_relay115_vip1375_last50_once():
 # END RELAY115_VIP1375_LAST50_V1
 
 
+
+# BEGIN VIP7_REBUILD_FROM_RELAY508_V1
+
+VIP7_REBUILD_FROM_RELAY508_ONCE = (
+    os.environ.get(
+        "VIP7_REBUILD_FROM_RELAY508_ONCE",
+        "0",
+    ).strip()
+    == "1"
+)
+
+VIP7_REBUILD_SOURCE_CHAT = -1004367822325
+VIP7_REBUILD_SOURCE_TOPIC = 508
+VIP7_REBUILD_DEST_CHAT = -1003726286301
+VIP7_REBUILD_DEST_TOPIC = 7
+VIP7_REBUILD_COUNT = 50
+VIP7_REBUILD_FETCH_LIMIT = max(
+    500,
+    int(
+        os.environ.get(
+            "VIP7_REBUILD_FETCH_LIMIT",
+            "2000",
+        )
+    ),
+)
+
+VIP7_REBUILD_STATE_FILE = (
+    DATA_DIR / "vip7_rebuild_from_relay508_v1.state.json"
+)
+VIP7_REBUILD_DONE_FILE = (
+    DATA_DIR / "vip7_rebuild_from_relay508_v1.done.json"
+)
+
+def vip7_rebuild_load_state():
+    if not VIP7_REBUILD_STATE_FILE.exists():
+        return {}
+
+    try:
+        value = json.loads(
+            VIP7_REBUILD_STATE_FILE.read_text(
+                encoding="utf-8"
+            )
+        )
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+def vip7_rebuild_save_state(state):
+    temp = VIP7_REBUILD_STATE_FILE.with_suffix(".tmp")
+    temp.write_text(
+        json.dumps(
+            state,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    temp.replace(VIP7_REBUILD_STATE_FILE)
+
+VIP7_REBUILD_SUPPRESS_IDS = set(
+    int(value)
+    for value in vip7_rebuild_load_state().get(
+        "suppress_dest_ids",
+        [],
+    )
+    if str(value).strip()
+)
+
+def vip7_rebuild_route():
+    matches = [
+        route
+        for route in ROUTES
+        if (
+            int(route.get("source_chat", 0))
+            == VIP7_REBUILD_SOURCE_CHAT
+            and int(route.get("source_topic", 0) or 0)
+            == VIP7_REBUILD_SOURCE_TOPIC
+            and int(route.get("dest_chat", 0))
+            == VIP7_REBUILD_DEST_CHAT
+            and int(route.get("dest_topic", 0))
+            == VIP7_REBUILD_DEST_TOPIC
+            and bool(route.get("live_only"))
+            and bool(route.get("strict_source_topic"))
+        )
+    ]
+
+    if len(matches) != 1:
+        raise RuntimeError(
+            "VIP7 rebuild expected exactly one "
+            "Relay508->VIP7 live route; "
+            f"found={len(matches)}"
+        )
+
+    return matches[0]
+
+def vip7_rebuild_in_progress():
+    return (
+        VIP7_REBUILD_FROM_RELAY508_ONCE
+        and not VIP7_REBUILD_DONE_FILE.exists()
+    )
+
+def vip7_rebuild_should_hold_or_suppress(
+    source_key,
+    unit,
+):
+    ids = [
+        int(getattr(message, "id", 0) or 0)
+        for message in (unit or [])
+    ]
+
+    if not ids:
+        return None
+
+    source_chat = int(source_key[0])
+    source_topic = (
+        int(source_key[1])
+        if source_key[1] is not None
+        else None
+    )
+
+    # Historical refill messages created in VIP7 must never fan
+    # out through existing VIP7 outbound routes.
+    if (
+        source_chat == VIP7_REBUILD_DEST_CHAT
+        and source_topic == VIP7_REBUILD_DEST_TOPIC
+    ):
+        flags = [
+            message_id in VIP7_REBUILD_SUPPRESS_IDS
+            for message_id in ids
+        ]
+
+        if flags and all(flags):
+            log.warning(
+                "[VIP7 REBUILD OUTBOUND HISTORY SUPPRESSED] "
+                f"ids={ids}"
+            )
+            return True
+
+        if vip7_rebuild_in_progress():
+            log.warning(
+                "[VIP7 REBUILD OUTBOUND HELD] "
+                f"ids={ids} "
+                "WATCHDOG_WILL_RECHECK=True"
+            )
+            return False
+
+    # Hold new Relay508 live input until purge+refill finishes.
+    if (
+        source_chat == VIP7_REBUILD_SOURCE_CHAT
+        and source_topic == VIP7_REBUILD_SOURCE_TOPIC
+        and vip7_rebuild_in_progress()
+    ):
+        log.warning(
+            "[VIP7 REBUILD RELAY508 LIVE HELD] "
+            f"ids={ids} "
+            "WATCHDOG_WILL_RECHECK=True"
+        )
+        return False
+
+    return None
+
+def vip7_rebuild_clean_copyable(unit):
+    if not unit:
+        return False
+
+    if unit_has_username_mention(unit):
+        return False
+
+    return any(
+        bool(text_of(message))
+        or is_real_media(message)
+        for message in unit
+    )
+
+def vip7_rebuild_token(ids):
+    return ",".join(
+        str(int(value))
+        for value in ids
+    )
+
+async def vip7_rebuild_reload_unit(
+    route,
+    ids,
+):
+    raw = await client.get_messages(
+        route["source_chat"],
+        ids=[
+            int(value)
+            for value in ids
+        ],
+    )
+
+    if isinstance(raw, list):
+        messages = [
+            message
+            for message in raw
+            if message is not None
+        ]
+    else:
+        messages = [raw] if raw is not None else []
+
+    messages.sort(
+        key=lambda message: int(message.id)
+    )
+
+    if len(messages) != len(ids):
+        raise RuntimeError(
+            "A snapshotted Relay508 post no longer exists "
+            f"completely: ids={ids}"
+        )
+
+    for message in messages:
+        if (
+            topic_of(
+                message,
+                VIP7_REBUILD_SOURCE_CHAT,
+            )
+            != VIP7_REBUILD_SOURCE_TOPIC
+        ):
+            raise RuntimeError(
+                "Snapshotted Relay508 post escaped exact topic "
+                f"scope: id={message.id}"
+            )
+
+    if not vip7_rebuild_clean_copyable(messages):
+        raise RuntimeError(
+            "A snapshotted Relay508 post no longer passes "
+            f"the global filter: ids={ids}"
+        )
+
+    return messages
+
+async def vip7_rebuild_collect_exact_dest_ids():
+    ids = []
+
+    async for message in client.iter_messages(
+        VIP7_REBUILD_DEST_CHAT,
+        reply_to=VIP7_REBUILD_DEST_TOPIC,
+        reverse=True,
+    ):
+        message_id = int(
+            getattr(message, "id", 0)
+            or 0
+        )
+
+        if message_id == VIP7_REBUILD_DEST_TOPIC:
+            continue
+
+        actual_topic = topic_of(
+            message,
+            VIP7_REBUILD_DEST_CHAT,
+        )
+
+        if actual_topic != VIP7_REBUILD_DEST_TOPIC:
+            raise RuntimeError(
+                "Exact-topic purge preflight found a message "
+                "outside VIP7; refusing deletion. "
+                f"id={message_id} topic={actual_topic}"
+            )
+
+        ids.append(message_id)
+
+    return ids
+
+async def run_vip7_rebuild_from_relay508_once():
+    if not VIP7_REBUILD_FROM_RELAY508_ONCE:
+        return False
+
+    if VIP7_REBUILD_DONE_FILE.exists():
+        log.warning(
+            "[VIP7 REBUILD ALREADY DONE] "
+            "PURGE_AGAIN=False "
+            "REFILL_AGAIN=False"
+        )
+        return True
+
+    try:
+        route = vip7_rebuild_route()
+
+        # ----------------------------------------------------
+        # ROUTE / ACCESS PRE-PURGE CHECKS
+        # ----------------------------------------------------
+
+        wrong_vip7_inputs = [
+            candidate
+            for candidate in ROUTES
+            if (
+                int(candidate.get("dest_chat", 0))
+                == VIP7_REBUILD_DEST_CHAT
+                and int(candidate.get("dest_topic", 0))
+                == VIP7_REBUILD_DEST_TOPIC
+                and candidate is not route
+            )
+        ]
+
+        if wrong_vip7_inputs:
+            raise RuntimeError(
+                "VIP7 still has non-Relay508 input routes: "
+                + ", ".join(
+                    str(
+                        candidate.get("name")
+                    )
+                    for candidate
+                    in wrong_vip7_inputs
+                )
+            )
+
+        await client.get_entity(
+            VIP7_REBUILD_SOURCE_CHAT
+        )
+        await client.get_entity(
+            VIP7_REBUILD_DEST_CHAT
+        )
+
+        source_topic_root = await client.get_messages(
+            VIP7_REBUILD_SOURCE_CHAT,
+            ids=VIP7_REBUILD_SOURCE_TOPIC,
+        )
+
+        dest_topic_root = await client.get_messages(
+            VIP7_REBUILD_DEST_CHAT,
+            ids=VIP7_REBUILD_DEST_TOPIC,
+        )
+
+        if not source_topic_root:
+            raise RuntimeError(
+                "MAIN cannot access Relay508 topic 508"
+            )
+
+        if not dest_topic_root:
+            raise RuntimeError(
+                "MAIN cannot access VIP topic 7"
+            )
+
+        state = vip7_rebuild_load_state()
+
+        selected_units = state.get(
+            "selected_units"
+        )
+
+        # ----------------------------------------------------
+        # SNAPSHOT EXACTLY 50 CLEAN RELAY508 POSTS
+        # ----------------------------------------------------
+
+        if not isinstance(
+            selected_units,
+            list,
+        ) or not selected_units:
+            probe = dict(route)
+            probe["strict_source_topic"] = True
+
+            fetched = list(
+                await get_route_poll_messages(
+                    probe,
+                    VIP7_REBUILD_FETCH_LIMIT,
+                )
+                or []
+            )
+
+            if not fetched:
+                raise RuntimeError(
+                    "Relay508 returned zero messages"
+                )
+
+            fetched.sort(
+                key=lambda message: int(
+                    message.id
+                )
+            )
+
+            units = await fast_vip_build_units(
+                fetched
+            )
+
+            clean_units = [
+                unit
+                for unit in units
+                if vip7_rebuild_clean_copyable(
+                    unit
+                )
+            ]
+
+            selected = clean_units[
+                -VIP7_REBUILD_COUNT:
+            ]
+
+            selected.sort(
+                key=lambda unit: min(
+                    int(message.id)
+                    for message in unit
+                )
+            )
+
+            if len(selected) != VIP7_REBUILD_COUNT:
+                raise RuntimeError(
+                    "VIP7 purge is forbidden until exactly "
+                    "50 clean Relay508 posts exist; "
+                    f"found={len(selected)}"
+                )
+
+            selected_units = [
+                [
+                    int(message.id)
+                    for message in unit
+                ]
+                for unit in selected
+            ]
+
+            state = {
+                "status": "snapshotted",
+                "source_chat": (
+                    VIP7_REBUILD_SOURCE_CHAT
+                ),
+                "source_topic": (
+                    VIP7_REBUILD_SOURCE_TOPIC
+                ),
+                "dest_chat": (
+                    VIP7_REBUILD_DEST_CHAT
+                ),
+                "dest_topic": (
+                    VIP7_REBUILD_DEST_TOPIC
+                ),
+                "selected_units": selected_units,
+                "completed_tokens": [],
+                "suppress_dest_ids": [],
+                "purge_started": False,
+                "purge_done": False,
+                "started_at": time.time(),
+            }
+
+            vip7_rebuild_save_state(
+                state
+            )
+
+        if len(selected_units) != VIP7_REBUILD_COUNT:
+            raise RuntimeError(
+                "Persisted VIP7 rebuild snapshot is not "
+                "exactly 50 posts"
+            )
+
+        # ----------------------------------------------------
+        # REVERIFY EVERY SNAPSHOTTED POST BEFORE DELETION
+        # ----------------------------------------------------
+
+        verified_units = []
+
+        for ids in selected_units:
+            ids = [
+                int(value)
+                for value in ids
+            ]
+
+            verified_units.append(
+                await vip7_rebuild_reload_unit(
+                    route,
+                    ids,
+                )
+            )
+
+        if len(verified_units) != VIP7_REBUILD_COUNT:
+            raise RuntimeError(
+                "VIP7 rebuild verification did not return "
+                "exactly 50 clean posts"
+            )
+
+        state["status"] = "verified_pre_purge"
+        state["verified_at"] = time.time()
+
+        vip7_rebuild_save_state(
+            state
+        )
+
+        log.warning(
+            "[VIP7 REBUILD PREPURGE READY] "
+            "relay_route=True "
+            "relay_access=True "
+            "vip7_access=True "
+            "clean_posts=50 "
+            "snapshot_durable=True "
+            "all_posts_reverified=True "
+            "old_inputs_moved=True"
+        )
+
+        # ----------------------------------------------------
+        # EXACT VIP7 PURGE, DURABLE CHUNK PROGRESS
+        # ----------------------------------------------------
+
+        if not bool(
+            state.get("purge_done")
+        ):
+            if not bool(
+                state.get("purge_started")
+            ):
+                purge_pending_ids = (
+                    await vip7_rebuild_collect_exact_dest_ids()
+                )
+
+                state["purge_started"] = True
+                state["purge_pending_ids"] = (
+                    purge_pending_ids
+                )
+                state["purge_total"] = len(
+                    purge_pending_ids
+                )
+                state["purge_started_at"] = (
+                    time.time()
+                )
+
+                vip7_rebuild_save_state(
+                    state
+                )
+
+            purge_pending_ids = [
+                int(value)
+                for value in state.get(
+                    "purge_pending_ids",
+                    [],
+                )
+            ]
+
+            while purge_pending_ids:
+                chunk = purge_pending_ids[:100]
+
+                if (
+                    VIP7_REBUILD_DEST_TOPIC
+                    in chunk
+                ):
+                    raise RuntimeError(
+                        "Topic root ID entered purge set; "
+                        "refusing deletion"
+                    )
+
+                await client.delete_messages(
+                    VIP7_REBUILD_DEST_CHAT,
+                    chunk,
+                )
+
+                purge_pending_ids = (
+                    purge_pending_ids[
+                        len(chunk):
+                    ]
+                )
+
+                state[
+                    "purge_pending_ids"
+                ] = purge_pending_ids
+
+                state[
+                    "purge_deleted"
+                ] = (
+                    int(
+                        state.get(
+                            "purge_deleted",
+                            0,
+                        )
+                        or 0
+                    )
+                    + len(chunk)
+                )
+
+                vip7_rebuild_save_state(
+                    state
+                )
+
+            state["purge_done"] = True
+            state["purge_done_at"] = time.time()
+            state["status"] = "purge_done"
+
+            # CRITICAL: persist purge_done before refill.
+            vip7_rebuild_save_state(
+                state
+            )
+
+            log.warning(
+                "[VIP7 REBUILD PURGE DONE] "
+                f"deleted={state.get('purge_deleted', 0)} "
+                "TOPIC_ROOT_PRESERVED=True "
+                "PURGE_AGAIN=False"
+            )
+
+        # ----------------------------------------------------
+        # REMOVE ONLY STALE SELECTED RELAY508->VIP7 MAPPINGS
+        # ----------------------------------------------------
+
+        selected_source_ids = {
+            int(value)
+            for ids in selected_units
+            for value in ids
+        }
+
+        stale_keys = []
+
+        if not bool(
+            state.get("stale_map_cleanup_done")
+        ):
+            for key in list(
+                message_map.keys()
+            ):
+                parts = str(key).split(":")
+
+                if len(parts) != 4:
+                    continue
+
+                try:
+                    source_chat = int(
+                        parts[0]
+                    )
+                    source_id = int(
+                        parts[1]
+                    )
+                    dest_chat = int(
+                        parts[2]
+                    )
+                    dest_topic = int(
+                        parts[3]
+                    )
+                except Exception:
+                    continue
+
+                if (
+                    source_chat
+                    == VIP7_REBUILD_SOURCE_CHAT
+                    and source_id
+                    in selected_source_ids
+                    and dest_chat
+                    == VIP7_REBUILD_DEST_CHAT
+                    and dest_topic
+                    == VIP7_REBUILD_DEST_TOPIC
+                ):
+                    stale_keys.append(key)
+
+            if stale_keys:
+                for key in stale_keys:
+                    message_map.pop(
+                        key,
+                        None,
+                    )
+
+                save_map()
+
+            state["stale_map_cleanup_done"] = True
+            state["stale_map_cleanup_count"] = len(
+                stale_keys
+            )
+            state["stale_map_cleanup_at"] = time.time()
+
+            vip7_rebuild_save_state(
+                state
+            )
+
+
+        # ----------------------------------------------------
+        # REFILL OLDEST -> NEWEST USING NORMAL FASTVIP DELIVERY
+        # ----------------------------------------------------
+
+        completed_tokens = set(
+            str(value)
+            for value in state.get(
+                "completed_tokens",
+                [],
+            )
+        )
+
+        for index, ids in enumerate(
+            selected_units,
+            start=1,
+        ):
+            ids = [
+                int(value)
+                for value in ids
+            ]
+
+            token = vip7_rebuild_token(
+                ids
+            )
+
+            if token in completed_tokens:
+                continue
+
+            unit = await vip7_rebuild_reload_unit(
+                route,
+                ids,
+            )
+
+            success = False
+            last_error = None
+
+            for attempt in range(1, 6):
+                try:
+                    success = (
+                        await fast_vip_deliver_route(
+                            route,
+                            unit,
+                        )
+                    )
+
+                    if success:
+                        break
+
+                except FloodWaitError as exc:
+                    last_error = exc
+
+                    await asyncio.sleep(
+                        max(
+                            1,
+                            int(exc.seconds) + 1,
+                        )
+                    )
+
+                except Exception as exc:
+                    last_error = exc
+
+                if attempt < 5:
+                    await asyncio.sleep(
+                        [2, 5, 10, 20][
+                            attempt - 1
+                        ]
+                    )
+
+            if not success:
+                state.update({
+                    "status": "refill_failed",
+                    "failed_index": index,
+                    "failed_ids": ids,
+                    "failed_error": (
+                        str(last_error)
+                        if last_error
+                        is not None
+                        else (
+                            "fast_vip_deliver_route "
+                            "returned False"
+                        )
+                    ),
+                    "failed_at": time.time(),
+                })
+
+                vip7_rebuild_save_state(
+                    state
+                )
+
+                raise RuntimeError(
+                    "VIP7 refill stopped safely after purge; "
+                    "restart will resume without purging again. "
+                    f"index={index} ids={ids}"
+                )
+
+            new_dest_ids = []
+
+            for message in unit:
+                key = map_key(
+                    VIP7_REBUILD_SOURCE_CHAT,
+                    message.id,
+                    VIP7_REBUILD_DEST_CHAT,
+                    VIP7_REBUILD_DEST_TOPIC,
+                )
+
+                new_dest_ids.extend(
+                    mapped_ids_from_value(
+                        message_map.get(key)
+                    )
+                )
+
+            if not new_dest_ids:
+                raise RuntimeError(
+                    "VIP7 refill succeeded but no destination "
+                    f"mapping was recorded for ids={ids}"
+                )
+
+            for destination_id in (
+                new_dest_ids
+            ):
+                VIP7_REBUILD_SUPPRESS_IDS.add(
+                    int(destination_id)
+                )
+
+            completed_tokens.add(
+                token
+            )
+
+            state.update({
+                "status": "refilling",
+                "completed_tokens": sorted(
+                    completed_tokens
+                ),
+                "completed": len(
+                    completed_tokens
+                ),
+                "suppress_dest_ids": sorted(
+                    VIP7_REBUILD_SUPPRESS_IDS
+                ),
+                "last_source_ids": ids,
+                "last_dest_ids": sorted(
+                    {
+                        int(value)
+                        for value
+                        in new_dest_ids
+                    }
+                ),
+                "updated_at": time.time(),
+            })
+
+            vip7_rebuild_save_state(
+                state
+            )
+
+            log.warning(
+                "[VIP7 REBUILD REFILL PROGRESS] "
+                f"{len(completed_tokens)}/"
+                f"{VIP7_REBUILD_COUNT} "
+                f"source_ids={ids}"
+            )
+
+            await asyncio.sleep(0.25)
+
+        if len(
+            completed_tokens
+        ) != VIP7_REBUILD_COUNT:
+            raise RuntimeError(
+                "VIP7 refill final completion validation failed"
+            )
+
+        done = {
+            "status": "done",
+            "source_chat": (
+                VIP7_REBUILD_SOURCE_CHAT
+            ),
+            "source_topic": (
+                VIP7_REBUILD_SOURCE_TOPIC
+            ),
+            "dest_chat": (
+                VIP7_REBUILD_DEST_CHAT
+            ),
+            "dest_topic": (
+                VIP7_REBUILD_DEST_TOPIC
+            ),
+            "selected": VIP7_REBUILD_COUNT,
+            "completed": len(
+                completed_tokens
+            ),
+            "purge_done": True,
+            "completed_at": time.time(),
+        }
+
+        VIP7_REBUILD_DONE_FILE.write_text(
+            json.dumps(
+                done,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+
+        state.update({
+            "status": "done",
+            "completed": len(
+                completed_tokens
+            ),
+            "completed_at": time.time(),
+        })
+
+        vip7_rebuild_save_state(
+            state
+        )
+
+        log.warning(
+            "[VIP7 REBUILD DONE] "
+            "selected=50 "
+            "completed=50 "
+            "PURGE_DONE=True "
+            "PURGE_AGAIN=False "
+            "ORDER=OLDEST_TO_NEWEST "
+            "FASTVIP_DELIVERY=True "
+            "LIVE_ROUTE_READY=True"
+        )
+
+        return True
+
+    except Exception as exc:
+        log.exception(
+            "[VIP7 REBUILD FAILED SAFE] "
+            f"{type(exc).__name__}: {exc} "
+            "PURGE_GUARDS_PRESERVED=True"
+        )
+
+        return False
+
+# END VIP7_REBUILD_FROM_RELAY508_V1
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -9213,6 +10170,11 @@ async def main():
     await cleanup_existing_blocked_sender_copies_once()
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())
+    # BEGIN VIP7_REBUILD_STARTUP_TASK_V1
+    vip7_rebuild_task = asyncio.create_task(
+        run_vip7_rebuild_from_relay508_once()
+    )
+    # END VIP7_REBUILD_STARTUP_TASK_V1
     asyncio.create_task(fast_vip_event_router_v2())
     relay115_vip1375_history_task = asyncio.create_task(run_relay115_vip1375_last50_once())
     relay2_vip1364_v3_task = asyncio.create_task(relay2_to_vip1364_last50_v3())

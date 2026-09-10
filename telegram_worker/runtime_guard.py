@@ -2,6 +2,7 @@ import asyncio
 import atexit
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -58,6 +59,93 @@ def _remove_own_lock(lock_file: Path, pid: int):
         pass
 
 
+async def _auto_install_vip_emoji_registry(log=None):
+    """
+    Attach the Saved Messages custom-emoji collector to the already-running
+    worker_fixed Telegram client without changing Railway's start command.
+
+    This is intentionally restricted to the main VIP service and can be
+    disabled with VIP_EMOJI_REGISTRY_ENABLED=0.
+    """
+    if os.environ.get("VIP_EMOJI_REGISTRY_ENABLED", "1").strip() != "1":
+        if log:
+            log.info("[VIP EMOJI REGISTRY] disabled")
+        return
+
+    try:
+        from telegram_worker.community_emoji_registry import (
+            CommunityEmojiRegistry,
+            install_saved_messages_emoji_collector,
+        )
+    except Exception as exc:
+        if log:
+            log.exception(
+                "[VIP EMOJI REGISTRY IMPORT FAILED] %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+        return
+
+    while True:
+        try:
+            main_module = sys.modules.get("__main__")
+            client = getattr(main_module, "client", None) if main_module else None
+
+            if client is None:
+                await asyncio.sleep(0.25)
+                continue
+
+            if not client.is_connected():
+                await asyncio.sleep(0.25)
+                continue
+
+            if not await client.is_user_authorized():
+                await asyncio.sleep(0.5)
+                continue
+
+            scan_limit = max(
+                1,
+                int(os.environ.get("EMOJI_REGISTRY_SCAN_LIMIT", "500")),
+            )
+
+            registry = CommunityEmojiRegistry(
+                DATA_DIR,
+                logger=log,
+            )
+
+            await install_saved_messages_emoji_collector(
+                client,
+                registry,
+                logger=log,
+                scan_limit=scan_limit,
+            )
+
+            if main_module is not None:
+                setattr(main_module, "EMOJI_REGISTRY", registry)
+
+            if log:
+                log.warning(
+                    "[VIP EMOJI REGISTRY ACTIVE] "
+                    f"aliases={len(registry.entries)} "
+                    f"scan_limit={scan_limit} "
+                    "SOURCE=SavedMessages "
+                    "START_COMMAND_CHANGE_REQUIRED=False"
+                )
+
+            return
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if log:
+                log.warning(
+                    "[VIP EMOJI REGISTRY WAIT/RETRY] %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+            await asyncio.sleep(2)
+
+
 async def start_runtime_guard(service_name: str, log=None):
     """
     Persistent-volume singleton/heartbeat guard.
@@ -93,8 +181,6 @@ async def start_runtime_guard(service_name: str, log=None):
                     )
                 break
 
-            # Do not crash/restart. Wait while a previous container is either
-            # still alive or its unclean-shutdown lock is ageing out.
             if log and (now - wait_log_at >= 15.0):
                 remaining = max(1, int(STALE_SECONDS - age) + 1)
                 log.warning(
@@ -116,14 +202,9 @@ async def start_runtime_guard(service_name: str, log=None):
                 )
             await asyncio.sleep(2)
 
-    # Claim/reclaim the lock. If an older process is genuinely alive it will
-    # have kept touching the file above, so we would never reach this point.
     lock_file.write_text(str(pid), encoding="utf-8")
     lock_file.touch()
 
-    # Graceful Python exits should not leave a fresh lock behind. The PID
-    # ownership check prevents an older container from deleting a newer
-    # container's lock during deployment overlap.
     atexit.register(_remove_own_lock, lock_file, pid)
 
     default_delay = "90" if service_name == "imperium-telegram-worker" else "0"
@@ -148,7 +229,6 @@ async def start_runtime_guard(service_name: str, log=None):
                         }),
                         encoding="utf-8",
                     )
-                    # Only refresh a lock we still own.
                     if _lock_pid(lock_file) == pid:
                         lock_file.touch()
                 except Exception:
@@ -163,7 +243,14 @@ async def start_runtime_guard(service_name: str, log=None):
 
     send_alert(f"✅ <b>{service_name}</b> started")
 
-    return asyncio.create_task(heartbeat_loop())
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
+
+    # Main VIP service: install the emoji collector automatically on the
+    # existing worker_fixed Telegram client. No Railway start-command change.
+    if service_name == "imperium-telegram-worker":
+        asyncio.create_task(_auto_install_vip_emoji_registry(log))
+
+    return heartbeat_task
 
 
 def alert_crash(service_name: str, exc: Exception):

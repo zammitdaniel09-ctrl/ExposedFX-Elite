@@ -150,21 +150,24 @@ async def start_runtime_guard(service_name: str, log=None):
     """
     Persistent-volume singleton/heartbeat guard.
 
-    Railway can briefly overlap old and new containers during a deployment and
-    the lock lives on the mounted DATA_DIR volume. Previous behaviour exited
-    immediately while a fresh lock existed, which could put Railway into a
-    crash/restart loop after an unclean shutdown.
+    For the main VIP worker we deliberately use a fast 5s heartbeat and a 45s
+    stale threshold. 45s is long enough to coexist safely with an older
+    deployment that may only heartbeat every 30s, while reducing dead-worker
+    takeover from several minutes to at most ~45s.
 
-    New behaviour waits for the existing lock to become stale instead. An
-    actually-running worker refreshes its lock every HEARTBEAT_SECONDS, so the
-    new container keeps waiting. A dead worker stops refreshing the lock, so
-    this process automatically takes over after STALE_SECONDS.
+    The heartbeat starts immediately after this process claims the lock. This
+    is important: a startup/connect delay must never leave a claimed lock
+    ageing without being refreshed.
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     heartbeat_file = DATA_DIR / f"{service_name}.heartbeat.json"
     lock_file = DATA_DIR / f"{service_name}.lock"
     pid = os.getpid()
+
+    is_main_vip = service_name == "imperium-telegram-worker"
+    heartbeat_seconds = 5 if is_main_vip else max(2, HEARTBEAT_SECONDS)
+    stale_seconds = 45 if is_main_vip else max(heartbeat_seconds * 2, STALE_SECONDS)
 
     wait_log_at = 0.0
 
@@ -173,24 +176,24 @@ async def start_runtime_guard(service_name: str, log=None):
             now = time.time()
             age = max(0.0, now - lock_file.stat().st_mtime)
 
-            if age >= STALE_SECONDS:
+            if age >= stale_seconds:
                 if log:
                     log.warning(
                         f"Stale runtime lock recovered: service={service_name} "
-                        f"age={age:.1f}s stale_after={STALE_SECONDS}s"
+                        f"age={age:.1f}s stale_after={stale_seconds}s"
                     )
                 break
 
-            if log and (now - wait_log_at >= 15.0):
-                remaining = max(1, int(STALE_SECONDS - age) + 1)
+            if log and (now - wait_log_at >= 10.0):
+                remaining = max(1, int(stale_seconds - age) + 1)
                 log.warning(
                     f"Existing {service_name} runtime lock detected; "
                     f"waiting instead of crashing. age={age:.1f}s "
-                    f"stale_after={STALE_SECONDS}s remaining~{remaining}s"
+                    f"stale_after={stale_seconds}s remaining~{remaining}s"
                 )
                 wait_log_at = now
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
         except FileNotFoundError:
             break
@@ -200,21 +203,11 @@ async def start_runtime_guard(service_name: str, log=None):
                     f"Runtime lock check failed for {service_name}: "
                     f"{type(exc).__name__}: {exc}; retrying"
                 )
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
     lock_file.write_text(str(pid), encoding="utf-8")
     lock_file.touch()
-
     atexit.register(_remove_own_lock, lock_file, pid)
-
-    default_delay = "90" if service_name == "imperium-telegram-worker" else "0"
-    connect_delay = max(0, int(os.environ.get("TELEGRAM_CONNECT_DELAY_SECONDS", default_delay)))
-    if connect_delay:
-        if log:
-            log.info(
-                f"Telegram deployment overlap protection active: waiting {connect_delay}s before connect"
-            )
-        await asyncio.sleep(connect_delay)
 
     async def heartbeat_loop():
         try:
@@ -234,20 +227,43 @@ async def start_runtime_guard(service_name: str, log=None):
                 except Exception:
                     pass
 
-                await asyncio.sleep(HEARTBEAT_SECONDS)
+                await asyncio.sleep(heartbeat_seconds)
         finally:
             _remove_own_lock(lock_file, pid)
 
+    # Start refreshing the lock BEFORE any optional startup delay.
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
+
+    # The singleton lock already protects the main VIP Telegram session from
+    # deployment overlap, so its old 180s Railway variable is intentionally
+    # ignored. Other services keep their configurable delay behaviour.
+    if is_main_vip:
+        connect_delay = 0
+    else:
+        connect_delay = max(
+            0,
+            int(os.environ.get("TELEGRAM_CONNECT_DELAY_SECONDS", "0")),
+        )
+
+    if connect_delay:
+        if log:
+            log.info(
+                f"Telegram deployment overlap protection active: waiting {connect_delay}s before connect"
+            )
+        await asyncio.sleep(connect_delay)
+
     if log:
-        log.info(f"Runtime guard active: service={service_name} heartbeat={HEARTBEAT_SECONDS}s")
+        log.info(
+            f"Runtime guard active: service={service_name} "
+            f"heartbeat={heartbeat_seconds}s stale_after={stale_seconds}s "
+            f"connect_delay={connect_delay}s"
+        )
 
     send_alert(f"✅ <b>{service_name}</b> started")
 
-    heartbeat_task = asyncio.create_task(heartbeat_loop())
-
     # Main VIP service: install the emoji collector automatically on the
     # existing worker_fixed Telegram client. No Railway start-command change.
-    if service_name == "imperium-telegram-worker":
+    if is_main_vip:
         asyncio.create_task(_auto_install_vip_emoji_registry(log))
 
     return heartbeat_task

@@ -646,6 +646,66 @@ def log_username_filter_alt(
 
 # END USERNAME_MENTION_FILTER_V2
 
+# BEGIN GLOBAL_CONTENT_FILTER_V1
+
+FILTER_LINKS = (
+    os.environ.get("FILTER_LINKS", "1").strip() == "1"
+)
+
+URL_SCHEME_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9._%+\-@])(?:https?://|tg://|www\.|t\.me/|telegram\.me/)\S+"
+)
+BARE_DOMAIN_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9._%+\-@])"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z]{2,63}"
+    r"(?::\d{2,5})?"
+    r"(?:/[^\s<>()]*)?"
+)
+
+_original_has_username_mention_v2 = has_username_mention
+
+def has_link(message):
+    if not FILTER_LINKS:
+        return False
+
+    for entity in (getattr(message, "entities", None) or []):
+        entity_name = type(entity).__name__
+
+        if entity_name == "MessageEntityUrl":
+            return True
+
+        if entity_name == "MessageEntityTextUrl":
+            target = str(getattr(entity, "url", "") or "")
+            if target.lower().startswith("mailto:"):
+                continue
+            return True
+
+    text = text_of(message)
+    if not text:
+        return False
+
+    return bool(
+        URL_SCHEME_RE.search(text)
+        or BARE_DOMAIN_RE.search(text)
+    )
+
+def has_username_mention(message):
+    return (
+        _original_has_username_mention_v2(message)
+        or has_link(message)
+    )
+
+def unit_has_username_mention(messages):
+    return any(
+        has_username_mention(message)
+        for message in (messages or [])
+    )
+
+# END GLOBAL_CONTENT_FILTER_V1
+
+
+
 
 
 
@@ -4990,6 +5050,341 @@ async def run_alt_force50_v3():
 # END ALT_FORCE50_V3
 
 
+
+
+# BEGIN ALT_ROUTE508_LAST50_V1
+
+ALT_ROUTE508_LAST50_ONCE = (
+    os.environ.get("ALT_ROUTE508_LAST50_ONCE", "0").strip() == "1"
+)
+ALT_ROUTE508_LAST50_COUNT = 50
+ALT_ROUTE508_FETCH_LIMIT = max(
+    500,
+    int(os.environ.get("ALT_ROUTE508_FETCH_LIMIT", "2000")),
+)
+ALT_ROUTE508_SOURCE_CHAT = -1004369388188
+ALT_ROUTE508_DEST_CHAT = -1004367822325
+ALT_ROUTE508_DEST_TOPIC = 508
+ALT_ROUTE508_DONE_FILE = DATA_DIR / "route508_last50_v1.done.json"
+ALT_ROUTE508_PROGRESS_FILE = DATA_DIR / "route508_last50_v1.progress.json"
+
+def alt_route508_target_route():
+    matches = [
+        route
+        for route in ROUTES
+        if (
+            int(route["source_chat"]) == ALT_ROUTE508_SOURCE_CHAT
+            and route["source_topic"] is None
+            and int(route["dest_chat"]) == ALT_ROUTE508_DEST_CHAT
+            and int(route["dest_topic"]) == ALT_ROUTE508_DEST_TOPIC
+        )
+    ]
+
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Route508 expected exactly one route; "
+            f"found={len(matches)}"
+        )
+
+    return matches[0]
+
+def alt_route508_unit_token(unit):
+    return ",".join(str(int(message.id)) for message in unit)
+
+def alt_route508_copyable_clean(unit):
+    if not unit:
+        return False
+
+    if unit_has_username_mention(unit):
+        return False
+
+    return any(
+        bool(text_of(message))
+        or real_media(message)
+        for message in unit
+    )
+
+async def alt_route508_reload_unit(route, ids):
+    raw = await client.get_messages(
+        route["source_chat"],
+        ids=[int(value) for value in ids],
+    )
+
+    if isinstance(raw, list):
+        messages = [
+            message
+            for message in raw
+            if message is not None
+        ]
+    else:
+        messages = [raw] if raw is not None else []
+
+    messages.sort(key=lambda message: int(message.id))
+
+    if len(messages) != len(ids):
+        raise RuntimeError(
+            "Route508 snapshotted unit no longer exists completely: "
+            f"ids={ids}"
+        )
+
+    if not alt_route508_copyable_clean(messages):
+        raise RuntimeError(
+            "Route508 snapshotted unit no longer passes the global filter: "
+            f"ids={ids}"
+        )
+
+    return messages
+
+async def run_alt_route508_last50_once():
+    if not ALT_ROUTE508_LAST50_ONCE:
+        return False
+
+    route = alt_route508_target_route()
+
+    if ALT_ROUTE508_DONE_FILE.exists():
+        log.warning(
+            "[ALT ROUTE508 HISTORY ALREADY DONE] "
+            "RESENT=False"
+        )
+        return True
+
+    progress = load_json(
+        ALT_ROUTE508_PROGRESS_FILE
+    )
+
+    selected_units = progress.get(
+        "selected_units"
+    )
+
+    if not isinstance(selected_units, list) or not selected_units:
+        fetched = list(
+            await fetch_route_messages(
+                route,
+                ALT_ROUTE508_FETCH_LIMIT,
+            )
+            or []
+        )
+
+        if not fetched:
+            raise RuntimeError(
+                "Route508 source returned zero messages"
+            )
+
+        units = build_units(fetched)
+
+        clean_units = [
+            unit
+            for unit in units
+            if alt_route508_copyable_clean(unit)
+        ]
+
+        selected = clean_units[
+            -ALT_ROUTE508_LAST50_COUNT:
+        ]
+
+        selected.sort(
+            key=lambda unit: min(
+                int(message.id)
+                for message in unit
+            )
+        )
+
+        if len(selected) != ALT_ROUTE508_LAST50_COUNT:
+            raise RuntimeError(
+                "Route508 requires exactly 50 clean eligible posts "
+                f"before history can run; found={len(selected)}"
+            )
+
+        selected_units = [
+            [
+                int(message.id)
+                for message in unit
+            ]
+            for unit in selected
+        ]
+
+        progress = {
+            "status": "snapshotted",
+            "source_chat": ALT_ROUTE508_SOURCE_CHAT,
+            "dest_chat": ALT_ROUTE508_DEST_CHAT,
+            "dest_topic": ALT_ROUTE508_DEST_TOPIC,
+            "requested": ALT_ROUTE508_LAST50_COUNT,
+            "selected_units": selected_units,
+            "completed_tokens": [],
+            "started_at": time.time(),
+        }
+
+        save_json(
+            ALT_ROUTE508_PROGRESS_FILE,
+            progress,
+        )
+
+    if len(selected_units) != ALT_ROUTE508_LAST50_COUNT:
+        raise RuntimeError(
+            "Route508 persisted snapshot is not exactly 50 posts"
+        )
+
+    completed_tokens = set(
+        str(value)
+        for value in progress.get(
+            "completed_tokens",
+            [],
+        )
+    )
+
+    log.warning(
+        "[ALT ROUTE508 HISTORY START] "
+        f"selected={len(selected_units)} "
+        f"resume={len(completed_tokens)} "
+        "ORDER=OLDEST_TO_NEWEST "
+        "SAME_PATH_AS_LIVE=True"
+    )
+
+    for index, ids in enumerate(
+        selected_units,
+        start=1,
+    ):
+        ids = [
+            int(value)
+            for value in ids
+        ]
+
+        token = ",".join(
+            str(value)
+            for value in ids
+        )
+
+        if token in completed_tokens:
+            continue
+
+        unit = await alt_route508_reload_unit(
+            route,
+            ids,
+        )
+
+        success = False
+        last_error = None
+
+        for attempt in range(1, 6):
+            try:
+                success = await copy_unit(
+                    route,
+                    unit,
+                    "route508_last50",
+                )
+
+                if success:
+                    break
+
+            except FloodWaitError as exc:
+                last_error = exc
+                await asyncio.sleep(
+                    max(1, int(exc.seconds) + 1)
+                )
+
+            except Exception as exc:
+                last_error = exc
+
+            if attempt < 5:
+                await asyncio.sleep(
+                    [2, 5, 10, 20][attempt - 1]
+                )
+
+        if not success:
+            progress.update({
+                "status": "failed",
+                "failed_index": index,
+                "failed_ids": ids,
+                "failed_error": (
+                    str(last_error)
+                    if last_error is not None
+                    else "copy_unit returned False"
+                ),
+                "failed_at": time.time(),
+            })
+
+            save_json(
+                ALT_ROUTE508_PROGRESS_FILE,
+                progress,
+            )
+
+            raise RuntimeError(
+                "Route508 history stopped safely at "
+                f"index={index} ids={ids}"
+            )
+
+        completed_tokens.add(token)
+
+        progress.update({
+            "status": "running",
+            "completed_tokens": sorted(
+                completed_tokens
+            ),
+            "completed": len(
+                completed_tokens
+            ),
+            "updated_at": time.time(),
+        })
+
+        save_json(
+            ALT_ROUTE508_PROGRESS_FILE,
+            progress,
+        )
+
+        log.warning(
+            "[ALT ROUTE508 HISTORY PROGRESS] "
+            f"{len(completed_tokens)}/"
+            f"{len(selected_units)} "
+            f"source_ids={ids}"
+        )
+
+        await asyncio.sleep(0.25)
+
+    if len(completed_tokens) != ALT_ROUTE508_LAST50_COUNT:
+        raise RuntimeError(
+            "Route508 final completion validation failed"
+        )
+
+    done = {
+        "status": "done",
+        "source_chat": ALT_ROUTE508_SOURCE_CHAT,
+        "dest_chat": ALT_ROUTE508_DEST_CHAT,
+        "dest_topic": ALT_ROUTE508_DEST_TOPIC,
+        "requested": ALT_ROUTE508_LAST50_COUNT,
+        "selected": len(selected_units),
+        "completed": len(completed_tokens),
+        "completed_at": time.time(),
+    }
+
+    save_json(
+        ALT_ROUTE508_DONE_FILE,
+        done,
+    )
+
+    progress.update({
+        "status": "done",
+        "completed": len(completed_tokens),
+        "completed_at": time.time(),
+    })
+
+    save_json(
+        ALT_ROUTE508_PROGRESS_FILE,
+        progress,
+    )
+
+    log.warning(
+        "[ALT ROUTE508 HISTORY DONE] "
+        f"selected={len(selected_units)} "
+        f"completed={len(completed_tokens)} "
+        "ORDER=OLDEST_TO_NEWEST "
+        "RERUN_BLOCKED=True "
+        "LIVE_FORWARDING=True"
+    )
+
+    return True
+
+# END ALT_ROUTE508_LAST50_V1
+
 # ==============================================================
 # MAIN
 # ==============================================================
@@ -5172,6 +5567,18 @@ async def main():
                 f"{type(exc).__name__}: {exc} "
                 "LIVE_FORWARDING_CONTINUES=True"
             )
+
+# BEGIN ALT_ROUTE508_LAST50_STARTUP_CALL_V1
+    if ALT_ROUTE508_LAST50_ONCE:
+        try:
+            await run_alt_route508_last50_once()
+        except Exception as exc:
+            log.exception(
+                "[ALT ROUTE508 HISTORY FAILED SAFE] "
+                f"{type(exc).__name__}: {exc} "
+                "LIVE_FORWARDING_CONTINUES=True"
+            )
+# END ALT_ROUTE508_LAST50_STARTUP_CALL_V1
 
     # Recovery tasks.
     for route in ROUTES:

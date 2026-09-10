@@ -32,7 +32,9 @@ API_HASH = os.environ["API_HASH"]
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip("/")
 AUTO_TOKEN = os.environ.get("AUTO_TOKEN", "change-this-token")
 DRY_RUN = os.environ.get("DRY_RUN", "0").strip() == "1"
-FORWARD_EDITED_MESSAGES = False  # NEW-MESSAGES-ONLY SAFETY
+FORWARD_EDITED_MESSAGES = (
+    os.environ.get("FORWARD_EDITED_MESSAGES", "1").strip() == "1"
+)  # mapped-message edits only
 PROCESS_GROUPED_MESSAGES_IN_NEW_HANDLER = os.environ.get("PROCESS_GROUPED_MESSAGES_IN_NEW_HANDLER", "1").strip() == "1"
 ENABLE_ALBUM_HANDLER = os.environ.get("ENABLE_ALBUM_HANDLER", "0").strip() == "1"
 ENABLE_ROUTE_FALLBACK_ALL_MESSAGES = os.environ.get("ENABLE_ROUTE_FALLBACK_ALL_MESSAGES", "1").strip() == "1"
@@ -1728,6 +1730,59 @@ async def repair_bad_mirror_structure(message, route, target_reply, text, entiti
         "mirror structure mismatch after repair: "
         + str(reason2)
     )
+
+
+
+# BEGIN MAIN_MAPPED_IN_PLACE_EDITS_V1
+
+async def edit_existing_destination_in_place(message, route):
+    # Propagate an edit only to a destination already mapped from
+    # the exact source message. Never create a message from an edit.
+    destination_ids = existing_destination_ids(message, route)
+
+    if not destination_ids:
+        log.info(
+            f"[mapped edit skipped:no destination] route={route['name']} "
+            f"source={route['source_chat']}_{route.get('source_topic')} "
+            f"msg={getattr(message, 'id', None)}"
+        )
+        return False
+
+    destination_id = int(destination_ids[0])
+    new_text = text_of(message)
+    new_entities = entities_of(message)
+
+    try:
+        await client.edit_message(
+            route["dest_chat"],
+            destination_id,
+            new_text or "",
+            formatting_entities=(
+                new_entities
+                if new_text
+                else None
+            ),
+            parse_mode=None,
+            link_preview=True,
+        )
+
+        log.info(
+            f"[EDIT PROPAGATED IN PLACE] route={route['name']} "
+            f"source_msg={message.id} dest_msg={destination_id} "
+            f"dest={route['dest_chat']}_{route['dest_topic']}"
+        )
+        return True
+
+    except Exception as exc:
+        log.warning(
+            f"[EDIT PROPAGATION FAILED SAFE] route={route['name']} "
+            f"source_msg={getattr(message, 'id', None)} "
+            f"dest_msg={destination_id} "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return False
+
+# END MAIN_MAPPED_IN_PLACE_EDITS_V1
 
 
 async def copy_one(message, route, edited=False, ensure_reply=True):
@@ -5634,11 +5689,29 @@ async def handle_single_message(event, edited=False):
                 )
                 continue
 
-            if edited and route.get("live_only") and not existing_destination_ids(message, route):
-                log.info(
-                    f"[live-only old edit skipped] route={route['name']} "
-                    f"source={chat_id}_{topic_id} msg={message.id}"
+            if edited:
+                # HARD SAFETY: edits are updates only. Never create a new
+                # destination message from an unmapped/historical edit.
+                if not existing_destination_ids(message, route):
+                    log.info(
+                        f"[unmapped edit skipped] route={route['name']} "
+                        f"source={chat_id}_{topic_id} msg={message.id}"
+                    )
+                    continue
+
+                updated = await edit_existing_destination_in_place(
+                    message,
+                    route,
                 )
+
+                if not updated:
+                    log.warning(
+                        f"[mapped edit not applied] route={route['name']} "
+                        f"source={chat_id}_{topic_id} msg={message.id}"
+                    )
+
+                # Never fall through to copy_one(... edited=True), because
+                # that legacy path deletes/resends and changes message order.
                 continue
 
             if not edited and is_recent_duplicate(route, message, text):
@@ -10124,7 +10197,7 @@ async def main():
     log.info(f"DRY_RUN={DRY_RUN}")
     log.info(f"Watching {len(SOURCE_CHATS)} source chats: {SOURCE_CHATS}")
     log.info(f"Loaded {len(ROUTES)} routes")
-    log.warning("[LIVE-ONLY SAFE MODE ACTIVE] startup_backfill=False forced_history=False edited_old_messages=False timestamp_blocker=False route_snapshot_guard=True")
+    log.warning("[LIVE-ONLY SAFE MODE ACTIVE] startup_backfill=False forced_history=False edited_unmapped_messages=False edited_mapped_messages=True timestamp_blocker=False route_snapshot_guard=True")
     log.info(f"FORWARD_EDITED_MESSAGES={FORWARD_EDITED_MESSAGES}")
     log.info(f"DEDUP_WINDOW_SECONDS={DEDUP_WINDOW_SECONDS}")
     log.info(f"CROSS_SOURCE_DEDUP_DEST_TOPICS={sorted(CROSS_SOURCE_DEDUP_DEST_TOPICS)}")

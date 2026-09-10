@@ -27,9 +27,9 @@ class CommunityEmojiRegistry:
 
     The latest message for a given alias wins.
 
-    Custom Telegram/Premium emoji entries store the exact Telegram
-    document_id from MessageEntityCustomEmoji. Normal Unicode emoji are
-    also supported as a fallback.
+    Telegram can represent what looks like one visual emoji/sticker-style glyph
+    as more than one MessageEntityCustomEmoji. The registry therefore supports
+    both a single custom emoji and a sequence of custom-emoji entities.
     """
 
     def __init__(self, data_dir: Path, logger=None):
@@ -84,51 +84,104 @@ class CommunityEmojiRegistry:
         return True
 
     def capture_message(self, message) -> Tuple[bool, str]:
-        text = (getattr(message, "message", None) or "").strip()
-        match = _ALIAS_RE.match(text)
+        # IMPORTANT: do not strip before reading Telegram entity offsets.
+        # Entity offsets are based on the exact original message UTF-16 text.
+        raw_text = getattr(message, "message", None) or ""
+        match = _ALIAS_RE.match(raw_text)
 
         if not match:
             return False, "not_registry_assignment"
 
         alias = match.group(1).strip()
-        right_side = match.group(2).strip()
+        right_side = match.group(2)
 
-        if right_side.upper() in {"DELETE", "REMOVE"}:
+        if right_side.strip().upper() in {"DELETE", "REMOVE"}:
             removed = self.remove(alias)
             return True, f"removed:{alias}" if removed else f"missing:{alias}"
 
-        custom_entities = [
-            entity
-            for entity in (getattr(message, "entities", None) or [])
-            if isinstance(entity, MessageEntityCustomEmoji)
-        ]
+        rhs_start_utf16 = _utf16_len(raw_text[:match.start(2)])
+        rhs_end_utf16 = _utf16_len(raw_text[:match.end(2)])
 
-        if len(custom_entities) > 1:
-            return False, f"multiple_custom_emojis:{alias}"
+        # Only collect custom-emoji entities that actually belong to the
+        # right-hand side of "Alias = ...". This avoids unrelated entities
+        # elsewhere in the message from confusing the registry.
+        custom_entities = []
+        for entity in (getattr(message, "entities", None) or []):
+            if not isinstance(entity, MessageEntityCustomEmoji):
+                continue
 
-        if len(custom_entities) == 1:
-            entity = custom_entities[0]
-            document_id = int(entity.document_id)
+            entity_start = int(entity.offset)
+            entity_end = entity_start + int(entity.length)
+
+            if entity_end <= rhs_start_utf16 or entity_start >= rhs_end_utf16:
+                continue
+
+            custom_entities.append(entity)
+
+        if custom_entities:
+            custom_entities.sort(key=lambda e: int(e.offset))
+
+            # One Telegram custom emoji: keep the simple legacy-compatible
+            # entry format.
+            if len(custom_entities) == 1:
+                entity = custom_entities[0]
+                document_id = int(entity.document_id)
+
+                self.entries[alias] = {
+                    "type": "custom",
+                    "document_id": document_id,
+                    "fallback": right_side or "⭐",
+                    "source_message_id": int(getattr(message, "id", 0) or 0),
+                }
+                self.save()
+
+                self.log.warning(
+                    "[COMMUNITY EMOJI SAVED] alias=%s type=custom document_id=%s",
+                    alias,
+                    document_id,
+                )
+                return True, f"saved_custom:{alias}:{document_id}"
+
+            # Some premium/custom emoji messages contain multiple custom emoji
+            # entities even when the user considers the RHS one visual token.
+            # Preserve the whole RHS and every Telegram document_id + relative
+            # UTF-16 offset so the exact sequence can be rendered later.
+            sequence_entities = []
+            document_ids = []
+
+            for entity in custom_entities:
+                relative_offset = max(0, int(entity.offset) - rhs_start_utf16)
+                document_id = int(entity.document_id)
+                document_ids.append(document_id)
+                sequence_entities.append(
+                    {
+                        "document_id": document_id,
+                        "offset": relative_offset,
+                        "length": int(entity.length),
+                    }
+                )
 
             self.entries[alias] = {
-                "type": "custom",
-                "document_id": document_id,
-                "fallback": right_side or "⭐",
+                "type": "custom_sequence",
+                "text": right_side or "⭐",
+                "entities": sequence_entities,
                 "source_message_id": int(getattr(message, "id", 0) or 0),
             }
             self.save()
 
+            ids_text = ",".join(str(x) for x in document_ids)
             self.log.warning(
-                "[COMMUNITY EMOJI SAVED] alias=%s type=custom document_id=%s",
+                "[COMMUNITY EMOJI SAVED] alias=%s type=custom_sequence count=%s document_ids=%s",
                 alias,
-                document_id,
+                len(sequence_entities),
+                ids_text,
             )
-            return True, f"saved_custom:{alias}:{document_id}"
+            return True, f"saved_custom_sequence:{alias}:{len(sequence_entities)}:{ids_text}"
 
-        if right_side:
+        if right_side.strip():
             self.entries[alias] = {
                 "type": "unicode",
-                "text": right_side,
+                "text": right_side.strip(),
                 "source_message_id": int(getattr(message, "id", 0) or 0),
             }
             self.save()
@@ -136,7 +189,7 @@ class CommunityEmojiRegistry:
             self.log.warning(
                 "[COMMUNITY EMOJI SAVED] alias=%s type=unicode text=%r",
                 alias,
-                right_side,
+                right_side.strip(),
             )
             return True, f"saved_unicode:{alias}"
 
@@ -178,8 +231,6 @@ class CommunityEmojiRegistry:
         This is ready to pass to Telethon client.send_message(...,
         formatting_entities=entities, parse_mode=None).
         """
-        from telethon.tl.types import MessageEntityCustomEmoji
-
         output_parts: List[str] = []
         entities = []
         cursor = 0
@@ -197,20 +248,33 @@ class CommunityEmojiRegistry:
                 continue
 
             current_text = "".join(output_parts)
+            base_offset = _utf16_len(current_text)
+            entry_type = entry.get("type")
 
-            if entry.get("type") == "custom":
+            if entry_type == "custom":
                 fallback = str(entry.get("fallback") or "⭐")
-                offset = _utf16_len(current_text)
-                length = _utf16_len(fallback)
-
                 output_parts.append(fallback)
                 entities.append(
                     MessageEntityCustomEmoji(
-                        offset=offset,
-                        length=length,
+                        offset=base_offset,
+                        length=_utf16_len(fallback),
                         document_id=int(entry["document_id"]),
                     )
                 )
+
+            elif entry_type == "custom_sequence":
+                sequence_text = str(entry.get("text") or "⭐")
+                output_parts.append(sequence_text)
+
+                for item in entry.get("entities") or []:
+                    entities.append(
+                        MessageEntityCustomEmoji(
+                            offset=base_offset + int(item.get("offset", 0)),
+                            length=max(1, int(item.get("length", 1))),
+                            document_id=int(item["document_id"]),
+                        )
+                    )
+
             else:
                 output_parts.append(str(entry.get("text") or ""))
 
@@ -247,7 +311,7 @@ async def install_saved_messages_emoji_collector(
 
             if handled:
                 log.warning("[COMMUNITY EMOJI LIVE CAPTURE] %s", result)
-            elif result.startswith("multiple_custom_emojis") or result.startswith("no_emoji_found"):
+            elif result.startswith("no_emoji_found"):
                 log.warning("[COMMUNITY EMOJI INVALID] %s", result)
 
         except Exception as exc:

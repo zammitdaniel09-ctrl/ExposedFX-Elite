@@ -1,1 +1,1 @@
-python telegram_worker/worker.py
+python -m telegram_worker.vip_worker_with_emoji_registry

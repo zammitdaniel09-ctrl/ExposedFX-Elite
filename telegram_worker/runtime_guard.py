@@ -64,6 +64,10 @@ async def _auto_install_vip_emoji_registry(log=None):
     Attach the Saved Messages custom-emoji collector to the already-running
     worker_fixed Telegram client without changing Railway's start command.
 
+    The same setup task also installs the Imperium FX VIP live formatter once
+    the emoji registry has been rebuilt, so the formatter always uses the exact
+    custom emoji document IDs saved by the user.
+
     This is intentionally restricted to the main VIP service and can be
     disabled with VIP_EMOJI_REGISTRY_ENABLED=0.
     """
@@ -131,6 +135,31 @@ async def _auto_install_vip_emoji_registry(log=None):
                     "SOURCE=SavedMessages "
                     "START_COMMAND_CHANGE_REQUIRED=False"
                 )
+
+            # Install the formatter only after the registry is live. It auto-
+            # discovers the chat whose normalised title is IMPERIUM FX VIP,
+            # unless IMPERIUM_VIP_CHAT is explicitly supplied later.
+            try:
+                from telegram_worker.imperium_vip_formatter import (
+                    install_imperium_vip_formatter,
+                )
+
+                formatter_state = await install_imperium_vip_formatter(
+                    client,
+                    registry,
+                    logger=log,
+                )
+
+                if main_module is not None:
+                    setattr(main_module, "IMPERIUM_VIP_FORMATTER", formatter_state)
+
+            except Exception as exc:
+                if log:
+                    log.exception(
+                        "[IMPERIUM VIP FORMATTER INSTALL FAILED] %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
 
             return
 

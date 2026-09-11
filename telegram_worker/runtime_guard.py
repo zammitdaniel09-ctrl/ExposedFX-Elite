@@ -60,16 +60,14 @@ def _remove_own_lock(lock_file: Path, pid: int):
 
 
 async def _auto_install_vip_emoji_registry(log=None):
-    """
-    Attach the Saved Messages custom-emoji collector to the already-running
-    worker_fixed Telegram client without changing Railway's start command.
+    """Attach Saved Messages emoji registry and the 508 -> VIP7 formatter.
 
-    The same setup task also installs the Imperium FX VIP live formatter once
-    the emoji registry has been rebuilt, so the formatter always uses the exact
-    custom emoji document IDs saved by the user.
-
-    This is intentionally restricted to the main VIP service and can be
-    disabled with VIP_EMOJI_REGISTRY_ENABLED=0.
+    The route-specific destination poller is deliberately the only writer for
+    Imperium VIP topic 7. Same-client copy/send operations do not reliably emit
+    NewMessage events back into the same Telethon client, and running both an
+    event formatter and a destination poller creates races on composite trade
+    updates. The poller therefore owns signals and trade-management updates for
+    this route after the emoji registry is ready.
     """
     if os.environ.get("VIP_EMOJI_REGISTRY_ENABLED", "1").strip() != "1":
         if log:
@@ -136,27 +134,7 @@ async def _auto_install_vip_emoji_registry(log=None):
                     "START_COMMAND_CHANGE_REQUIRED=False"
                 )
 
-            # Install the formatter only after the registry is live. It auto-
-            # discovers the chat whose normalised title is IMPERIUM FX VIP,
-            # unless IMPERIUM_VIP_CHAT is explicitly supplied later.
             try:
-                from telegram_worker.imperium_vip_formatter import (
-                    install_imperium_vip_formatter,
-                )
-
-                formatter_state = await install_imperium_vip_formatter(
-                    client,
-                    registry,
-                    logger=log,
-                )
-
-                if main_module is not None:
-                    setattr(main_module, "IMPERIUM_VIP_FORMATTER", formatter_state)
-
-                # Same-client copy_message/send_message operations are not
-                # guaranteed to emit a NewMessage event back into this client.
-                # Topic 508 -> VIP topic 7 therefore gets a dedicated no-
-                # history destination poller as a deterministic backup.
                 from telegram_worker.imperium_vip_destination_poller import (
                     install_imperium_vip_destination_poller,
                 )
@@ -172,6 +150,17 @@ async def _auto_install_vip_emoji_registry(log=None):
                         main_module,
                         "IMPERIUM_VIP_DESTINATION_POLLER",
                         destination_poller_state,
+                    )
+                    # Explicitly expose that the route-specific poller is the
+                    # single writer; no global Imperium formatter handlers are
+                    # installed for topic 7 in this runtime.
+                    setattr(main_module, "IMPERIUM_VIP_FORMATTER", None)
+
+                if log:
+                    log.warning(
+                        "[IMPERIUM VIP SINGLE WRITER ACTIVE] "
+                        "source=-1004367822325_508 dest=-1003726286301_7 "
+                        "writer=destination_poller global_event_formatter=False"
                     )
 
             except Exception as exc:
@@ -197,8 +186,7 @@ async def _auto_install_vip_emoji_registry(log=None):
 
 
 async def start_runtime_guard(service_name: str, log=None):
-    """
-    Persistent-volume singleton/heartbeat guard.
+    """Persistent-volume singleton/heartbeat guard.
 
     For the main VIP worker we deliberately use a fast 5s heartbeat and a 45s
     stale threshold. 45s is long enough to coexist safely with an older
@@ -311,8 +299,8 @@ async def start_runtime_guard(service_name: str, log=None):
 
     send_alert(f"✅ <b>{service_name}</b> started")
 
-    # Main VIP service: install the emoji collector automatically on the
-    # existing worker_fixed Telegram client. No Railway start-command change.
+    # Main VIP service: install the emoji collector and the route-specific
+    # single-writer formatter automatically. No Railway start-command change.
     if is_main_vip:
         asyncio.create_task(_auto_install_vip_emoji_registry(log))
 

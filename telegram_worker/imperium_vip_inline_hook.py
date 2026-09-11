@@ -7,7 +7,10 @@ from telegram_worker.imperium_vip_formatter import (
     build_update,
     parse_xauusd_signal,
 )
-from telegram_worker.imperium_vip_trade_updates import classify_trade_update
+from telegram_worker.imperium_vip_trade_updates import (
+    classify_trade_update,
+    run_update_self_test,
+)
 
 
 log = logging.getLogger("imperium-vip-inline-hook")
@@ -98,23 +101,34 @@ def _clone_message_with_format(message, registry):
         return message, None
 
     cloned = copy.copy(message)
-    try:
-        cloned.message = out_text
-    except Exception:
-        setattr(cloned, "message", out_text)
-    try:
-        cloned.entities = out_entities
-    except Exception:
-        setattr(cloned, "entities", out_entities)
+    cloned.message = out_text
+    cloned.entities = out_entities
     return cloned, kind
+
+
+def _run_inline_self_test():
+    update_count, safe_count = run_update_self_test()
+
+    probe = parse_xauusd_signal(
+        "Buy xauusd now\n\nTp 4324\nTp 4337\nTp 4350\nTp open\n\nSl 4308"
+    )
+    if not probe:
+        raise RuntimeError("inline signal self-test failed: parser returned None")
+    if probe.get("direction") != "BUY" or probe.get("kind") != "NOW":
+        raise RuntimeError(f"inline signal self-test failed: {probe!r}")
+    if probe.get("tps") != ["4324", "4337", "4350", "OPEN"]:
+        raise RuntimeError(f"inline TP self-test failed: {probe!r}")
+    if probe.get("sl") != "4308":
+        raise RuntimeError(f"inline SL self-test failed: {probe!r}")
+
+    return 1, update_count, safe_count
 
 
 def install_imperium_vip_inline_hook(main_module, registry, logger=None):
     """Patch the active worker's copy/edit path for the exact VIP route.
 
-    This removes the timing dependency on Telegram emitting a destination-side
-    NewMessage event. Formatting happens synchronously before the route's
-    message is sent, while the existing destination poller remains a backup.
+    Formatting happens synchronously before the route's message is sent. This
+    removes the timing dependency on same-client destination events and polling.
     """
     logger = logger or log
 
@@ -123,10 +137,17 @@ def install_imperium_vip_inline_hook(main_module, registry, logger=None):
     if not _registry_ready(registry):
         raise RuntimeError("emoji registry is not ready")
 
-    # Idempotent across repeated installer calls in the same process.
     existing = getattr(main_module, "_IMPERIUM_VIP_INLINE_HOOK_STATE", None)
     if existing:
         return existing
+
+    signal_count, update_count, safe_count = _run_inline_self_test()
+    logger.warning(
+        "[IMPERIUM VIP INLINE SELFTEST OK] signal_variants=%s update_variants=%s fail_safe_general_chat=%s",
+        signal_count,
+        update_count,
+        safe_count,
+    )
 
     original_copy_one = getattr(main_module, "copy_one", None)
     original_copy_album = getattr(main_module, "copy_album", None)

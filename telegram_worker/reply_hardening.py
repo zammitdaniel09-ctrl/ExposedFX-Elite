@@ -1,8 +1,9 @@
+import asyncio
 import logging
 import re
 import unicodedata
 from types import SimpleNamespace
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 log = logging.getLogger("telegram-reply-hardening")
@@ -28,12 +29,7 @@ def _append_unique(values: List[int], value) -> None:
 
 
 def reply_source_ids(message) -> List[int]:
-    """Extract a real replied-to source message ID across Telethon variants.
-
-    Telegram/Telethon can expose reply IDs directly on Message or inside the
-    MessageReplyHeader depending on update/fetch path. Read both. Topic-root IDs
-    are included here and filtered later against route.source_topic.
-    """
+    """Read reply IDs from both Message and MessageReplyHeader shapes."""
     ids: List[int] = []
 
     for attr in ("reply_to_msg_id", "reply_to_top_id", "top_msg_id"):
@@ -84,7 +80,7 @@ def _exact_map_key(main_module, route: Dict[str, Any], source_msg_id: int) -> st
 
 
 def mapped_destination_ids(main_module, route: Dict[str, Any], source_msg_id: int) -> List[int]:
-    """Resolve exact mapping, including old/list/dict message-map formats."""
+    """Resolve mapping across int/list/dict and older compatible map entries."""
     message_map = getattr(main_module, "message_map", {}) or {}
     exact_key = _exact_map_key(main_module, route, int(source_msg_id))
 
@@ -92,7 +88,6 @@ def mapped_destination_ids(main_module, route: Dict[str, Any], source_msg_id: in
     if ids:
         return ids
 
-    # Compatibility fallback for maps produced by older worker versions.
     wanted = (
         str(int(route["source_chat"])),
         str(int(source_msg_id)),
@@ -126,8 +121,7 @@ def mapped_reply_id(main_module, message, route: Dict[str, Any]) -> Optional[int
 def _normalise_text(value: str) -> str:
     value = unicodedata.normalize("NFKC", value or "")
     value = value.replace("\ufe0f", "").replace("\u200b", " ").replace("\xa0", " ")
-    value = re.sub(r"\s+", " ", value).strip().casefold()
-    return value
+    return re.sub(r"\s+", " ", value).strip().casefold()
 
 
 def _message_text(message) -> str:
@@ -152,7 +146,6 @@ def _is_imperium_route(route: Dict[str, Any]) -> bool:
 
 
 def _expected_destination_text(parent, route, registry) -> str:
-    """Recreate the exact destination text used by the inline VIP formatter."""
     source_text = _message_text(parent)
     if not source_text:
         return ""
@@ -166,9 +159,7 @@ def _expected_destination_text(parent, route, registry) -> str:
             build_update,
             parse_xauusd_signal,
         )
-        from telegram_worker.imperium_vip_trade_update_hardening import (
-            classify_trade_update,
-        )
+        from telegram_worker.imperium_vip_trade_update_hardening import classify_trade_update
 
         parsed = parse_xauusd_signal(source_text)
         if parsed:
@@ -180,18 +171,17 @@ def _expected_destination_text(parent, route, registry) -> str:
             rendered, _entities = build_update(registry, update_template)
             return rendered
     except Exception:
-        # Reply recovery must never break forwarding. Raw-text matching remains
-        # useful for unformatted/general messages.
         pass
 
     return source_text
 
 
 def _date_distance_seconds(source_message, destination_message) -> float:
-    source_date = getattr(source_message, "date", None)
-    destination_date = getattr(destination_message, "date", None)
     try:
-        return abs(float(destination_date.timestamp()) - float(source_date.timestamp()))
+        return abs(
+            float(getattr(destination_message, "date").timestamp())
+            - float(getattr(source_message, "date").timestamp())
+        )
     except Exception:
         return 10**12
 
@@ -246,6 +236,18 @@ def _cache_mapping(main_module, route: Dict[str, Any], source_msg_id: int, dest_
         save_fn()
 
 
+def _drop_exact_mapping(main_module, route: Dict[str, Any], source_msg_id: int) -> None:
+    message_map = getattr(main_module, "message_map", None)
+    if not isinstance(message_map, dict):
+        return
+    key = _exact_map_key(main_module, route, int(source_msg_id))
+    if key in message_map:
+        message_map.pop(key, None)
+        save_fn = getattr(main_module, "save_map", None) or getattr(main_module, "save_message_map", None)
+        if callable(save_fn):
+            save_fn()
+
+
 async def ensure_reply_mapping(
     main_module,
     message,
@@ -253,18 +255,21 @@ async def ensure_reply_mapping(
     registry=None,
     logger=None,
 ) -> Optional[int]:
-    """Ensure a reply can target the forwarded parent, even across worker accounts.
+    """Resolve reply parent locally or recover it from destination topic history.
 
-    Local message-map lookup is first. If the parent was forwarded by another
-    Telegram/Railway worker and therefore is absent from this worker's local
-    map, resolve it by comparing the source parent with recent messages in the
-    exact destination topic, then cache the recovered mapping locally.
+    Cross-account recovery is important when one Telegram worker forwarded the
+    parent and another worker later receives the reply: their local message-map
+    files are not shared. The destination message itself becomes the recovery
+    source of truth, matched by exact house-formatted text and nearest time.
     """
     logger = logger or log
     source_topic = _as_int(route.get("source_topic"))
-
     reply_ids = reply_source_ids(message)
     if not reply_ids:
+        return None
+
+    client = getattr(main_module, "client", None)
+    if client is None:
         return None
 
     for source_parent_id in reply_ids:
@@ -273,20 +278,32 @@ async def ensure_reply_mapping(
 
         existing = mapped_destination_ids(main_module, route, source_parent_id)
         if existing:
-            logger.info(
-                "[REPLY MAP HIT] source=%s_%s parent=%s dest=%s_%s parent_dest=%s",
-                route.get("source_chat"),
-                route.get("source_topic"),
+            try:
+                current_parent = await client.get_messages(
+                    int(route["dest_chat"]),
+                    ids=int(existing[0]),
+                )
+            except Exception:
+                current_parent = None
+
+            if current_parent:
+                logger.info(
+                    "[REPLY MAP HIT] source=%s_%s parent=%s dest=%s_%s parent_dest=%s",
+                    route.get("source_chat"),
+                    route.get("source_topic"),
+                    source_parent_id,
+                    route.get("dest_chat"),
+                    route.get("dest_topic"),
+                    existing[0],
+                )
+                return int(existing[0])
+
+            logger.warning(
+                "[REPLY STALE MAP DROPPED] source_parent=%s stale_dest_parent=%s",
                 source_parent_id,
-                route.get("dest_chat"),
-                route.get("dest_topic"),
                 existing[0],
             )
-            return int(existing[0])
-
-        client = getattr(main_module, "client", None)
-        if client is None:
-            continue
+            _drop_exact_mapping(main_module, route, source_parent_id)
 
         try:
             parent = await client.get_messages(
@@ -308,65 +325,67 @@ async def ensure_reply_mapping(
         expected = _expected_destination_text(parent, route, registry)
         expected_key = _normalise_text(expected)
         if not expected_key:
-            # Media-only parents cannot be safely identified by text. Do not
-            # guess between possible destination media posts.
             continue
 
-        candidates = await _destination_topic_messages(main_module, route)
-        matches = [
-            candidate
-            for candidate in candidates
-            if _normalise_text(_message_text(candidate)) == expected_key
-            and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
-        ]
+        # A different forwarding account may still be creating the parent.
+        # Retry briefly before giving up and falling back to the topic root.
+        for attempt, delay in enumerate((0.0, 0.25, 0.75, 1.5), start=1):
+            if delay:
+                await asyncio.sleep(delay)
 
-        if not matches:
+            candidates = await _destination_topic_messages(main_module, route)
+            matches = [
+                candidate
+                for candidate in candidates
+                if _normalise_text(_message_text(candidate)) == expected_key
+                and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
+            ]
+
+            if not matches:
+                continue
+
+            matches.sort(key=lambda candidate: _date_distance_seconds(parent, candidate))
+            chosen = matches[0]
+            chosen_id = int(chosen.id)
+            distance = _date_distance_seconds(parent, chosen)
+
+            if distance > 6 * 60 * 60:
+                logger.warning(
+                    "[REPLY CROSS-ACCOUNT REJECTED OLD MATCH] source_parent=%s dest_parent=%s distance=%.1fs",
+                    source_parent_id,
+                    chosen_id,
+                    distance,
+                )
+                break
+
+            _cache_mapping(main_module, route, source_parent_id, chosen_id)
             logger.warning(
-                "[REPLY CROSS-ACCOUNT UNRESOLVED] source_parent=%s dest=%s_%s expected=%r",
+                "[REPLY CROSS-ACCOUNT RECOVERED] source=%s_%s parent=%s dest=%s_%s parent_dest=%s candidates=%s distance=%.1fs attempt=%s",
+                route.get("source_chat"),
+                route.get("source_topic"),
                 source_parent_id,
                 route.get("dest_chat"),
                 route.get("dest_topic"),
-                expected[:120],
-            )
-            continue
-
-        matches.sort(key=lambda candidate: _date_distance_seconds(parent, candidate))
-        chosen = matches[0]
-        chosen_id = int(chosen.id)
-
-        # If identical signals repeat, the closest timestamp is deterministic.
-        # A very large gap is suspicious, so fail closed instead of linking a
-        # reply to an unrelated old duplicate.
-        distance = _date_distance_seconds(parent, chosen)
-        if distance > 6 * 60 * 60:
-            logger.warning(
-                "[REPLY CROSS-ACCOUNT REJECTED OLD MATCH] source_parent=%s dest_parent=%s distance=%.1fs",
-                source_parent_id,
                 chosen_id,
+                len(matches),
                 distance,
+                attempt,
             )
-            continue
-
-        _cache_mapping(main_module, route, source_parent_id, chosen_id)
+            return chosen_id
 
         logger.warning(
-            "[REPLY CROSS-ACCOUNT RECOVERED] source=%s_%s parent=%s dest=%s_%s parent_dest=%s candidates=%s distance=%.1fs",
-            route.get("source_chat"),
-            route.get("source_topic"),
+            "[REPLY CROSS-ACCOUNT UNRESOLVED] source_parent=%s dest=%s_%s expected=%r",
             source_parent_id,
             route.get("dest_chat"),
             route.get("dest_topic"),
-            chosen_id,
-            len(matches),
-            distance,
+            expected[:120],
         )
-        return chosen_id
 
     return None
 
 
 def install_reply_hardening(main_module, logger=None):
-    """Patch reply-ID parsing/mapping while preserving existing no-history rules."""
+    """Patch reply parsing/mapping while preserving live-only no-history rules."""
     logger = logger or log
 
     if main_module is None:
@@ -379,7 +398,6 @@ def install_reply_hardening(main_module, logger=None):
     if not isinstance(getattr(main_module, "message_map", None), dict):
         raise RuntimeError("worker message_map unavailable")
 
-    # Self-test Telethon's two common reply metadata shapes.
     direct = SimpleNamespace(reply_to_msg_id=123, reply_to_top_id=508, top_msg_id=None, reply_to=None)
     nested = SimpleNamespace(
         reply_to_msg_id=None,
@@ -429,11 +447,13 @@ def install_reply_hardening(main_module, logger=None):
         "reply_metadata": "direct+header",
         "map_values": "int+list+dict",
         "cross_account_recovery": True,
+        "cross_account_retries": True,
+        "stale_map_verification": True,
         "no_history_parent_copy": "preserved",
     }
     setattr(main_module, "_REPLY_HARDENING_STATE", state)
 
     logger.warning(
-        "[REPLY HARDENING ACTIVE] direct_ids=True nested_header=True list_maps=True cross_account_recovery=True old_parent_import=False"
+        "[REPLY HARDENING ACTIVE] direct_ids=True nested_header=True list_maps=True cross_account_recovery=True retries=True stale_map_check=True old_parent_import=False"
     )
     return state

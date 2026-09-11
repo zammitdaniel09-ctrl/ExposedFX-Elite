@@ -131,7 +131,7 @@ def _extract_entry_from_trade_line(line: str) -> Tuple[Optional[str], Optional[s
 
     cleaned = XAU_RE.sub(" ", line)
     cleaned = DIRECTION_RE.sub(" ", cleaned)
-    cleaned = re.sub(r"\b(NOW|MARKET|LIMIT|STOP|ENTRY|ENTER|AT|@|ZONE)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(NOW|MARKET|LIMIT|STOP|ENTRY|ENTER|AT|ZONE)\b|@", " ", cleaned, flags=re.IGNORECASE)
     nums = re.findall(PRICE, cleaned)
     if nums:
         return nums[0], nums[0]
@@ -262,12 +262,9 @@ def classify_update(text: str) -> Optional[str]:
     u = raw.upper()
     compact = re.sub(r"\s+", " ", u).strip()
 
-    # Do not touch newly-issued signals here.
     if parse_xauusd_signal(raw):
         return None
 
-    # Stop loss / stopped-out variants. "knocked us out" is included because
-    # Imperium uses this wording for an SL event.
     sl_hit = bool(re.search(
         r"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS)\b.{0,24}\b(?:HIT|HITTED|TOUCHED|TRIGGERED)\b|"
         r"\b(?:HIT|TOUCHED|TRIGGERED)\b.{0,24}\b(?:SL|STOP\s*LOSS|STOPLOSS)\b|"
@@ -282,8 +279,6 @@ def classify_update(text: str) -> Optional[str]:
             return f"{{RedCross}} SL HIT — -{value} PIPS"
         return "{RedCross} SL HIT"
 
-    # TP results, including Imperium shorthand such as TP1💥110 PIPs.
-    tp_num = None
     m_tp = re.search(r"\bTP\s*#?\s*(\d+)\b", u)
     if m_tp:
         tp_num = m_tp.group(1)
@@ -295,7 +290,6 @@ def classify_update(text: str) -> Optional[str]:
                 return f"{{GreenTick}} TP{tp_num} HIT — +{value} PIPS"
             return f"{{GreenTick}} TP{tp_num} HIT"
 
-    # Explicit profit/result updates. Loss/spread discussion is blocked.
     if not re.search(r"\b(?:LOSS|LOST|DROPPED|SL|STOP\s*LOSS|SPREAD|KEEP\s+TP|EXAMPLE)\b", u):
         m = re.search(r"^\s*\+\s*(\d+(?:\.\d+)?)\s*PIPS?\b", raw, re.IGNORECASE)
         if m:
@@ -309,7 +303,6 @@ def classify_update(text: str) -> Optional[str]:
         if m:
             return f"{{GreenTick}} +{m.group(1)} PIPS"
 
-    # Combined management command first.
     if re.search(r"\b(?:SECURE|TAKE|CLOSE)\b.{0,24}\bPARTIAL", u) and re.search(r"\b(?:BREAK\s*-?\s*EVEN|BREAKEVEN|BE)\b", u):
         return "{GreenTick} SECURE PARTIAL PROFITS\n\nMOVE SL TO BREAKEVEN"
 
@@ -322,14 +315,12 @@ def classify_update(text: str) -> Optional[str]:
     if re.search(r"\b(?:ENTRY|SIGNAL|SETUP)\b.{0,18}\b(?:STILL\s+)?VALID\b", u):
         return "{GreenTick} ENTRY STILL VALID"
 
-    # Delete pending and enter market now must win over generic cancellation.
     if (
         re.search(r"\b(?:DELETE|CANCEL|REMOVE)\b.{0,24}\b(?:PENDING|ORDER|LIMIT|STOP)\b", u)
         and re.search(r"\b(?:ENTER|ENTRY|GET\s+IN)\b.{0,18}\b(?:NOW|MARKET)\b", u)
     ) or re.search(r"\bDELETE\s+N\s+ENTER\s+NOW\b", u):
         return "{Warning} DELETE PENDING ORDER\n\nENTER MARKET NOW"
 
-    # Imperium often sends one-word/very short management updates.
     short = len(compact) <= 100
     if short and re.search(r"^(?:LAYER|LAYER\s+NOW|ADD\s+(?:ANOTHER\s+)?ENTRY|ADD\s+POSITION|SCALE\s+IN|RE-?ENTER)(?:\b|$)", compact):
         return "{Warning} LAYER ENTRY NOW"
@@ -360,8 +351,67 @@ def _has_custom_emoji(message, document_id: int, at_start: bool = False) -> bool
     return False
 
 
+def _alias_document_ids(registry, aliases: List[str]) -> List[int]:
+    ids = []
+    for alias in aliases:
+        entry = registry.get(alias) or {}
+        if entry.get("type") == "custom" and entry.get("document_id"):
+            ids.append(int(entry["document_id"]))
+        elif entry.get("type") == "custom_sequence":
+            for item in entry.get("entities") or []:
+                if item.get("document_id"):
+                    ids.append(int(item["document_id"]))
+    return list(dict.fromkeys(ids))
+
+
 def build_update(registry, template: str):
     return registry.render(template)
+
+
+def _run_variant_self_test():
+    signal_cases = [
+        ("Buy xauusd now\n\nTp 4400\nTp 4410\nTp 4450\n\nSl 4379", "NOW", "BUY", 3),
+        ("Buy XAUUSD 4372-4369\nTP 4380\nTP 4390\nTP 4400\nSL 4356 (big SL manage risk)", "ZONE", "BUY", 3),
+        ("Buy limit xauusd 4306\nTp 4320\nTp 4350\nTp 4400\nSl 4290", "LIMIT", "BUY", 3),
+        ("SELL STOP GOLD 4360\nTP1 4350\nTP2 4340\nSTOP LOSS 4370", "STOP", "SELL", 2),
+        ("Sell xauusd now 4367-4373\nTp 4362\nTp 4355\nTp 4345\nSl 4378", "ZONE", "SELL", 3),
+    ]
+    for text, kind, direction, tp_count in signal_cases:
+        parsed = parse_xauusd_signal(text)
+        if not parsed or parsed["kind"] != kind or parsed["direction"] != direction or len(parsed["tps"]) != tp_count:
+            raise RuntimeError(f"signal self-test failed kind={kind} direction={direction} text={text!r} parsed={parsed!r}")
+
+    update_cases = [
+        ("TP1💥110 PIPs", "{GreenTick} TP1 HIT — +110 PIPS"),
+        ("TP1💥was hit 100 pips I fell asleep", "{GreenTick} TP1 HIT — +100 PIPS"),
+        ("+ 130 PIPs", "{GreenTick} +130 PIPS"),
+        ("Ran 250 PIPs", "{GreenTick} +250 PIPS RUNNING"),
+        ("SL hit", "{RedCross} SL HIT"),
+        ("Apologies family knocked us out and dropped 100 pips lol", "{RedCross} SL HIT — -100 PIPS"),
+        ("Secure partials and go breakeven.", "{GreenTick} SECURE PARTIAL PROFITS\n\nMOVE SL TO BREAKEVEN"),
+        ("Meant Breakeven", "{GreenTick} MOVE SL TO BREAKEVEN"),
+        ("Entry still valid .", "{GreenTick} ENTRY STILL VALID"),
+        ("layer now", "{Warning} LAYER ENTRY NOW"),
+        ("Delete n enter now", "{Warning} DELETE PENDING ORDER\n\nENTER MARKET NOW"),
+        ("If yours hasn’t closed close now", "{Warning} CLOSE TRADE NOW"),
+        ("I’m still in this btw", "{GreenTick} TRADE STILL ACTIVE"),
+        ("Cancel trade", "{RedCross} TRADE CANCELLED"),
+    ]
+    for text, expected in update_cases:
+        actual = classify_update(text)
+        if actual != expected:
+            raise RuntimeError(f"update self-test failed text={text!r} expected={expected!r} actual={actual!r}")
+
+    general_chat = [
+        "wtf",
+        "Everyone recovered we happy",
+        "are we happy yet can I go off charts now",
+        "20 pip sl",
+        "keep tp few pips higher example like now tp is 4360 keep tp at 4360.5",
+    ]
+    for text in general_chat:
+        if classify_update(text) is not None:
+            raise RuntimeError(f"general-chat self-test failed text={text!r} result={classify_update(text)!r}")
 
 
 async def install_imperium_vip_formatter(client, registry, logger=None):
@@ -370,6 +420,9 @@ async def install_imperium_vip_formatter(client, registry, logger=None):
     if os.environ.get("IMPERIUM_VIP_FORMATTER_ENABLED", "1").strip() != "1":
         logger.info("[IMPERIUM VIP FORMATTER] disabled")
         return None
+
+    _run_variant_self_test()
+    logger.warning("[IMPERIUM VIP FORMATTER SELFTEST OK] signal_variants=5 update_variants=14 fail_safe_general_chat=5")
 
     required = ["Boom", "GreenTick", "RedCross", "Warning"]
     if not _require_aliases(registry, required):
@@ -381,6 +434,7 @@ async def install_imperium_vip_formatter(client, registry, logger=None):
     if chat_id is None:
         return None
 
+    house_doc_ids = _alias_document_ids(registry, required)
     processing = set()
 
     async def _process(message, source: str):
@@ -391,6 +445,11 @@ async def install_imperium_vip_formatter(client, registry, logger=None):
 
         text = getattr(message, "message", None) or getattr(message, "raw_text", None) or ""
         if not text:
+            return
+
+        # Prevent edit loops: every house-formatted Imperium message starts with
+        # one of the registry custom emojis. Once formatted, never format it again.
+        if any(_has_custom_emoji(message, doc_id, at_start=True) for doc_id in house_doc_ids):
             return
 
         parsed = parse_xauusd_signal(text)

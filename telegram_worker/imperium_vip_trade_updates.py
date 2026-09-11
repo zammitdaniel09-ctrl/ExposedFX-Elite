@@ -12,7 +12,7 @@ def _normalise(value: str) -> str:
     value = unicodedata.normalize("NFKC", value or "")
     value = value.replace("’", "'").replace("‘", "'")
     value = value.replace("–", "-").replace("—", "-")
-    value = value.replace("\u200b", " ").replace("\xa0", " ")
+    value = value.replace("\u200b", " ").replace("\xa0", " ").replace("\ufe0f", "")
     value = re.sub(r"[ \t]+", " ", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
     return value.strip()
@@ -56,10 +56,9 @@ def _extract_sl_move_price(raw: str) -> Optional[str]:
 def classify_trade_update(text: str) -> Optional[str]:
     """Classify Imperium trade-management updates without inventing facts.
 
-    The function is intentionally deterministic. It may clean wording and
-    combine multiple explicit actions from one source message, but it never
-    calculates a pip result, TP, SL, entry, percentage, or status that the
-    source message did not explicitly provide.
+    Wording can be cleaned and multiple explicit instructions can be combined,
+    but prices, pips, percentages and trade states are never calculated or
+    inferred when the source did not state them.
     """
     raw = _normalise(text)
     if not raw or len(raw) > 1200:
@@ -70,10 +69,7 @@ def classify_trade_update(text: str) -> Optional[str]:
     short = len(compact) <= 220
     pips = _positive_pips(raw)
 
-    # ------------------------------------------------------------------
-    # Terminal outcomes. These win over management commands because the
-    # position (or remaining position) has already closed.
-    # ------------------------------------------------------------------
+    # Terminal outcomes first.
     sl_hit = _has(
         r"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS)\b.{0,35}\b(?:HIT|HITTED|TOUCHED|TRIGGERED|TAGGED|SMASHED)\b|"
         r"\b(?:HIT|TOUCHED|TRIGGERED|TAGGED|SMASHED)\b.{0,35}\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS)\b|"
@@ -94,18 +90,27 @@ def classify_trade_update(text: str) -> Optional[str]:
     )
     if be_hit:
         lines = ["{GreenTick} BREAKEVEN HIT — TRADE CLOSED RISK-FREE"]
-        if pips and _has(r"\b(?:PROFIT|SECURED|BANKED|MADE|UP|PLUS|\+)\b", compact):
+        if pips and _has(r"(?:^|\s)\+\s*\d|\b(?:PROFIT|SECURED|BANKED|MADE|UP|PLUS)\b", compact):
             lines.append(f"{{GreenTick}} +{pips} PIPS SECURED")
         return "\n\n".join(lines)
 
-    # ------------------------------------------------------------------
-    # Build a composite update. One source message can legitimately contain
-    # TP result + pip result + close percentage + BE instruction.
-    # ------------------------------------------------------------------
+    # Long educational/chat messages can contain words such as TP/BE without
+    # being live instructions. Only allow long text when it starts like an
+    # explicit result/update.
+    if len(compact) > 360 and not _has(
+        r"^(?:TP\s*#?\s*\d+|T/P\s*#?\s*\d+|ALL\s+TP|FULL\s+TP|FINAL\s+TP|"
+        r"\+\s*\d|\d+(?:\.\d+)?\s*PIPS?|RAN\s+\d|RUNNING\s+\d|UP\s+\d|"
+        r"SL\b|S/L\b|STOPPED\s+OUT|BE\b|B/E\b|BREAKEVEN\b)",
+        compact,
+    ):
+        return None
+
     lines = []
 
+    # Target results.
     all_targets = _has(
-        r"\b(?:ALL\s+(?:TP'?S|TPS|TARGETS?)\s+(?:HIT|DONE|SMASHED|BANKED)|FULL\s+TP|FINAL\s+TP\s+(?:HIT|DONE)|TP\s*OPEN\s+(?:HIT|DONE))\b",
+        r"\b(?:ALL\s+(?:TP'?S|TPS|TARGETS?)\s+(?:HIT|DONE|SMASHED|BANKED)|"
+        r"FULL\s+TP|FINAL\s+TP\s+(?:HIT|DONE)|TP\s*OPEN\s+(?:HIT|DONE))\b",
         compact,
     )
     if all_targets:
@@ -127,7 +132,7 @@ def classify_trade_update(text: str) -> Optional[str]:
             else:
                 _append(lines, f"{{GreenTick}} TP{tp_num} HIT")
 
-    # Explicit negative result when it is not an SL event.
+    # Explicit non-SL loss result.
     loss_match = re.search(
         r"(?:^|\b)(?:-|MINUS\s+|LOST\s+|LOSS\s+OF\s+)(\d+(?:\.\d+)?)\s*PIPS?\b",
         compact,
@@ -136,19 +141,17 @@ def classify_trade_update(text: str) -> Optional[str]:
     if loss_match and not lines:
         _append(lines, f"{{RedCross}} -{loss_match.group(1)} PIPS")
 
-    # Positive pip result. Bare short updates such as "230 PIPS" are valid,
-    # but SL/spread/example/risk text is excluded so we do not relabel advice
-    # or a stop distance as profit.
+    # Positive pip updates, including short bare updates like "230 PIPS".
     pip_context_blocked = _has(
         r"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS|LOSS|LOST|DROPPED|DOWN|SPREAD|EXAMPLE|RISK|PIP\s*SL)\b",
         compact,
     )
     if pips and not lines and not pip_context_blocked:
         explicit_positive = _has(
-            r"(^|\s)\+\s*\d|\b(?:RAN|RUNNING|UP|PROFIT|SECURED|BANKED|MADE|GAINED|LOCKED)\b",
+            r"(?:^|\s)\+\s*\d|\b(?:RAN|RUNNING|UP|PROFIT|SECURED|BANKED|MADE|GAINED|LOCKED)\b",
             compact,
         )
-        bare_short = short and bool(re.fullmatch(r"[+\s\d.PIPSA-Z✔✅💥🔥!]+", compact))
+        bare_short = short and bool(re.fullmatch(r"[+\s\d.A-Z✔✅💥🔥!]+", compact))
         if explicit_positive or bare_short:
             if _has(r"\b(?:RAN|RUNNING|UP)\b", compact):
                 _append(lines, f"{{GreenTick}} +{pips} PIPS RUNNING")
@@ -157,10 +160,10 @@ def classify_trade_update(text: str) -> Optional[str]:
             else:
                 _append(lines, f"{{GreenTick}} +{pips} PIPS")
 
-    # Partial close / secure instructions. Preserve an explicit percentage.
+    # Partial/full profit-taking instructions. Preserve stated percentages.
     pct_match = PERCENT_RE.search(compact)
     close_pct = bool(pct_match) and _has(
-        r"\b(?:CLOSE|SECURE|TAKE|BANK|BOOK)\b.{0,30}%|\b%\b.{0,20}\b(?:CLOSE|SECURE|TAKE|BANK|BOOK)\b",
+        r"\b(?:CLOSE|SECURE|TAKE|BANK|BOOK)\b.{0,30}%",
         compact,
     )
     if close_pct:
@@ -171,31 +174,33 @@ def classify_trade_update(text: str) -> Optional[str]:
             _append(lines, f"{{Warning}} CLOSE {pct}% OF POSITION")
     elif _has(r"\b(?:SECURE|TAKE|CLOSE|BANK|BOOK)\b.{0,35}\b(?:PARTIALS?|SOME\s+PROFIT|HALF)\b", compact):
         _append(lines, "{GreenTick} SECURE PARTIAL PROFITS")
+    elif short and _has(r"\b(?:TAKE|SECURE|BANK|BOOK)\s+(?:THE\s+)?PROFITS?\b", compact):
+        _append(lines, "{GreenTick} SECURE PROFITS")
 
-    # Move SL to a literal price before generic BE handling.
+    # SL management.
     sl_price = _extract_sl_move_price(raw)
     if sl_price:
         _append(lines, f"{{Warning}} MOVE SL = {sl_price}")
 
-    # Move/protect at breakeven. Bare "BE" is only accepted in a management
-    # context; this prevents random chat containing the letters B/E matching.
     move_be = _has(
         r"\b(?:GO|MOVE|PUT|SET|BRING|SHIFT|MAKE)\b.{0,24}\b(?:BE|B/E|BREAK\s*-?\s*EVEN|BREAKEVEN|RISK\s*FREE|ENTRY)\b|"
         r"\b(?:BE|B/E|BREAK\s*-?\s*EVEN|BREAKEVEN)\s+(?:NOW|PLEASE|PLS|GUYS|ASAP)\b|"
-        r"\b(?:GO|MAKE)\s+RISK\s*FREE\b",
+        r"\b(?:GO|MAKE)\s+RISK\s*FREE\b|\bMEANT\s+(?:BE|B/E|BREAKEVEN|BREAK\s*-?\s*EVEN)\b",
         compact,
     )
     if move_be:
         _append(lines, "{GreenTick} MOVE SL TO BREAKEVEN")
 
-    # Trade is already protected/risk free but has not hit BE.
     if _has(r"\b(?:TRADE|POSITION|RUNNER|WE|WE'RE|WE ARE|NOW)\b.{0,30}\bRISK\s*FREE\b|\bFREE\s+TRADE\b", compact) and not move_be:
         _append(lines, "{GreenTick} TRADE IS RISK-FREE")
 
     if _has(r"\b(?:LOCK|SECURE|MOVE\s+SL\s+INTO|SL\s+IN)\b.{0,25}\bPROFIT\b", compact):
         _append(lines, "{GreenTick} LOCK IN PROFIT")
 
-    # Entry / order state.
+    if short and _has(r"\b(?:TRAIL|TRAILING)\s+(?:THE\s+)?(?:SL|S/L|STOP(?:\s*LOSS)?)\b", compact) and not sl_price:
+        _append(lines, "{Warning} TRAIL STOP LOSS")
+
+    # Entry/order state.
     if _has(r"\b(?:ENTRY|SIGNAL|SETUP|TRADE)\b.{0,28}\b(?:STILL\s+)?VALID\b|\bVALID\s+(?:ENTRY|SETUP|SIGNAL)\b", compact):
         _append(lines, "{GreenTick} ENTRY STILL VALID")
 
@@ -206,13 +211,12 @@ def classify_trade_update(text: str) -> Optional[str]:
     ):
         _append(lines, "{GreenTick} ENTRY ACTIVATED")
 
-    if _has(r"\b(?:ENTRY|SETUP|SIGNAL|ORDER)\b.{0,24}\b(?:INVALID|INVALIDATED|CANCELLED|CANCELED)\b", compact):
+    if _has(r"\b(?:ENTRY|SETUP|SIGNAL|ORDER|TRADE)\b.{0,24}\b(?:INVALID|INVALIDATED|CANCELLED|CANCELED)\b", compact):
         if _has(r"\b(?:ORDER|LIMIT|STOP)\b", compact):
             _append(lines, "{RedCross} PENDING ORDER CANCELLED")
         else:
             _append(lines, "{RedCross} TRADE CANCELLED")
 
-    # Delete pending then execute at market must be kept as two explicit steps.
     delete_enter = (
         _has(r"\b(?:DELETE|CANCEL|REMOVE)\b.{0,30}\b(?:PENDING|ORDER|LIMIT|STOP)\b", compact)
         and _has(r"\b(?:ENTER|ENTRY|GET\s+IN)\b.{0,24}\b(?:NOW|MARKET)\b", compact)
@@ -226,7 +230,7 @@ def classify_trade_update(text: str) -> Optional[str]:
     if _has(r"\b(?:DO\s+NOT|DON'T|DONT)\s+(?:ENTER|TAKE|EXECUTE)\b|\bNO\s+ENTRY\b", compact):
         _append(lines, "{RedCross} DO NOT ENTER")
 
-    if _has(r"\b(?:MISSED\s+(?:THE\s+)?ENTRY|ENTRY\s+MISSED|MISSED\s+IT|DO\s+NOT\s+CHASE|DON'T\s+CHASE|DONT\s+CHASE)\b", compact):
+    if _has(r"\b(?:MISSED\s+(?:THE\s+)?ENTRY|ENTRY\s+(?:WAS\s+)?MISSED|MISSED\s+IT|DO\s+NOT\s+CHASE|DON'T\s+CHASE|DONT\s+CHASE)\b", compact):
         _append(lines, "{Warning} ENTRY MISSED — DO NOT CHASE")
 
     if _has(r"\b(?:WAIT|HOLD\s+OFF|STAY\s+OUT)\b.{0,20}\b(?:ENTRY|TRADE|SIGNAL|FOR\s+NOW|NOW)\b", compact):
@@ -236,22 +240,21 @@ def classify_trade_update(text: str) -> Optional[str]:
     if _has(r"^(?:LAYER|LAYER\s+NOW|ADD\s+(?:ANOTHER\s+)?ENTRY|ADD\s+(?:ANOTHER\s+)?POSITION|SCALE\s+IN|ADD\s+ON)(?:\b|$)", compact):
         _append(lines, "{Warning} LAYER ENTRY NOW")
 
-    if _has(r"\b(?:RE-?ENTER|REENTRY|RE-ENTRY)\b.{0,20}\b(?:NOW|MARKET)?\b", compact):
+    if _has(r"\b(?:RE-?ENTER|REENTRY|RE-ENTRY)\b(?:.{0,20}\b(?:NOW|MARKET)\b)?", compact):
         _append(lines, "{Warning} RE-ENTER TRADE NOW")
 
     full_close = _has(
-        r"\b(?:CLOSE|EXIT)\s+(?:THE\s+)?(?:FULL|ALL|ENTIRE|WHOLE)?\s*(?:TRADE|POSITION)?\s*(?:NOW|HERE|FULLY)?\b|"
-        r"\b(?:YOU\s+CAN\s+)?CLOSE\s+FULL\s+TRADE\b|\bGET\s+OUT\s+NOW\b",
+        r"\b(?:CLOSE|EXIT)\s+(?:THE\s+)?(?:FULL|ALL|ENTIRE|WHOLE)?\s*(?:TRADE|POSITION|EVERYTHING)?\s*(?:NOW|HERE|FULLY)?\b|"
+        r"\b(?:YOU\s+CAN\s+)?CLOSE\s+FULL\s+TRADE\b|\bGET\s+OUT\s+NOW\b|\bMANUALLY\s+CLOSE\b",
         compact,
     )
-    # Avoid treating "close partial" as full close.
     if full_close and not _has(r"\b(?:PARTIAL|HALF|\d{1,3}\s*%)\b", compact):
         _append(lines, "{Warning} CLOSE TRADE NOW")
 
     if _has(r"\b(?:I'?M|I\s+AM|WE'?RE|WE\s+ARE)\s+STILL\s+IN\b|\b(?:TRADE|POSITION)\s+(?:IS\s+)?STILL\s+(?:ACTIVE|OPEN|RUNNING)\b", compact):
         _append(lines, "{GreenTick} TRADE STILL ACTIVE")
 
-    if _has(r"\b(?:LET|LEAVE)\s+(?:IT|RUNNER|REMAINDER|REST)\s+(?:RUN|RUNNING)\b|\bHOLD\s+(?:THE\s+)?(?:TRADE|RUNNER|REMAINDER)\b", compact):
+    if _has(r"\b(?:LET|LEAVE)\s+(?:IT|RUNNER|REMAINDER|REST)\s*(?:RUN|RUNNING)?\b|\bHOLD\s+(?:THE\s+)?(?:TRADE|RUNNER|REMAINDER)\b", compact):
         _append(lines, "{GreenTick} LET REMAINDER RUN")
 
     if _has(r"\b(?:REDUCE|CUT|LOWER)\s+(?:THE\s+)?RISK\b", compact):
@@ -260,10 +263,10 @@ def classify_trade_update(text: str) -> Optional[str]:
     if _has(r"\b(?:REMOVE|DELETE)\s+(?:THE\s+)?(?:SL|S/L|STOP\s*LOSS)\b", compact):
         _append(lines, "{Warning} REMOVE STOP LOSS")
 
-    # When a pip result is present in a composite action message and the TP
-    # branch did not already display it, make sure it is not silently lost.
+    # Keep an explicit pip result when the message also contains management
+    # instructions and the TP branch did not already display the pips.
     if pips and lines and not any("PIPS" in line for line in lines) and not pip_context_blocked:
-        if _has(r"\b(?:PROFIT|SECURED|BANKED|MADE|GAINED|RAN|RUNNING|UP|\+)\b", compact):
+        if _has(r"(?:^|\s)\+\s*\d|\b(?:PROFIT|SECURED|BANKED|MADE|GAINED|RAN|RUNNING|UP)\b", compact):
             _append(lines, f"{{GreenTick}} +{pips} PIPS")
 
     return "\n\n".join(lines) if lines else None
@@ -286,19 +289,23 @@ def run_update_self_test() -> Tuple[int, int]:
         "ALL TPS HIT": "{GreenTick} ALL TARGETS HIT",
         "TP2 HIT +250 PIPS!! CLOSE 70%": "{GreenTick} TP2 HIT — +250 PIPS\n\n{Warning} CLOSE 70% OF POSITION",
         "+300 PIPS YOU CAN CLOSE FULL TRADE HERE": "{GreenTick} +300 PIPS\n\n{Warning} CLOSE TRADE NOW",
+        "TP1 hit +100 pips secure partials and go BE": "{GreenTick} TP1 HIT — +100 PIPS\n\n{GreenTick} SECURE PARTIAL PROFITS\n\n{GreenTick} MOVE SL TO BREAKEVEN",
         "Secure partials and go breakeven": "{GreenTick} SECURE PARTIAL PROFITS\n\n{GreenTick} MOVE SL TO BREAKEVEN",
         "Go breakeven pls": "{GreenTick} MOVE SL TO BREAKEVEN",
+        "Meant Breakeven": "{GreenTick} MOVE SL TO BREAKEVEN",
         "go risk free": "{GreenTick} MOVE SL TO BREAKEVEN",
         "trade is risk free now": "{GreenTick} TRADE IS RISK-FREE",
         "move sl to 4360": "{Warning} MOVE SL = 4360",
+        "trail sl": "{Warning} TRAIL STOP LOSS",
         "lock in profit": "{GreenTick} LOCK IN PROFIT",
+        "take profit": "{GreenTick} SECURE PROFITS",
         "Entry still valid": "{GreenTick} ENTRY STILL VALID",
         "entry triggered": "{GreenTick} ENTRY ACTIVATED",
         "we're in": "{GreenTick} ENTRY ACTIVATED",
         "Delete n enter now": "{Warning} DELETE PENDING ORDER\n\n{Warning} ENTER MARKET NOW",
         "delete pending order": "{RedCross} PENDING ORDER CANCELLED",
         "do not enter": "{RedCross} DO NOT ENTER",
-        "missed entry dont chase": "{Warning} ENTRY MISSED — DO NOT CHASE",
+        "entry was missed dont chase": "{Warning} ENTRY MISSED — DO NOT CHASE",
         "layer now": "{Warning} LAYER ENTRY NOW",
         "re-enter now": "{Warning} RE-ENTER TRADE NOW",
         "close now": "{Warning} CLOSE TRADE NOW",
@@ -324,6 +331,7 @@ def run_update_self_test() -> Tuple[int, int]:
         "keep tp few pips higher example like now tp is 4360 keep tp at 4360.5",
         "ONLY FOR TESTING IGNORE.",
         "Communication is key I wanna make sure we all making money in here",
+        "Once tp1 hits the tp2 entry go Breakeven and let it run if it comes back to breakeven minor you made money from tp1 if it goes tp2 ur swimming in money and this is why splitting entries helps over a full session",
     )
     for source in safe:
         got = classify_trade_update(source)

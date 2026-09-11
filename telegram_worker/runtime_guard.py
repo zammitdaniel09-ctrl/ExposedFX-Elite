@@ -153,6 +153,27 @@ async def _auto_install_vip_emoji_registry(log=None):
                 if main_module is not None:
                     setattr(main_module, "IMPERIUM_VIP_FORMATTER", formatter_state)
 
+                # Same-client copy_message/send_message operations are not
+                # guaranteed to emit a NewMessage event back into this client.
+                # Topic 508 -> VIP topic 7 therefore gets a dedicated no-
+                # history destination poller as a deterministic backup.
+                from telegram_worker.imperium_vip_destination_poller import (
+                    install_imperium_vip_destination_poller,
+                )
+
+                destination_poller_state = await install_imperium_vip_destination_poller(
+                    client,
+                    registry,
+                    logger=log,
+                )
+
+                if main_module is not None:
+                    setattr(
+                        main_module,
+                        "IMPERIUM_VIP_DESTINATION_POLLER",
+                        destination_poller_state,
+                    )
+
             except Exception as exc:
                 if log:
                     log.exception(

@@ -13,6 +13,13 @@ IMPERIUM_SOURCE_TOPIC = 508
 IMPERIUM_DEST_CHAT = -1003726286301
 IMPERIUM_DEST_TOPIC = 7
 
+# Recovery is deliberately bounded. Normal operation should resolve from the
+# persistent message_map without any Telegram history scan at all.
+RECOVERY_CHAT_LIMIT = 800
+RECOVERY_TOPIC_LIMIT = 220
+TEXT_MATCH_MAX_AGE_SECONDS = 6 * 60 * 60
+MEDIA_MATCH_MAX_AGE_SECONDS = 10 * 60
+
 
 def _as_int(value) -> Optional[int]:
     try:
@@ -29,18 +36,36 @@ def _append_unique(values: List[int], value) -> None:
 
 
 def reply_source_ids(message) -> List[int]:
-    """Read reply IDs from both Message and MessageReplyHeader shapes."""
+    """Read real reply metadata from every Telethon shape we encounter.
+
+    Actual parent IDs are deliberately ordered before forum top/root IDs so a
+    reply inside a topic cannot accidentally resolve to the topic root first.
+    """
     ids: List[int] = []
 
-    for attr in ("reply_to_msg_id", "reply_to_top_id", "top_msg_id"):
-        _append_unique(ids, getattr(message, attr, None))
-
+    _append_unique(ids, getattr(message, "reply_to_msg_id", None))
     reply = getattr(message, "reply_to", None)
     if reply is not None:
-        for attr in ("reply_to_msg_id", "reply_to_top_id", "top_msg_id"):
+        _append_unique(ids, getattr(reply, "reply_to_msg_id", None))
+
+    for attr in ("reply_to_top_id", "top_msg_id"):
+        _append_unique(ids, getattr(message, attr, None))
+    if reply is not None:
+        for attr in ("reply_to_top_id", "top_msg_id"):
             _append_unique(ids, getattr(reply, attr, None))
 
     return ids
+
+
+def real_reply_source_ids(message, route: Dict[str, Any]) -> List[int]:
+    """Return only message parents, never the source forum-topic root."""
+    source_topic = _as_int(route.get("source_topic"))
+    out: List[int] = []
+    for value in reply_source_ids(message):
+        if source_topic is not None and int(value) == source_topic:
+            continue
+        _append_unique(out, value)
+    return out
 
 
 def _mapped_ids(main_module, value) -> List[int]:
@@ -80,7 +105,7 @@ def _exact_map_key(main_module, route: Dict[str, Any], source_msg_id: int) -> st
 
 
 def mapped_destination_ids(main_module, route: Dict[str, Any], source_msg_id: int) -> List[int]:
-    """Resolve mapping across int/list/dict and older compatible map entries."""
+    """Resolve mappings made by all historical map formats: int/list/dict."""
     message_map = getattr(main_module, "message_map", {}) or {}
     exact_key = _exact_map_key(main_module, route, int(source_msg_id))
 
@@ -88,6 +113,7 @@ def mapped_destination_ids(main_module, route: Dict[str, Any], source_msg_id: in
     if ids:
         return ids
 
+    # Compatibility with old maps whose keys were serialised manually.
     wanted = (
         str(int(route["source_chat"])),
         str(int(source_msg_id)),
@@ -108,10 +134,7 @@ def mapped_destination_ids(main_module, route: Dict[str, Any], source_msg_id: in
 
 
 def mapped_reply_id(main_module, message, route: Dict[str, Any]) -> Optional[int]:
-    source_topic = _as_int(route.get("source_topic"))
-    for source_msg_id in reply_source_ids(message):
-        if source_topic is not None and int(source_msg_id) == source_topic:
-            continue
+    for source_msg_id in real_reply_source_ids(message, route):
         ids = mapped_destination_ids(main_module, route, source_msg_id)
         if ids:
             return int(ids[0])
@@ -131,6 +154,11 @@ def _message_text(message) -> str:
         or getattr(message, "text", None)
         or ""
     )
+
+
+def _media_kind(message) -> str:
+    media = getattr(message, "media", None)
+    return type(media).__name__ if media is not None else ""
 
 
 def _is_imperium_route(route: Dict[str, Any]) -> bool:
@@ -186,41 +214,61 @@ def _date_distance_seconds(source_message, destination_message) -> float:
         return 10**12
 
 
-async def _destination_topic_messages(main_module, route: Dict[str, Any], limit: int = 400):
+def _message_mentions_topic(message, topic_id: int) -> bool:
+    """Identify destination forum membership without using routes_for()."""
+    wanted = _as_int(topic_id)
+    if wanted is None:
+        return False
+
+    values: List[int] = []
+    for attr in ("reply_to_top_id", "top_msg_id", "reply_to_msg_id"):
+        _append_unique(values, getattr(message, attr, None))
+    reply = getattr(message, "reply_to", None)
+    if reply is not None:
+        for attr in ("reply_to_top_id", "top_msg_id", "reply_to_msg_id"):
+            _append_unique(values, getattr(reply, attr, None))
+    return wanted in values
+
+
+async def _destination_topic_messages(main_module, route: Dict[str, Any], limit: int = RECOVERY_CHAT_LIMIT):
+    """Get recovery candidates while avoiding GetReplies flood pressure.
+
+    First scan normal chat history (GetHistory) and filter by Telegram forum
+    metadata locally. Only if that cannot see the topic do we issue the much
+    more flood-prone GetReplies request.
+    """
     client = getattr(main_module, "client", None)
     if client is None:
         return []
 
+    dest_chat = int(route["dest_chat"])
+    dest_topic = int(route["dest_topic"])
+
     try:
-        messages = await client.get_messages(
-            int(route["dest_chat"]),
-            limit=max(50, int(limit)),
-            reply_to=int(route["dest_topic"]),
+        messages = list(
+            await client.get_messages(
+                dest_chat,
+                limit=max(200, int(limit)),
+            )
+            or []
         )
-        return list(messages or [])
+        filtered = [m for m in messages if _message_mentions_topic(m, dest_topic)]
+        if filtered:
+            return filtered
     except Exception:
         pass
 
     try:
-        messages = await client.get_messages(
-            int(route["dest_chat"]),
-            limit=max(200, int(limit) * 2),
+        return list(
+            await client.get_messages(
+                dest_chat,
+                limit=RECOVERY_TOPIC_LIMIT,
+                reply_to=dest_topic,
+            )
+            or []
         )
     except Exception:
         return []
-
-    topic_fn = getattr(main_module, "topic_of", None)
-    if not callable(topic_fn):
-        return list(messages or [])
-
-    out = []
-    for candidate in messages or []:
-        try:
-            if int(topic_fn(candidate, int(route["dest_chat"]))) == int(route["dest_topic"]):
-                out.append(candidate)
-        except Exception:
-            continue
-    return out
 
 
 def _cache_mapping(main_module, route: Dict[str, Any], source_msg_id: int, dest_msg_id: int) -> None:
@@ -248,6 +296,29 @@ def _drop_exact_mapping(main_module, route: Dict[str, Any], source_msg_id: int) 
             save_fn()
 
 
+async def _mapped_parent_that_exists(main_module, route, source_parent_id) -> Optional[int]:
+    client = getattr(main_module, "client", None)
+    if client is None:
+        return None
+
+    existing = mapped_destination_ids(main_module, route, source_parent_id)
+    for destination_id in existing:
+        try:
+            current_parent = await client.get_messages(
+                int(route["dest_chat"]),
+                ids=int(destination_id),
+            )
+        except Exception:
+            current_parent = None
+
+        if current_parent:
+            return int(destination_id)
+
+    if existing:
+        _drop_exact_mapping(main_module, route, source_parent_id)
+    return None
+
+
 async def ensure_reply_mapping(
     main_module,
     message,
@@ -255,55 +326,39 @@ async def ensure_reply_mapping(
     registry=None,
     logger=None,
 ) -> Optional[int]:
-    """Resolve reply parent locally or recover it from destination topic history.
+    """Resolve the exact forwarded parent for any route.
 
-    Cross-account recovery is important when one Telegram worker forwarded the
-    parent and another worker later receives the reply: their local message-map
-    files are not shared. The destination message itself becomes the recovery
-    source of truth, matched by exact house-formatted text and nearest time.
+    Resolution order:
+      1. durable local source->destination map;
+      2. exact destination text/media recovery, used only if the map is absent;
+      3. fail closed to the topic root rather than guessing a wrong parent.
+
+    This works for text, captions, albums and media-only parents. It never bulk
+    copies history and therefore preserves the live-only/no-history contract.
     """
     logger = logger or log
-    source_topic = _as_int(route.get("source_topic"))
-    reply_ids = reply_source_ids(message)
-    if not reply_ids:
+    parent_ids = real_reply_source_ids(message, route)
+    if not parent_ids:
         return None
 
     client = getattr(main_module, "client", None)
     if client is None:
         return None
 
-    for source_parent_id in reply_ids:
-        if source_topic is not None and int(source_parent_id) == source_topic:
-            continue
-
-        existing = mapped_destination_ids(main_module, route, source_parent_id)
-        if existing:
-            try:
-                current_parent = await client.get_messages(
-                    int(route["dest_chat"]),
-                    ids=int(existing[0]),
-                )
-            except Exception:
-                current_parent = None
-
-            if current_parent:
-                logger.info(
-                    "[REPLY MAP HIT] source=%s_%s parent=%s dest=%s_%s parent_dest=%s",
-                    route.get("source_chat"),
-                    route.get("source_topic"),
-                    source_parent_id,
-                    route.get("dest_chat"),
-                    route.get("dest_topic"),
-                    existing[0],
-                )
-                return int(existing[0])
-
-            logger.warning(
-                "[REPLY STALE MAP DROPPED] source_parent=%s stale_dest_parent=%s",
+    for source_parent_id in parent_ids:
+        mapped = await _mapped_parent_that_exists(main_module, route, source_parent_id)
+        if mapped:
+            logger.info(
+                "[REPLY MAP HIT] route=%s source=%s_%s parent=%s dest=%s_%s parent_dest=%s",
+                route.get("name"),
+                route.get("source_chat"),
+                route.get("source_topic"),
                 source_parent_id,
-                existing[0],
+                route.get("dest_chat"),
+                route.get("dest_topic"),
+                mapped,
             )
-            _drop_exact_mapping(main_module, route, source_parent_id)
+            return mapped
 
         try:
             parent = await client.get_messages(
@@ -312,7 +367,8 @@ async def ensure_reply_mapping(
             )
         except Exception as exc:
             logger.warning(
-                "[REPLY PARENT FETCH FAILED] source_parent=%s %s: %s",
+                "[REPLY PARENT FETCH FAILED] route=%s source_parent=%s %s: %s",
+                route.get("name"),
                 source_parent_id,
                 type(exc).__name__,
                 exc,
@@ -324,22 +380,34 @@ async def ensure_reply_mapping(
 
         expected = _expected_destination_text(parent, route, registry)
         expected_key = _normalise_text(expected)
-        if not expected_key:
-            continue
+        source_media_kind = _media_kind(parent)
 
-        # A different forwarding account may still be creating the parent.
-        # Retry briefly before giving up and falling back to the topic root.
-        for attempt, delay in enumerate((0.0, 0.25, 0.75, 1.5), start=1):
+        for attempt, delay in enumerate((0.0, 0.20, 0.60, 1.20), start=1):
             if delay:
                 await asyncio.sleep(delay)
 
             candidates = await _destination_topic_messages(main_module, route)
-            matches = [
-                candidate
-                for candidate in candidates
-                if _normalise_text(_message_text(candidate)) == expected_key
-                and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
-            ]
+            if expected_key:
+                matches = [
+                    candidate
+                    for candidate in candidates
+                    if _normalise_text(_message_text(candidate)) == expected_key
+                    and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
+                ]
+                max_age = TEXT_MATCH_MAX_AGE_SECONDS
+            elif source_media_kind:
+                # Media-only recovery is deliberately stricter: same Telegram
+                # media class and a close timestamp, otherwise we do not guess.
+                matches = [
+                    candidate
+                    for candidate in candidates
+                    if _media_kind(candidate) == source_media_kind
+                    and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
+                ]
+                max_age = MEDIA_MATCH_MAX_AGE_SECONDS
+            else:
+                matches = []
+                max_age = 0
 
             if not matches:
                 continue
@@ -349,18 +417,25 @@ async def ensure_reply_mapping(
             chosen_id = int(chosen.id)
             distance = _date_distance_seconds(parent, chosen)
 
-            if distance > 6 * 60 * 60:
-                logger.warning(
-                    "[REPLY CROSS-ACCOUNT REJECTED OLD MATCH] source_parent=%s dest_parent=%s distance=%.1fs",
-                    source_parent_id,
-                    chosen_id,
-                    distance,
-                )
+            if distance > max_age:
                 break
+
+            # For media-only recovery, reject ambiguous near-equal candidates.
+            if not expected_key and len(matches) > 1:
+                second_distance = _date_distance_seconds(parent, matches[1])
+                if abs(second_distance - distance) < 2.0:
+                    logger.warning(
+                        "[REPLY MEDIA RECOVERY AMBIGUOUS] route=%s source_parent=%s candidates=%s",
+                        route.get("name"),
+                        source_parent_id,
+                        len(matches),
+                    )
+                    break
 
             _cache_mapping(main_module, route, source_parent_id, chosen_id)
             logger.warning(
-                "[REPLY CROSS-ACCOUNT RECOVERED] source=%s_%s parent=%s dest=%s_%s parent_dest=%s candidates=%s distance=%.1fs attempt=%s",
+                "[REPLY RECOVERED] route=%s source=%s_%s parent=%s dest=%s_%s parent_dest=%s candidates=%s distance=%.1fs attempt=%s mode=%s",
+                route.get("name"),
                 route.get("source_chat"),
                 route.get("source_topic"),
                 source_parent_id,
@@ -370,22 +445,26 @@ async def ensure_reply_mapping(
                 len(matches),
                 distance,
                 attempt,
+                "text" if expected_key else "media",
             )
             return chosen_id
 
         logger.warning(
-            "[REPLY CROSS-ACCOUNT UNRESOLVED] source_parent=%s dest=%s_%s expected=%r",
+            "[REPLY UNRESOLVED] route=%s source=%s_%s msg=%s parent=%s dest=%s_%s",
+            route.get("name"),
+            route.get("source_chat"),
+            route.get("source_topic"),
+            getattr(message, "id", None),
             source_parent_id,
             route.get("dest_chat"),
             route.get("dest_topic"),
-            expected[:120],
         )
 
     return None
 
 
 def install_reply_hardening(main_module, logger=None):
-    """Patch reply parsing/mapping while preserving live-only no-history rules."""
+    """Install reply preservation globally across every main-worker route."""
     logger = logger or log
 
     if main_module is None:
@@ -398,6 +477,13 @@ def install_reply_hardening(main_module, logger=None):
     if not isinstance(getattr(main_module, "message_map", None), dict):
         raise RuntimeError("worker message_map unavailable")
 
+    original_copy_one = getattr(main_module, "copy_one", None)
+    original_copy_album = getattr(main_module, "copy_album", None)
+    if not callable(original_copy_one):
+        raise RuntimeError("worker copy_one unavailable")
+
+    # Startup regression tests for the Telegram metadata forms that caused the
+    # historical failures.
     direct = SimpleNamespace(reply_to_msg_id=123, reply_to_top_id=508, top_msg_id=None, reply_to=None)
     nested = SimpleNamespace(
         reply_to_msg_id=None,
@@ -405,12 +491,17 @@ def install_reply_hardening(main_module, logger=None):
         top_msg_id=None,
         reply_to=SimpleNamespace(reply_to_msg_id=456, reply_to_top_id=508, top_msg_id=None),
     )
+    root_only = SimpleNamespace(reply_to_msg_id=508, reply_to_top_id=508, top_msg_id=None, reply_to=None)
     if reply_source_ids(direct) != [123, 508]:
         raise RuntimeError("reply hardening direct-ID self-test failed")
     if reply_source_ids(nested) != [456, 508]:
         raise RuntimeError("reply hardening nested-ID self-test failed")
+    if real_reply_source_ids(root_only, {"source_topic": 508}) != []:
+        raise RuntimeError("reply hardening topic-root self-test failed")
     if _mapped_ids(main_module, [901, 902]) != [901, 902]:
         raise RuntimeError("reply hardening list-map self-test failed")
+    if _mapped_ids(main_module, {"a": 903, "b": 904}) != [903, 904]:
+        raise RuntimeError("reply hardening dict-map self-test failed")
 
     def patched_reply_source_ids(message):
         return reply_source_ids(message)
@@ -419,8 +510,8 @@ def install_reply_hardening(main_module, logger=None):
         return mapped_reply_id(main_module, message, route)
 
     def patched_reply_target(message, route):
-        reply_ids = reply_source_ids(message)
-        if not reply_ids:
+        parents = real_reply_source_ids(message, route)
+        if not parents:
             return route["dest_topic"]
 
         mapped = mapped_reply_id(main_module, message, route)
@@ -428,32 +519,75 @@ def install_reply_hardening(main_module, logger=None):
             return mapped
 
         logger.warning(
-            "[REPLY FALLBACK TO TOPIC ROOT] route=%s source=%s_%s msg=%s reply_ids=%s dest=%s_%s",
+            "[REPLY FALLBACK TO TOPIC ROOT] route=%s source=%s_%s msg=%s real_parent_ids=%s dest=%s_%s",
             route.get("name"),
             route.get("source_chat"),
             route.get("source_topic"),
             getattr(message, "id", None),
-            reply_ids,
+            parents,
             route.get("dest_chat"),
             route.get("dest_topic"),
         )
         return route["dest_topic"]
 
+    async def global_copy_one(message, route, edited=False, ensure_reply=True):
+        if ensure_reply and real_reply_source_ids(message, route):
+            # Fast path: a correct durable mapping costs no history request.
+            if mapped_reply_id(main_module, message, route) is None:
+                registry = getattr(main_module, "EMOJI_REGISTRY", None)
+                await ensure_reply_mapping(
+                    main_module,
+                    message,
+                    route,
+                    registry=registry,
+                    logger=logger,
+                )
+        return await original_copy_one(
+            message,
+            route,
+            edited=edited,
+            ensure_reply=ensure_reply,
+        )
+
+    async def global_copy_album(messages, route):
+        messages = list(messages or [])
+        probe = next(
+            (m for m in messages if real_reply_source_ids(m, route)),
+            messages[0] if messages else None,
+        )
+        if probe is not None and real_reply_source_ids(probe, route):
+            if mapped_reply_id(main_module, probe, route) is None:
+                registry = getattr(main_module, "EMOJI_REGISTRY", None)
+                await ensure_reply_mapping(
+                    main_module,
+                    probe,
+                    route,
+                    registry=registry,
+                    logger=logger,
+                )
+        return await original_copy_album(messages, route)
+
     main_module.reply_source_ids = patched_reply_source_ids
     main_module.mapped_reply_id = patched_mapped_reply_id
     main_module.reply_target = patched_reply_target
+    main_module.copy_one = global_copy_one
+    if callable(original_copy_album):
+        main_module.copy_album = global_copy_album
 
     state = {
         "reply_metadata": "direct+header",
+        "topic_root_filter": True,
         "map_values": "int+list+dict",
-        "cross_account_recovery": True,
-        "cross_account_retries": True,
-        "stale_map_verification": True,
+        "global_copy_one": True,
+        "global_copy_album": callable(original_copy_album),
+        "all_routes": True,
+        "recovery": "local-map->history-text/media->root",
+        "history_scan": "GetHistory-first/GetReplies-last",
         "no_history_parent_copy": "preserved",
     }
     setattr(main_module, "_REPLY_HARDENING_STATE", state)
 
     logger.warning(
-        "[REPLY HARDENING ACTIVE] direct_ids=True nested_header=True list_maps=True cross_account_recovery=True retries=True stale_map_check=True old_parent_import=False"
+        "[REPLY HARDENING V2 ACTIVE] all_routes=True direct_ids=True nested_header=True topic_root_filter=True list_maps=True dict_maps=True text_recovery=True media_recovery=True gethistory_first=True getreplies_last=True old_parent_import=False"
     )
     return state

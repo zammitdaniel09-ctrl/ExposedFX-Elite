@@ -60,14 +60,16 @@ def _remove_own_lock(lock_file: Path, pid: int):
 
 
 async def _auto_install_vip_emoji_registry(log=None):
-    """Attach Saved Messages emoji registry and the 508 -> VIP7 formatter.
+    """Attach the Saved Messages emoji registry and Imperium VIP formatter.
 
-    The route-specific destination poller is deliberately the only writer for
-    Imperium VIP topic 7. Same-client copy/send operations do not reliably emit
-    NewMessage events back into the same Telethon client, and running both an
-    event formatter and a destination poller creates races on composite trade
-    updates. The poller therefore owns signals and trade-management updates for
-    this route after the emoji registry is ready.
+    Primary path:
+      source -1004367822325 / topic 508 is formatted synchronously inside the
+      worker's own copy/edit path before it is sent to -1003726286301 / topic 7.
+
+    This deliberately removes the previous dependency on Telegram generating a
+    destination-side NewMessage event or on a GetReplies polling loop noticing
+    the copy after the fact. The destination poller is retained only as an
+    emergency startup fallback if the inline hook itself cannot be installed.
     """
     if os.environ.get("VIP_EMOJI_REGISTRY_ENABLED", "1").strip() != "1":
         if log:
@@ -134,42 +136,72 @@ async def _auto_install_vip_emoji_registry(log=None):
                     "START_COMMAND_CHANGE_REQUIRED=False"
                 )
 
+            inline_state = None
+
             try:
-                from telegram_worker.imperium_vip_destination_poller import (
-                    install_imperium_vip_destination_poller,
+                from telegram_worker.imperium_vip_inline_hook import (
+                    install_imperium_vip_inline_hook,
                 )
 
-                destination_poller_state = await install_imperium_vip_destination_poller(
-                    client,
+                inline_state = install_imperium_vip_inline_hook(
+                    main_module,
                     registry,
                     logger=log,
                 )
 
                 if main_module is not None:
-                    setattr(
-                        main_module,
-                        "IMPERIUM_VIP_DESTINATION_POLLER",
-                        destination_poller_state,
-                    )
-                    # Explicitly expose that the route-specific poller is the
-                    # single writer; no global Imperium formatter handlers are
-                    # installed for topic 7 in this runtime.
-                    setattr(main_module, "IMPERIUM_VIP_FORMATTER", None)
+                    setattr(main_module, "IMPERIUM_VIP_FORMATTER", inline_state)
+                    setattr(main_module, "IMPERIUM_VIP_DESTINATION_POLLER", None)
 
                 if log:
                     log.warning(
-                        "[IMPERIUM VIP SINGLE WRITER ACTIVE] "
+                        "[IMPERIUM VIP PRIMARY FORMATTER ACTIVE] "
                         "source=-1004367822325_508 dest=-1003726286301_7 "
-                        "writer=destination_poller global_event_formatter=False"
+                        "writer=inline_forward_path destination_polling=False"
                     )
 
             except Exception as exc:
                 if log:
                     log.exception(
-                        "[IMPERIUM VIP FORMATTER INSTALL FAILED] %s: %s",
+                        "[IMPERIUM VIP INLINE HOOK INSTALL FAILED] %s: %s",
                         type(exc).__name__,
                         exc,
                     )
+
+            # Emergency fallback only. Normally this does not run.
+            if inline_state is None:
+                try:
+                    from telegram_worker.imperium_vip_destination_poller import (
+                        install_imperium_vip_destination_poller,
+                    )
+
+                    destination_poller_state = await install_imperium_vip_destination_poller(
+                        client,
+                        registry,
+                        logger=log,
+                    )
+
+                    if main_module is not None:
+                        setattr(
+                            main_module,
+                            "IMPERIUM_VIP_DESTINATION_POLLER",
+                            destination_poller_state,
+                        )
+
+                    if log:
+                        log.warning(
+                            "[IMPERIUM VIP FORMATTER FALLBACK ACTIVE] "
+                            "source=-1004367822325_508 dest=-1003726286301_7 "
+                            "writer=destination_poller reason=inline_hook_unavailable"
+                        )
+
+                except Exception as exc:
+                    if log:
+                        log.exception(
+                            "[IMPERIUM VIP FORMATTER FALLBACK FAILED] %s: %s",
+                            type(exc).__name__,
+                            exc,
+                        )
 
             return
 
@@ -269,12 +301,8 @@ async def start_runtime_guard(service_name: str, log=None):
         finally:
             _remove_own_lock(lock_file, pid)
 
-    # Start refreshing the lock BEFORE any optional startup delay.
     heartbeat_task = asyncio.create_task(heartbeat_loop())
 
-    # The singleton lock already protects the main VIP Telegram session from
-    # deployment overlap, so its old 180s Railway variable is intentionally
-    # ignored. Other services keep their configurable delay behaviour.
     if is_main_vip:
         connect_delay = 0
     else:
@@ -299,8 +327,6 @@ async def start_runtime_guard(service_name: str, log=None):
 
     send_alert(f"✅ <b>{service_name}</b> started")
 
-    # Main VIP service: install the emoji collector and the route-specific
-    # single-writer formatter automatically. No Railway start-command change.
     if is_main_vip:
         asyncio.create_task(_auto_install_vip_emoji_registry(log))
 

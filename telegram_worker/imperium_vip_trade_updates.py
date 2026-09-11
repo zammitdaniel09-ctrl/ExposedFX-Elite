@@ -94,13 +94,14 @@ def classify_trade_update(text: str) -> Optional[str]:
             lines.append(f"{{GreenTick}} +{pips} PIPS SECURED")
         return "\n\n".join(lines)
 
-    # Long educational/chat messages can contain words such as TP/BE without
-    # being live instructions. Only allow long text when it starts like an
-    # explicit result/update.
-    if len(compact) > 360 and not _has(
+    # Long explanatory messages often contain TP/BE words. Unless they begin
+    # like a live result/action, leave them untouched.
+    if len(compact) > 180 and not _has(
         r"^(?:TP\s*#?\s*\d+|T/P\s*#?\s*\d+|ALL\s+TP|FULL\s+TP|FINAL\s+TP|"
         r"\+\s*\d|\d+(?:\.\d+)?\s*PIPS?|RAN\s+\d|RUNNING\s+\d|UP\s+\d|"
-        r"SL\b|S/L\b|STOPPED\s+OUT|BE\b|B/E\b|BREAKEVEN\b)",
+        r"SL\b|S/L\b|STOPPED\s+OUT|BE\b|B/E\b|BREAKEVEN\b|GO\s+BE|GO\s+BREAKEVEN|"
+        r"MOVE\s+SL|SECURE\s+PARTIAL|TAKE\s+PROFIT|CLOSE\b|ENTRY\b|LAYER\b|"
+        r"DELETE\b|CANCEL\b|DO\s+NOT\s+ENTER|MISSED\s+ENTRY|RE-?ENTER\b|TRAIL\s+SL|LOCK\s+IN\s+PROFIT)",
         compact,
     ):
         return None
@@ -216,6 +217,9 @@ def classify_trade_update(text: str) -> Optional[str]:
             _append(lines, "{RedCross} PENDING ORDER CANCELLED")
         else:
             _append(lines, "{RedCross} TRADE CANCELLED")
+
+    if _has(r"\b(?:CANCEL|DELETE|REMOVE)\b.{0,24}\b(?:TRADE|SETUP|SIGNAL)\b", compact):
+        _append(lines, "{RedCross} TRADE CANCELLED")
 
     delete_enter = (
         _has(r"\b(?:DELETE|CANCEL|REMOVE)\b.{0,30}\b(?:PENDING|ORDER|LIMIT|STOP)\b", compact)

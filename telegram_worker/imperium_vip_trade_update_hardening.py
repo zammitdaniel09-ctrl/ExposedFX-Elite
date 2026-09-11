@@ -49,7 +49,6 @@ def _missed_target(raw: str, compact: str) -> Optional[str]:
             pips = match.group(2)
             return f"{{Warning}} {_target_label(number)} MISSED BY {pips} PIPS"
 
-    # Explicit target miss without a stated distance: preserve the fact, do not invent pips.
     match = re.search(
         r"\b(?:MISSED\s+(?:THE\s+)?(?:TP|T/P|TARGET)|(?:TP|T/P|TARGET)\s*#?\s*(\d+)?\s+(?:WAS\s+)?MISSED)\b",
         compact,
@@ -63,7 +62,7 @@ def _missed_target(raw: str, compact: str) -> Optional[str]:
 
 
 def _multi_target_hit(raw: str, compact: str) -> Optional[str]:
-    """Handle TP2,3 / TP2 & 3 / TP2/TP3 / TP2 AND TP3 without dropping a target."""
+    """Handle TP2,3 / TP2 & 3 / TP2/TP3 / TP2 AND TP3 without dropping targets."""
     match = re.search(
         r"\b(?:TP|T/P|TARGET)\s*#?\s*\d+"
         r"(?:\s*(?:,|&|/|\+|\bAND\b)\s*(?:(?:TP|T/P|TARGET)\s*#?\s*)?\d+)+",
@@ -100,23 +99,17 @@ def _multi_target_hit(raw: str, compact: str) -> Optional[str]:
 
 
 def classify_trade_update(text: str) -> Optional[str]:
-    """Bulletproof front-end for the normal Imperium update classifier.
-
-    High-risk ambiguous/negative phrases are handled before the legacy broad
-    pip matcher. The base classifier remains the fallback for established
-    variants, so this is additive rather than a rewrite.
-    """
+    """Bulletproof front-end for the normal Imperium update classifier."""
     raw = _normalise(text)
     if not raw:
         return None
     compact = re.sub(r"\s+", " ", raw.upper()).strip()
 
-    # 1) Negative target context must win before any bare-pips logic.
+    # Negative target context must win before broad bare-pips handling.
     missed = _missed_target(raw, compact)
     if missed:
         return missed
 
-    # Never turn phrases such as "didn't hit TP by 10 pips" into +10 PIPS.
     if re.search(
         r"\b(?:DIDN'T|DIDNT|DID\s+NOT|NOT|NEVER)\b.{0,35}\b(?:HIT|REACH|TOUCH)\b.{0,25}\b(?:TP|T/P|TARGET)\b",
         compact,
@@ -124,12 +117,23 @@ def classify_trade_update(text: str) -> Optional[str]:
     ):
         return None
 
-    # 2) Preserve every explicitly-mentioned target in combined TP updates.
+    # Distance/miss commentary is not a realised pip result.
+    if PIP_RE.search(raw) and re.search(
+        r"\b(?:MISSED|MISS|AWAY|SHORT|SHY|OFF\s+BY|NEEDED|NEED|FROM\s+(?:TP|T/P|TARGET))\b",
+        compact,
+        re.IGNORECASE,
+    ) and not re.search(
+        r"(?:^|\s)\+\s*\d|\b(?:PROFIT|SECURED|BANKED|MADE|GAINED|RAN|RUNNING|UP)\b",
+        compact,
+        re.IGNORECASE,
+    ):
+        return None
+
     multi = _multi_target_hit(raw, compact)
     if multi:
         return multi
 
-    # 3) Unnumbered explicit TP hit.
+    # Unnumbered explicit TP hit.
     if (
         re.search(r"\b(?:TP|T/P|TARGET)\b.{0,40}\b(?:HIT|SMASHED|DONE|TAGGED|TOUCHED)\b", compact, re.IGNORECASE)
         or re.search(r"\b(?:HIT|SMASHED|DONE|TAGGED|TOUCHED)\b.{0,40}\b(?:TP|T/P|TARGET)\b", compact, re.IGNORECASE)
@@ -137,7 +141,6 @@ def classify_trade_update(text: str) -> Optional[str]:
         pips = _positive_pips(raw)
         return f"{{GreenTick}} TP HIT — +{pips} PIPS" if pips else "{GreenTick} TP HIT"
 
-    # 4) Explicit close-at-entry instruction is actionable and distinct from BE being hit.
     if re.search(
         r"\b(?:CLOSE|EXIT)\s+(?:THE\s+)?(?:TRADE\s+|POSITION\s+)?(?:AT\s+)?ENTRY\s*(?:NOW|HERE|ASAP)?\b",
         compact,
@@ -145,7 +148,6 @@ def classify_trade_update(text: str) -> Optional[str]:
     ):
         return "{Warning} CLOSE AT ENTRY NOW"
 
-    # 5) Source wording often says CHANGE rather than MOVE SL.
     match = re.search(
         rf"\b(?:CHANGE|ADJUST|UPDATE)\s+(?:THE\s+)?(?:SL|S/L|STOP(?:\s*LOSS)?)\s+(?:TO|AT|@)\s*({PRICE})\b",
         compact,
@@ -161,7 +163,6 @@ def run_update_self_test() -> Tuple[int, int]:
     base_count, base_safe = _base_self_test()
 
     cases = {
-        # Exact variants observed in the 11 Sep XAU session.
         "TP1💥130 PIPs": "{GreenTick} TP1 HIT — +130 PIPS",
         "+ 220 PIPs": "{GreenTick} +220 PIPS",
         "TP2💥260 PIPs": "{GreenTick} TP2 HIT — +260 PIPS",

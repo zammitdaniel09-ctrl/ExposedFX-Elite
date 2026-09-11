@@ -2,7 +2,6 @@ import re
 import unicodedata
 from typing import Optional, Tuple
 
-
 PIP_RE = re.compile(r"([+-]?\s*\d+(?:\.\d+)?)\s*PIPS?\b", re.IGNORECASE)
 PERCENT_RE = re.compile(r"\b(\d{1,3})\s*%")
 PRICE = r"\d{1,7}(?:\.\d+)?"
@@ -18,6 +17,10 @@ def _normalise(value: str) -> str:
     return value.strip()
 
 
+def _has(pattern: str, text: str) -> bool:
+    return bool(re.search(pattern, text, re.IGNORECASE))
+
+
 def _pip_number(raw: str) -> Optional[str]:
     m = PIP_RE.search(raw)
     if not m:
@@ -30,10 +33,6 @@ def _positive_pips(raw: str) -> Optional[str]:
     if not value:
         return None
     return value.lstrip("+").lstrip("-")
-
-
-def _has(pattern: str, text: str) -> bool:
-    return bool(re.search(pattern, text, re.IGNORECASE))
 
 
 def _append(lines, value: Optional[str]):
@@ -54,53 +53,42 @@ def _extract_sl_move_price(raw: str) -> Optional[str]:
 
 
 def classify_trade_update(text: str) -> Optional[str]:
-    """Classify Imperium trade-management updates without inventing facts.
-
-    Wording can be cleaned and multiple explicit instructions can be combined,
-    but prices, pips, percentages and trade states are never calculated or
-    inferred when the source did not state them.
-    """
+    """Deterministically clean Imperium trade updates without inventing facts."""
     raw = _normalise(text)
     if not raw or len(raw) > 1200:
         return None
 
-    u = raw.upper()
-    compact = re.sub(r"\s+", " ", u).strip()
+    compact = re.sub(r"\s+", " ", raw.upper()).strip()
     short = len(compact) <= 220
     pips = _positive_pips(raw)
 
-    # Terminal outcomes first.
-    sl_hit = _has(
+    # Terminal outcomes always win.
+    if _has(
         r"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS)\b.{0,35}\b(?:HIT|HITTED|TOUCHED|TRIGGERED|TAGGED|SMASHED)\b|"
         r"\b(?:HIT|TOUCHED|TRIGGERED|TAGGED|SMASHED)\b.{0,35}\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS)\b|"
         r"\bSTOPPED\s+OUT\b|\bKNOCKED\s+(?:US\s+)?OUT\b",
         compact,
-    )
-    if sl_hit:
-        if pips:
-            return f"{{RedCross}} SL HIT — -{pips} PIPS"
-        return "{RedCross} SL HIT"
+    ):
+        return f"{{RedCross}} SL HIT — -{pips} PIPS" if pips else "{RedCross} SL HIT"
 
-    be_hit = _has(
+    if _has(
         r"\b(?:BE|B/E|BREAK\s*-?\s*EVEN|BREAKEVEN)\b.{0,30}\b(?:HIT|HITTED|TOUCHED|TAGGED|TRIGGERED|CLOSED|STOPPED)\b|"
         r"\b(?:HIT|TOUCHED|TAGGED|TRIGGERED|CLOSED|STOPPED)\b.{0,30}\b(?:BE|B/E|BREAK\s*-?\s*EVEN|BREAKEVEN)\b|"
         r"\b(?:CLOSED|STOPPED)\s+(?:OUT\s+)?(?:AT\s+)?(?:BE|B/E|BREAK\s*-?\s*EVEN|BREAKEVEN|ENTRY)\b|"
         r"\bSTOP\s+(?:AT\s+)?ENTRY\s+(?:HIT|TOUCHED|TAGGED|TRIGGERED)\b",
         compact,
-    )
-    if be_hit:
+    ):
         lines = ["{GreenTick} BREAKEVEN HIT — TRADE CLOSED RISK-FREE"]
         if pips and _has(r"(?:^|\s)\+\s*\d|\b(?:PROFIT|SECURED|BANKED|MADE|UP|PLUS)\b", compact):
             lines.append(f"{{GreenTick}} +{pips} PIPS SECURED")
         return "\n\n".join(lines)
 
-    # Long explanatory messages often contain TP/BE words. Unless they begin
-    # like a live result/action, leave them untouched.
+    # Do not transform long commentary merely because it mentions TP/BE.
     if len(compact) > 180 and not _has(
         r"^(?:TP\s*#?\s*\d+|T/P\s*#?\s*\d+|ALL\s+TP|FULL\s+TP|FINAL\s+TP|"
         r"\+\s*\d|\d+(?:\.\d+)?\s*PIPS?|RAN\s+\d|RUNNING\s+\d|UP\s+\d|"
         r"SL\b|S/L\b|STOPPED\s+OUT|BE\b|B/E\b|BREAKEVEN\b|GO\s+BE|GO\s+BREAKEVEN|"
-        r"MOVE\s+SL|SECURE\s+PARTIAL|TAKE\s+PROFIT|CLOSE\b|ENTRY\b|LAYER\b|"
+        r"MOVE\s+SL|SECURE\s+PARTIAL|TAKE\s+PROFIT|CLOSE\b|EXIT\b|ENTRY\b|LAYER\b|"
         r"DELETE\b|CANCEL\b|DO\s+NOT\s+ENTER|MISSED\s+ENTRY|RE-?ENTER\b|TRAIL\s+SL|LOCK\s+IN\s+PROFIT)",
         compact,
     ):
@@ -108,50 +96,32 @@ def classify_trade_update(text: str) -> Optional[str]:
 
     lines = []
 
-    # Target results.
+    # TP / target results.
     all_targets = _has(
         r"\b(?:ALL\s+(?:TP'?S|TPS|TARGETS?)\s+(?:HIT|DONE|SMASHED|BANKED)|"
         r"FULL\s+TP|FINAL\s+TP\s+(?:HIT|DONE)|TP\s*OPEN\s+(?:HIT|DONE))\b",
         compact,
     )
     if all_targets:
-        if pips:
-            _append(lines, f"{{GreenTick}} ALL TARGETS HIT — +{pips} PIPS")
-        else:
-            _append(lines, "{GreenTick} ALL TARGETS HIT")
+        _append(lines, f"{{GreenTick}} ALL TARGETS HIT — +{pips} PIPS" if pips else "{GreenTick} ALL TARGETS HIT")
 
     tp_match = re.search(r"\b(?:TP|T/P|TARGET)\s*#?\s*(\d+)\b", compact, re.IGNORECASE)
     if tp_match and not all_targets:
         tp_num = tp_match.group(1)
-        tp_result = _has(
-            r"\b(?:HIT|HITTED|TOUCHED|TAGGED|TRIGGERED|DONE|BANKED|SMASHED|CLEARED)\b",
-            compact,
-        ) or bool(PIP_RE.search(raw))
-        if tp_result:
-            if pips:
-                _append(lines, f"{{GreenTick}} TP{tp_num} HIT — +{pips} PIPS")
-            else:
-                _append(lines, f"{{GreenTick}} TP{tp_num} HIT")
+        if _has(r"\b(?:HIT|HITTED|TOUCHED|TAGGED|TRIGGERED|DONE|BANKED|SMASHED|CLEARED)\b", compact) or bool(PIP_RE.search(raw)):
+            _append(lines, f"{{GreenTick}} TP{tp_num} HIT — +{pips} PIPS" if pips else f"{{GreenTick}} TP{tp_num} HIT")
 
-    # Explicit non-SL loss result.
-    loss_match = re.search(
-        r"(?:^|\b)(?:-|MINUS\s+|LOST\s+|LOSS\s+OF\s+)(\d+(?:\.\d+)?)\s*PIPS?\b",
-        compact,
-        re.IGNORECASE,
-    )
+    # Non-SL negative pip update.
+    loss_match = re.search(r"(?:^|\b)(?:-|MINUS\s+|LOST\s+|LOSS\s+OF\s+)(\d+(?:\.\d+)?)\s*PIPS?\b", compact, re.IGNORECASE)
     if loss_match and not lines:
         _append(lines, f"{{RedCross}} -{loss_match.group(1)} PIPS")
 
-    # Positive pip updates, including short bare updates like "230 PIPS".
     pip_context_blocked = _has(
         r"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS|LOSS|LOST|DROPPED|DOWN|SPREAD|EXAMPLE|RISK|PIP\s*SL)\b",
         compact,
     )
     if pips and not lines and not pip_context_blocked:
-        explicit_positive = _has(
-            r"(?:^|\s)\+\s*\d|\b(?:RAN|RUNNING|UP|PROFIT|SECURED|BANKED|MADE|GAINED|LOCKED)\b",
-            compact,
-        )
+        explicit_positive = _has(r"(?:^|\s)\+\s*\d|\b(?:RAN|RUNNING|UP|PROFIT|SECURED|BANKED|MADE|GAINED|LOCKED)\b", compact)
         bare_short = short and bool(re.fullmatch(r"[+\s\d.A-Z✔✅💥🔥!]+", compact))
         if explicit_positive or bare_short:
             if _has(r"\b(?:RAN|RUNNING|UP)\b", compact):
@@ -161,24 +131,18 @@ def classify_trade_update(text: str) -> Optional[str]:
             else:
                 _append(lines, f"{{GreenTick}} +{pips} PIPS")
 
-    # Partial/full profit-taking instructions. Preserve stated percentages.
+    # Partial closes / profit-taking. Percentage handling is exclusive from full-close handling.
     pct_match = PERCENT_RE.search(compact)
-    close_pct = bool(pct_match) and _has(
-        r"\b(?:CLOSE|SECURE|TAKE|BANK|BOOK)\b.{0,30}%",
-        compact,
-    )
+    close_pct = bool(pct_match) and _has(r"\b(?:CLOSE|SECURE|TAKE|BANK|BOOK)\b.{0,30}%", compact)
     if close_pct:
         pct = max(1, min(100, int(pct_match.group(1))))
-        if pct >= 100:
-            _append(lines, "{Warning} CLOSE TRADE NOW")
-        else:
-            _append(lines, f"{{Warning}} CLOSE {pct}% OF POSITION")
+        _append(lines, "{Warning} CLOSE TRADE NOW" if pct >= 100 else f"{{Warning}} CLOSE {pct}% OF POSITION")
     elif _has(r"\b(?:SECURE|TAKE|CLOSE|BANK|BOOK)\b.{0,35}\b(?:PARTIALS?|SOME\s+PROFIT|HALF)\b", compact):
         _append(lines, "{GreenTick} SECURE PARTIAL PROFITS")
     elif short and _has(r"\b(?:TAKE|SECURE|BANK|BOOK)\s+(?:THE\s+)?PROFITS?\b", compact):
         _append(lines, "{GreenTick} SECURE PROFITS")
 
-    # SL management.
+    # Stop management.
     sl_price = _extract_sl_move_price(raw)
     if sl_price:
         _append(lines, f"{{Warning}} MOVE SL = {sl_price}")
@@ -194,17 +158,14 @@ def classify_trade_update(text: str) -> Optional[str]:
 
     if _has(r"\b(?:TRADE|POSITION|RUNNER|WE|WE'RE|WE ARE|NOW)\b.{0,30}\bRISK\s*FREE\b|\bFREE\s+TRADE\b", compact) and not move_be:
         _append(lines, "{GreenTick} TRADE IS RISK-FREE")
-
     if _has(r"\b(?:LOCK|SECURE|MOVE\s+SL\s+INTO|SL\s+IN)\b.{0,25}\bPROFIT\b", compact):
         _append(lines, "{GreenTick} LOCK IN PROFIT")
-
     if short and _has(r"\b(?:TRAIL|TRAILING)\s+(?:THE\s+)?(?:SL|S/L|STOP(?:\s*LOSS)?)\b", compact) and not sl_price:
         _append(lines, "{Warning} TRAIL STOP LOSS")
 
     # Entry/order state.
     if _has(r"\b(?:ENTRY|SIGNAL|SETUP|TRADE)\b.{0,28}\b(?:STILL\s+)?VALID\b|\bVALID\s+(?:ENTRY|SETUP|SIGNAL)\b", compact):
         _append(lines, "{GreenTick} ENTRY STILL VALID")
-
     if _has(
         r"\b(?:ENTRY|ORDER|LIMIT|STOP)\b.{0,22}\b(?:HIT|TRIGGERED|ACTIVATED|FILLED|EXECUTED)\b|"
         r"\b(?:WE'?RE|WE\s+ARE|I'?M|I\s+AM)\s+IN\b|\bTRADE\s+(?:IS\s+)?LIVE\b",
@@ -213,11 +174,7 @@ def classify_trade_update(text: str) -> Optional[str]:
         _append(lines, "{GreenTick} ENTRY ACTIVATED")
 
     if _has(r"\b(?:ENTRY|SETUP|SIGNAL|ORDER|TRADE)\b.{0,24}\b(?:INVALID|INVALIDATED|CANCELLED|CANCELED)\b", compact):
-        if _has(r"\b(?:ORDER|LIMIT|STOP)\b", compact):
-            _append(lines, "{RedCross} PENDING ORDER CANCELLED")
-        else:
-            _append(lines, "{RedCross} TRADE CANCELLED")
-
+        _append(lines, "{RedCross} PENDING ORDER CANCELLED" if _has(r"\b(?:ORDER|LIMIT|STOP)\b", compact) else "{RedCross} TRADE CANCELLED")
     if _has(r"\b(?:CANCEL|DELETE|REMOVE)\b.{0,24}\b(?:TRADE|SETUP|SIGNAL)\b", compact):
         _append(lines, "{RedCross} TRADE CANCELLED")
 
@@ -233,42 +190,39 @@ def classify_trade_update(text: str) -> Optional[str]:
 
     if _has(r"\b(?:DO\s+NOT|DON'T|DONT)\s+(?:ENTER|TAKE|EXECUTE)\b|\bNO\s+ENTRY\b", compact):
         _append(lines, "{RedCross} DO NOT ENTER")
-
     if _has(r"\b(?:MISSED\s+(?:THE\s+)?ENTRY|ENTRY\s+(?:WAS\s+)?MISSED|MISSED\s+IT|DO\s+NOT\s+CHASE|DON'T\s+CHASE|DONT\s+CHASE)\b", compact):
         _append(lines, "{Warning} ENTRY MISSED — DO NOT CHASE")
-
     if _has(r"\b(?:WAIT|HOLD\s+OFF|STAY\s+OUT)\b.{0,20}\b(?:ENTRY|TRADE|SIGNAL|FOR\s+NOW|NOW)\b", compact):
         _append(lines, "{Warning} WAIT — DO NOT ENTER YET")
 
     # Position management.
     if _has(r"^(?:LAYER|LAYER\s+NOW|ADD\s+(?:ANOTHER\s+)?ENTRY|ADD\s+(?:ANOTHER\s+)?POSITION|SCALE\s+IN|ADD\s+ON)(?:\b|$)", compact):
         _append(lines, "{Warning} LAYER ENTRY NOW")
-
     if _has(r"\b(?:RE-?ENTER|REENTRY|RE-ENTRY)\b(?:.{0,20}\b(?:NOW|MARKET)\b)?", compact):
         _append(lines, "{Warning} RE-ENTER TRADE NOW")
 
+    # Full close must be explicit. Generic "CLOSE 70%" must never match here.
     full_close = _has(
-        r"\b(?:CLOSE|EXIT)\s+(?:THE\s+)?(?:FULL|ALL|ENTIRE|WHOLE)?\s*(?:TRADE|POSITION|EVERYTHING)?\s*(?:NOW|HERE|FULLY)?\b|"
+        r"\b(?:CLOSE|EXIT)\s+(?:THE\s+)?(?:FULL|ALL|ENTIRE|WHOLE)\b|"
+        r"\b(?:CLOSE|EXIT)\s+(?:THE\s+)?(?:TRADE|POSITION|EVERYTHING)\b|"
+        r"\b(?:CLOSE|EXIT)\s+(?:NOW|HERE|FULLY)\b|"
         r"\b(?:YOU\s+CAN\s+)?CLOSE\s+FULL\s+TRADE\b|\bGET\s+OUT\s+NOW\b|\bMANUALLY\s+CLOSE\b",
         compact,
     )
-    if full_close and not _has(r"\b(?:PARTIAL|HALF|\d{1,3}\s*%)\b", compact):
+    has_partial_scope = bool(pct_match) or _has(r"\b(?:PARTIAL|HALF)\b", compact)
+    if full_close and not has_partial_scope:
         _append(lines, "{Warning} CLOSE TRADE NOW")
 
     if _has(r"\b(?:I'?M|I\s+AM|WE'?RE|WE\s+ARE)\s+STILL\s+IN\b|\b(?:TRADE|POSITION)\s+(?:IS\s+)?STILL\s+(?:ACTIVE|OPEN|RUNNING)\b", compact):
         _append(lines, "{GreenTick} TRADE STILL ACTIVE")
-
     if _has(r"\b(?:LET|LEAVE)\s+(?:IT|RUNNER|REMAINDER|REST)\s*(?:RUN|RUNNING)?\b|\bHOLD\s+(?:THE\s+)?(?:TRADE|RUNNER|REMAINDER)\b", compact):
         _append(lines, "{GreenTick} LET REMAINDER RUN")
-
     if _has(r"\b(?:REDUCE|CUT|LOWER)\s+(?:THE\s+)?RISK\b", compact):
         _append(lines, "{Warning} REDUCE RISK")
-
     if _has(r"\b(?:REMOVE|DELETE)\s+(?:THE\s+)?(?:SL|S/L|STOP\s*LOSS)\b", compact):
         _append(lines, "{Warning} REMOVE STOP LOSS")
 
-    # Keep an explicit pip result when the message also contains management
-    # instructions and the TP branch did not already display the pips.
+    # Keep explicit pip result when paired with management instructions.
     if pips and lines and not any("PIPS" in line for line in lines) and not pip_context_blocked:
         if _has(r"(?:^|\s)\+\s*\d|\b(?:PROFIT|SECURED|BANKED|MADE|GAINED|RAN|RUNNING|UP)\b", compact):
             _append(lines, f"{{GreenTick}} +{pips} PIPS")
@@ -292,6 +246,7 @@ def run_update_self_test() -> Tuple[int, int]:
         "TP 2 hit": "{GreenTick} TP2 HIT",
         "ALL TPS HIT": "{GreenTick} ALL TARGETS HIT",
         "TP2 HIT +250 PIPS!! CLOSE 70%": "{GreenTick} TP2 HIT — +250 PIPS\n\n{Warning} CLOSE 70% OF POSITION",
+        "close 50%": "{Warning} CLOSE 50% OF POSITION",
         "+300 PIPS YOU CAN CLOSE FULL TRADE HERE": "{GreenTick} +300 PIPS\n\n{Warning} CLOSE TRADE NOW",
         "TP1 hit +100 pips secure partials and go BE": "{GreenTick} TP1 HIT — +100 PIPS\n\n{GreenTick} SECURE PARTIAL PROFITS\n\n{GreenTick} MOVE SL TO BREAKEVEN",
         "Secure partials and go breakeven": "{GreenTick} SECURE PARTIAL PROFITS\n\n{GreenTick} MOVE SL TO BREAKEVEN",
@@ -322,9 +277,7 @@ def run_update_self_test() -> Tuple[int, int]:
     for source, expected in cases.items():
         got = classify_trade_update(source)
         if got != expected:
-            raise RuntimeError(
-                f"trade-update self-test failed source={source!r} expected={expected!r} got={got!r}"
-            )
+            raise RuntimeError(f"trade-update self-test failed source={source!r} expected={expected!r} got={got!r}")
 
     safe = (
         "wtf",
@@ -340,8 +293,6 @@ def run_update_self_test() -> Tuple[int, int]:
     for source in safe:
         got = classify_trade_update(source)
         if got is not None:
-            raise RuntimeError(
-                f"trade-update fail-safe classified general chat source={source!r} got={got!r}"
-            )
+            raise RuntimeError(f"trade-update fail-safe classified general chat source={source!r} got={got!r}")
 
     return len(cases), len(safe)

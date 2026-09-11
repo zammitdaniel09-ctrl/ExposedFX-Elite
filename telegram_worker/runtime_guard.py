@@ -60,36 +60,13 @@ def _remove_own_lock(lock_file: Path, pid: int):
 
 
 async def _auto_install_vip_emoji_registry(log=None):
-    """Attach the Saved Messages emoji registry and Imperium VIP formatter.
+    """Install global reply preservation first, then VIP emoji/formatter layers.
 
-    Primary path:
-      source -1004367822325 / topic 508 is formatted synchronously inside the
-      worker's own copy/edit path before it is sent to -1003726286301 / topic 7.
-
-    This deliberately removes the previous dependency on Telegram generating a
-    destination-side NewMessage event or on a GetReplies polling loop noticing
-    the copy after the fact. The destination poller is retained only as an
-    emergency startup fallback if the inline hook itself cannot be installed.
+    Reply preservation must not depend on the emoji registry. As soon as the
+    Telegram user session is authorised, every main-worker route gets the
+    hardened reply mapper/copy wrappers. The Imperium 508 -> VIP7 formatter is
+    installed afterwards when its Saved Messages emoji registry is available.
     """
-    if os.environ.get("VIP_EMOJI_REGISTRY_ENABLED", "1").strip() != "1":
-        if log:
-            log.info("[VIP EMOJI REGISTRY] disabled")
-        return
-
-    try:
-        from telegram_worker.community_emoji_registry import (
-            CommunityEmojiRegistry,
-            install_saved_messages_emoji_collector,
-        )
-    except Exception as exc:
-        if log:
-            log.exception(
-                "[VIP EMOJI REGISTRY IMPORT FAILED] %s: %s",
-                type(exc).__name__,
-                exc,
-            )
-        return
-
     while True:
         try:
             main_module = sys.modules.get("__main__")
@@ -105,6 +82,56 @@ async def _auto_install_vip_emoji_registry(log=None):
 
             if not await client.is_user_authorized():
                 await asyncio.sleep(0.5)
+                continue
+
+            # ----------------------------------------------------------
+            # GLOBAL REPLY LAYER - independent of all VIP formatting.
+            # ----------------------------------------------------------
+            try:
+                from telegram_worker.reply_hardening import install_reply_hardening
+
+                reply_state = install_reply_hardening(
+                    main_module,
+                    logger=log,
+                )
+                if main_module is not None:
+                    setattr(main_module, "GLOBAL_REPLY_HARDENING", reply_state)
+                if log:
+                    log.warning(
+                        "[GLOBAL REPLY HARDENING READY] all_routes=True "
+                        "dependency=telegram_session only emoji_registry_required=False"
+                    )
+            except Exception as exc:
+                if log:
+                    log.exception(
+                        "[GLOBAL REPLY HARDENING INSTALL FAILED] %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                await asyncio.sleep(2)
+                continue
+
+            # Reply preservation stays active even if VIP formatting is disabled.
+            if os.environ.get("VIP_EMOJI_REGISTRY_ENABLED", "1").strip() != "1":
+                if log:
+                    log.info("[VIP EMOJI REGISTRY] disabled; global reply hardening remains active")
+                return
+
+            try:
+                from telegram_worker.community_emoji_registry import (
+                    CommunityEmojiRegistry,
+                    install_saved_messages_emoji_collector,
+                )
+            except Exception as exc:
+                if log:
+                    log.exception(
+                        "[VIP EMOJI REGISTRY IMPORT FAILED] %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                # Reply hardening is already installed. Keep retrying only the
+                # optional formatter dependency.
+                await asyncio.sleep(2)
                 continue
 
             scan_limit = max(
@@ -168,7 +195,8 @@ async def _auto_install_vip_emoji_registry(log=None):
                         exc,
                     )
 
-            # Emergency fallback only. Normally this does not run.
+            # Emergency formatter fallback only. Reply hardening does not depend
+            # on this path and remains installed regardless.
             if inline_state is None:
                 try:
                     from telegram_worker.imperium_vip_destination_poller import (
@@ -210,7 +238,7 @@ async def _auto_install_vip_emoji_registry(log=None):
         except Exception as exc:
             if log:
                 log.warning(
-                    "[VIP EMOJI REGISTRY WAIT/RETRY] %s: %s",
+                    "[VIP/REPLY INSTALL WAIT/RETRY] %s: %s",
                     type(exc).__name__,
                     exc,
                 )

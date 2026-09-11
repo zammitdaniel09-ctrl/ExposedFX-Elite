@@ -7,9 +7,13 @@ from telegram_worker.imperium_vip_formatter import (
     build_update,
     parse_xauusd_signal,
 )
-from telegram_worker.imperium_vip_trade_updates import (
+from telegram_worker.imperium_vip_trade_update_hardening import (
     classify_trade_update,
     run_update_self_test,
+)
+from telegram_worker.reply_hardening import (
+    ensure_reply_mapping,
+    install_reply_hardening,
 )
 
 
@@ -30,7 +34,6 @@ def _int(value, default=0):
 
 
 def is_imperium_vip_route(route: Dict[str, Any]) -> bool:
-    """Return True only for the exact 508 -> VIP topic 7 route."""
     try:
         return (
             _int(route.get("source_chat")) == SOURCE_CHAT
@@ -68,9 +71,8 @@ def format_imperium_vip_text(
     """Format a signal/update before it is sent to VIP topic 7.
 
     Returns (text, entities, kind). kind is None when the source should pass
-    through unchanged. No prices, pips, percentages, direction or trade state
-    are invented: the existing strict signal parser/update classifier owns all
-    interpretation.
+    through unchanged. Prices, pips, percentages, direction and trade state are
+    never calculated or invented.
     """
     raw = (text or "").strip()
     if not raw or not _registry_ready(registry) or _already_house_formatted(raw):
@@ -109,26 +111,48 @@ def _clone_message_with_format(message, registry):
 def _run_inline_self_test():
     update_count, safe_count = run_update_self_test()
 
-    probe = parse_xauusd_signal(
-        "Buy xauusd now\n\nTp 4324\nTp 4337\nTp 4350\nTp open\n\nSl 4308"
+    signal_cases = (
+        (
+            "Buy xauusd now\n\nTp 4324\nTp 4337\nTp 4350\nTp open\n\nSl 4308",
+            "BUY",
+            "NOW",
+            ["4324", "4337", "4350", "OPEN"],
+            "4308",
+        ),
+        (
+            "Sell xauusd now 4327-4332\n\nTp 4320\nTp 4310\nTp 4280\n\nSl 4335",
+            "SELL",
+            "ZONE",
+            ["4320", "4310", "4280"],
+            "4335",
+        ),
+        (
+            "Buy xauusd now 4305-4299\n\nTp 4315\nTp 4330\nTp 4370\nTp open\n\nSl 4290",
+            "BUY",
+            "ZONE",
+            ["4315", "4330", "4370", "OPEN"],
+            "4290",
+        ),
     )
-    if not probe:
-        raise RuntimeError("inline signal self-test failed: parser returned None")
-    if probe.get("direction") != "BUY" or probe.get("kind") != "NOW":
-        raise RuntimeError(f"inline signal self-test failed: {probe!r}")
-    if probe.get("tps") != ["4324", "4337", "4350", "OPEN"]:
-        raise RuntimeError(f"inline TP self-test failed: {probe!r}")
-    if probe.get("sl") != "4308":
-        raise RuntimeError(f"inline SL self-test failed: {probe!r}")
 
-    return 1, update_count, safe_count
+    for source, direction, kind, tps, sl in signal_cases:
+        probe = parse_xauusd_signal(source)
+        if not probe:
+            raise RuntimeError(f"inline signal self-test failed: parser returned None for {source!r}")
+        if probe.get("direction") != direction or probe.get("kind") != kind:
+            raise RuntimeError(f"inline signal self-test failed: {probe!r}")
+        if probe.get("tps") != tps or probe.get("sl") != sl:
+            raise RuntimeError(f"inline signal values self-test failed: {probe!r}")
+
+    return len(signal_cases), update_count, safe_count
 
 
 def install_imperium_vip_inline_hook(main_module, registry, logger=None):
-    """Patch the active worker's copy/edit path for the exact VIP route.
+    """Patch the active worker's exact 508 -> VIP7 send path.
 
-    Formatting happens synchronously before the route's message is sent. This
-    removes the timing dependency on same-client destination events and polling.
+    Formatting and reply recovery happen before the destination send. This
+    avoids same-client destination-event races and preserves source reply chains
+    even when another forwarding account created the replied-to parent.
     """
     logger = logger or log
 
@@ -140,6 +164,10 @@ def install_imperium_vip_inline_hook(main_module, registry, logger=None):
     existing = getattr(main_module, "_IMPERIUM_VIP_INLINE_HOOK_STATE", None)
     if existing:
         return existing
+
+    # Patch the generic reply-ID/map functions first. This fixes direct-vs-header
+    # Telethon reply metadata and list-valued message_map entries globally.
+    install_reply_hardening(main_module, logger=logger)
 
     signal_count, update_count, safe_count = _run_inline_self_test()
     logger.warning(
@@ -167,8 +195,6 @@ def install_imperium_vip_inline_hook(main_module, registry, logger=None):
                 ensure_reply=ensure_reply,
             )
 
-        # Preserve the worker's username-mention safety semantics. Never clean
-        # the text first and accidentally hide a mention from the original guard.
         mention_guard = getattr(main_module, "has_username_mention", None)
         if callable(mention_guard):
             try:
@@ -181,6 +207,15 @@ def install_imperium_vip_inline_hook(main_module, registry, logger=None):
                     )
             except Exception:
                 pass
+
+        if ensure_reply:
+            await ensure_reply_mapping(
+                main_module,
+                message,
+                route,
+                registry=registry,
+                logger=logger,
+            )
 
         formatted_message, kind = _clone_message_with_format(message, registry)
         if kind:
@@ -199,12 +234,11 @@ def install_imperium_vip_inline_hook(main_module, registry, logger=None):
         )
 
         if kind and sent:
-            sent_id = getattr(sent, "id", None)
             logger.warning(
                 "[IMPERIUM VIP INLINE FORWARDED] kind=%s source_msg=%s dest_msg=%s source=%s_%s dest=%s_%s",
                 kind,
                 getattr(message, "id", None),
-                sent_id,
+                getattr(sent, "id", None),
                 SOURCE_CHAT,
                 SOURCE_TOPIC,
                 DEST_CHAT,
@@ -244,6 +278,15 @@ def install_imperium_vip_inline_hook(main_module, registry, logger=None):
             raise RuntimeError("worker copy_album is unavailable")
 
         cloned_messages = list(messages or [])
+        if cloned_messages:
+            await ensure_reply_mapping(
+                main_module,
+                cloned_messages[0],
+                route,
+                registry=registry,
+                logger=logger,
+            )
+
         formatted_kind = None
         for index, message in enumerate(cloned_messages):
             text = getattr(message, "message", None) or getattr(message, "raw_text", None) or ""
@@ -285,12 +328,14 @@ def install_imperium_vip_inline_hook(main_module, registry, logger=None):
         "copy_one": True,
         "copy_album": callable(original_copy_album),
         "edits": True,
+        "replies": True,
+        "cross_account_reply_recovery": True,
         "primary": "inline_forward_path",
     }
     setattr(main_module, "_IMPERIUM_VIP_INLINE_HOOK_STATE", state)
 
     logger.warning(
-        "[IMPERIUM VIP INLINE HOOK ACTIVE] source=%s_%s dest=%s_%s signals=True updates=True edits=True albums=%s PRIMARY=True",
+        "[IMPERIUM VIP INLINE HOOK ACTIVE] source=%s_%s dest=%s_%s signals=True updates=True replies=True cross_account_replies=True edits=True albums=%s PRIMARY=True",
         SOURCE_CHAT,
         SOURCE_TOPIC,
         DEST_CHAT,

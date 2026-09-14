@@ -58,6 +58,13 @@ NEW_MIRROR_STARTUP_PROBE = os.environ.get("NEW_MIRROR_STARTUP_PROBE", "1").strip
 NEW_MIRROR_POLLING_ENABLED = os.environ.get("NEW_MIRROR_POLLING_ENABLED", "1").strip() == "1"
 NEW_MIRROR_POLL_SECONDS = int(os.environ.get("NEW_MIRROR_POLL_SECONDS", "8"))
 NEW_MIRROR_POLL_LIMIT = int(os.environ.get("NEW_MIRROR_POLL_LIMIT", "8"))
+
+# Cadence of private_live_route_poll_loop, the ordered single writer for
+# live_only routes. It re-reads this many messages per route per cycle, so the
+# numbers here set a large share of the account's steady API load. The window
+# only has to cover what one cycle can miss, not a long backlog.
+PRIVATE_LIVE_POLL_SECONDS = max(1, int(os.environ.get("PRIVATE_LIVE_POLL_SECONDS", "5")))
+PRIVATE_LIVE_POLL_LIMIT = max(5, int(os.environ.get("PRIVATE_LIVE_POLL_LIMIT", "40")))
 NEW_MIRROR_BACKFILL_ON_START = False  # HARD NEW-MESSAGES-ONLY SAFETY
 NEW_MIRROR_BACKFILL_LIMIT = int(os.environ.get("NEW_MIRROR_BACKFILL_LIMIT", "3"))
 NEW_MIRROR_BACKFILL_ALL_ON_START = False  # HARD NEW-MESSAGES-ONLY SAFETY
@@ -3427,7 +3434,7 @@ async def private_live_route_poll_loop():
 
                 messages = await get_route_poll_messages(
                     route,
-                    150,
+                    PRIVATE_LIVE_POLL_LIMIT,
                 )
 
                 last_id = int(
@@ -3932,7 +3939,7 @@ async def private_live_route_poll_loop():
                 )
 
 
-        await asyncio.sleep(5)
+        await asyncio.sleep(PRIVATE_LIVE_POLL_SECONDS)
 
 
 

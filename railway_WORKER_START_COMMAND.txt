@@ -1,1 +1,17 @@
-python -m telegram_worker.vip_worker_with_emoji_registry
+Railway start commands actually configured in project brilliant-blessing / production.
+This file is documentation, not configuration. Keep it in sync with the dashboard.
+
+  ExposedFX-Elite                   main        python server/main.py
+  imperium-telegram-worker          main        python -m telegram_worker.worker_fixed
+  exposedfx-clean-signal-forwarder  main        python -m telegram_worker.worker_clean_signal_forwarder
+  exposedfx-ai-signal-formatter     main        python -m telegram_worker.worker_signal_hub
+  imperium-telegram-worker-alt      alt-worker  python -m telegram_worker.alt_worker
+
+Do not start the main VIP worker through a wrapper module.
+
+runtime_guard.start_runtime_guard() finds the worker via sys.modules["__main__"] and
+reads client, message_map and copy_one off it to install the global reply hardening
+and the Imperium VIP inline formatter. Under "python -m telegram_worker.X", __main__
+is X, so only worker_fixed as the direct entrypoint exposes those names. Start it
+through a wrapper and __main__ lacks them: the installer then retries forever in
+silence, reply preservation and VIP formatting never come up, and nothing is logged.

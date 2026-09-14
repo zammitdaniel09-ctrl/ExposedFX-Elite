@@ -10524,6 +10524,206 @@ async def run_vip7_rebuild_from_relay508_once():
 # END VIP7_REBUILD_FROM_RELAY508_V1
 
 
+WARM_ENTITY_CACHE_ON_START = os.environ.get("WARM_ENTITY_CACHE_ON_START", "1").strip() == "1"
+
+
+async def warm_entity_cache_once():
+    """Populate the Telethon entity cache from the account's dialog list.
+
+    A session restored from SESSION_B64 chunks starts with an empty entity
+    cache, so client.get_entity(-100...) raises "Could not find the input
+    entity for PeerChannel(...)" for every channel the worker has not yet seen
+    a live event from. Walking the dialogs once at startup resolves the access
+    hashes for everything the account is actually a member of.
+
+    Anything still unresolved after this is genuinely inaccessible (left,
+    banned, or deleted) rather than merely uncached, and is logged by ID so
+    dead routes can be identified with confidence.
+    """
+    if not WARM_ENTITY_CACHE_ON_START:
+        log.warning("[ENTITY CACHE WARMUP] disabled")
+        return
+
+    wanted = set()
+    for route in ROUTES:
+        for key in ("source_chat", "dest_chat"):
+            try:
+                wanted.add(int(route[key]))
+            except Exception:
+                continue
+
+    dialogs = 0
+
+    try:
+        async for _dialog in client.iter_dialogs():
+            dialogs += 1
+    except FloodWaitError as exc:
+        log.warning(
+            "[ENTITY CACHE WARMUP FLOODWAIT] "
+            f"wait={exc.seconds}s; continuing without a full warmup"
+        )
+        return
+    except Exception as exc:
+        log.warning(
+            f"[ENTITY CACHE WARMUP FAILED SAFE] {type(exc).__name__}: {exc}"
+        )
+        return
+
+    resolved = 0
+    unresolved = []
+
+    for chat_id in sorted(wanted):
+        try:
+            await client.get_input_entity(chat_id)
+            resolved += 1
+        except Exception as exc:
+            unresolved.append((chat_id, type(exc).__name__))
+
+    log.warning(
+        "[ENTITY CACHE WARMUP DONE] "
+        f"dialogs={dialogs} route_peers={len(wanted)} "
+        f"resolved={resolved} unresolved={len(unresolved)}"
+    )
+
+    for chat_id, error_name in unresolved:
+        log.warning(f"[ENTITY STILL UNRESOLVED] chat={chat_id} {error_name}")
+
+
+VERIFY_DEST_TOPICS_ON_START = os.environ.get("VERIFY_DEST_TOPICS_ON_START", "1").strip() == "1"
+
+
+async def drop_routes_with_missing_dest_topics():
+    """Remove routes whose destination forum topic no longer exists.
+
+    Deleting a topic does not delete the routes that point at it. Telegram then
+    places anything sent with that reply_to into the group's General topic, so a
+    provider whose topic was removed keeps posting straight into the main feed.
+
+    Only topics Telegram positively reports as missing are treated as deleted.
+    Every failure path keeps the routes: an API error, a flood wait, a Telethon
+    build without the request, or a suspicious empty result all leave that chat
+    untouched, so a blip can never silently tear down live forwarding.
+    """
+    if not VERIFY_DEST_TOPICS_ON_START:
+        log.warning("[DEST TOPIC GUARD] disabled")
+        return
+
+    req_cls = channel_function("GetForumTopicsByIDRequest")
+
+    if req_cls is None:
+        log.warning(
+            "[DEST TOPIC GUARD UNSUPPORTED] "
+            "Telethon runtime has no GetForumTopicsByIDRequest; keeping every route"
+        )
+        return
+
+    wanted = {}
+
+    for route in ROUTES:
+        try:
+            chat = int(route["dest_chat"])
+            topic = int(route["dest_topic"])
+        except Exception:
+            continue
+
+        # Topic 1 is General. It cannot be deleted, and it is also where
+        # messages for a deleted topic end up, so it is never checked.
+        if topic <= 1:
+            continue
+
+        wanted.setdefault(chat, set()).add(topic)
+
+    missing = {}
+
+    for chat, topics in wanted.items():
+        ordered = sorted(topics)
+        found = set()
+        lookup_ok = True
+
+        for start in range(0, len(ordered), 100):
+            batch = ordered[start:start + 100]
+
+            try:
+                res = await client(req_cls(channel=chat, topics=batch))
+            except FloodWaitError as exc:
+                log.warning(
+                    "[DEST TOPIC GUARD FLOODWAIT] "
+                    f"chat={chat} wait={exc.seconds}s; keeping every route for this chat"
+                )
+                lookup_ok = False
+                break
+            except Exception as exc:
+                log.warning(
+                    "[DEST TOPIC GUARD LOOKUP FAILED SAFE] "
+                    f"chat={chat} {type(exc).__name__}: {exc}; keeping every route for this chat"
+                )
+                lookup_ok = False
+                break
+
+            for topic in getattr(res, "topics", None) or []:
+                topic_id = getattr(topic, "id", None)
+                if topic_id is not None:
+                    found.add(int(topic_id))
+
+        if not lookup_ok:
+            continue
+
+        if not found:
+            # Telegram answered but recognised nothing. Far more likely a bad
+            # response than every topic in the group having been deleted.
+            log.warning(
+                "[DEST TOPIC GUARD EMPTY RESULT] "
+                f"chat={chat} requested={len(ordered)}; keeping every route for this chat"
+            )
+            continue
+
+        gone = set(ordered) - found
+
+        if gone:
+            missing[chat] = gone
+
+    if not missing:
+        log.warning(
+            "[DEST TOPIC GUARD OK] "
+            f"chats={len(wanted)} topics_checked={sum(len(v) for v in wanted.values())} missing=0"
+        )
+        return
+
+    kept = []
+    dropped = []
+
+    for route in ROUTES:
+        try:
+            chat = int(route["dest_chat"])
+            topic = int(route["dest_topic"])
+        except Exception:
+            kept.append(route)
+            continue
+
+        if topic in missing.get(chat, frozenset()):
+            dropped.append(route)
+        else:
+            kept.append(route)
+
+    # In place on purpose: every module that already did
+    # "from telegram_worker.routes import ROUTES" holds this same list object.
+    ROUTES[:] = kept
+
+    for route in dropped:
+        log.warning(
+            "[DEST TOPIC DELETED - ROUTE DROPPED] "
+            f"route={route['name']} "
+            f"source={route['source_chat']}_{route.get('source_topic')} "
+            f"dest={route['dest_chat']}_{route['dest_topic']}"
+        )
+
+    log.warning(
+        "[DEST TOPIC GUARD DONE] "
+        f"missing_topics={sorted({t for v in missing.values() for t in v})} "
+        f"routes_dropped={len(dropped)} routes_remaining={len(ROUTES)}"
+    )
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -10532,6 +10732,8 @@ async def main():
 
     me = await client.get_me()
     log.info(f"Logged in as {me.first_name} | id={me.id}")
+    await warm_entity_cache_once()
+    await drop_routes_with_missing_dest_topics()
     log.info(f"SERVER_URL={SERVER_URL}")
     log.info(f"DATA_DIR={DATA_DIR}")
     log.info(f"DRY_RUN={DRY_RUN}")

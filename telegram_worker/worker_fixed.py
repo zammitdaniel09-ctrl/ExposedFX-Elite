@@ -10610,12 +10610,44 @@ async def drop_routes_with_missing_dest_topics():
 
     req_cls = channel_function("GetForumTopicsByIDRequest")
 
+    async def alive_topic_ids(chat, batch):
+        """Return which of these topic ids still exist in the chat.
+
+        Prefers GetForumTopicsByIDRequest, and falls back to reading the topic
+        service messages by id the same way get_forum_topic_title() does, since
+        not every Telethon build exposes that request. A forum topic id is the
+        id of the service message that opened it, so a deleted topic reads back
+        as a missing message.
+        """
+        if req_cls is not None:
+            res = await client(req_cls(channel=chat, topics=list(batch)))
+            out = set()
+            for topic in getattr(res, "topics", None) or []:
+                topic_id = getattr(topic, "id", None)
+                if topic_id is not None:
+                    out.add(int(topic_id))
+            return out
+
+        messages = await client.get_messages(chat, ids=list(batch))
+        out = set()
+        for msg in messages or []:
+            if msg is None:
+                continue
+            msg_id = getattr(msg, "id", None)
+            if msg_id is None:
+                continue
+            # MessageEmpty stands in for a deleted message and carries no date.
+            if getattr(msg, "date", None) is None:
+                continue
+            out.add(int(msg_id))
+        return out
+
     if req_cls is None:
         log.warning(
-            "[DEST TOPIC GUARD UNSUPPORTED] "
-            "Telethon runtime has no GetForumTopicsByIDRequest; keeping every route"
+            "[DEST TOPIC GUARD] "
+            "no GetForumTopicsByIDRequest in this Telethon build; "
+            "falling back to topic service-message lookup"
         )
-        return
 
     wanted = {}
 
@@ -10644,7 +10676,7 @@ async def drop_routes_with_missing_dest_topics():
             batch = ordered[start:start + 100]
 
             try:
-                res = await client(req_cls(channel=chat, topics=batch))
+                found.update(await alive_topic_ids(chat, batch))
             except FloodWaitError as exc:
                 log.warning(
                     "[DEST TOPIC GUARD FLOODWAIT] "
@@ -10659,11 +10691,6 @@ async def drop_routes_with_missing_dest_topics():
                 )
                 lookup_ok = False
                 break
-
-            for topic in getattr(res, "topics", None) or []:
-                topic_id = getattr(topic, "id", None)
-                if topic_id is not None:
-                    found.add(int(topic_id))
 
         if not lookup_ok:
             continue

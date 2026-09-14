@@ -10769,6 +10769,184 @@ async def drop_routes_with_missing_dest_topics():
     )
 
 
+# BEGIN EMPTY_TOPIC_LAST50_V1
+
+# Seeds a destination topic that has never received anything with the last N
+# messages from its source, so a newly created topic is not left blank.
+#
+# Off by default, and dry run by default even once enabled. Turning it on only
+# makes it REPORT what it would send; a second, separate flag lets it actually
+# send. That two-step exists because a detection bug here posts real messages
+# into real groups, which cannot be taken back.
+EMPTY_TOPIC_LAST50_ENABLED = os.environ.get("ALLOW_EMPTY_TOPIC_LAST50_V1", "0").strip() == "1"
+EMPTY_TOPIC_LAST50_DRY_RUN = os.environ.get("EMPTY_TOPIC_LAST50_DRY_RUN", "1").strip() != "0"
+EMPTY_TOPIC_LAST50_LIMIT = max(1, int(os.environ.get("EMPTY_TOPIC_LAST50_LIMIT", "50")))
+EMPTY_TOPIC_LAST50_DEST_CHAT = int(os.environ.get("EMPTY_TOPIC_LAST50_DEST_CHAT", "-1003918958200"))
+EMPTY_TOPIC_LAST50_SEND_SLEEP = float(os.environ.get("EMPTY_TOPIC_LAST50_SEND_SLEEP", "1.5"))
+EMPTY_TOPIC_LAST50_DONE_FILE = DATA_DIR / "empty_topic_last50_v1.json"
+
+
+def load_empty_topic_last50_done():
+    try:
+        if EMPTY_TOPIC_LAST50_DONE_FILE.exists():
+            return set(json.loads(EMPTY_TOPIC_LAST50_DONE_FILE.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+    return set()
+
+
+def save_empty_topic_last50_done(done):
+    try:
+        tmp = EMPTY_TOPIC_LAST50_DONE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(sorted(done)), encoding="utf-8")
+        tmp.replace(EMPTY_TOPIC_LAST50_DONE_FILE)
+    except Exception as exc:
+        log.warning(f"[EMPTY TOPIC LAST50] could not save done file: {type(exc).__name__}: {exc}")
+
+
+async def destination_topic_is_empty(dest_chat, dest_topic):
+    """True only when the topic holds no real messages.
+
+    Returns None when that cannot be established, and the caller then skips the
+    topic. Service messages (the topic-creation entry and similar) are ignored,
+    so a brand new topic still counts as empty; anything with a real message in
+    it does not.
+    """
+    try:
+        messages = await client.get_messages(
+            int(dest_chat),
+            limit=5,
+            reply_to=int(dest_topic),
+        )
+    except Exception as exc:
+        log.warning(
+            "[EMPTY TOPIC CHECK FAILED SAFE] "
+            f"dest={dest_chat}_{dest_topic} {type(exc).__name__}: {exc}"
+        )
+        return None
+
+    real = [
+        m for m in (messages or [])
+        if m is not None
+        and getattr(m, "action", None) is None
+        and getattr(m, "date", None) is not None
+    ]
+
+    return len(real) == 0
+
+
+async def seed_empty_destination_topics_last50():
+    if not EMPTY_TOPIC_LAST50_ENABLED:
+        log.info("[EMPTY TOPIC LAST50] disabled (ALLOW_EMPTY_TOPIC_LAST50_V1=0)")
+        return
+
+    done = load_empty_topic_last50_done()
+
+    # Only topics fed by exactly one route are eligible. A shared destination
+    # such as 568 or 569 has many sources, and seeding it from one of them
+    # would interleave history in an order nobody asked for.
+    by_topic = {}
+    for route in ROUTES:
+        try:
+            if int(route["dest_chat"]) != EMPTY_TOPIC_LAST50_DEST_CHAT:
+                continue
+            topic = int(route["dest_topic"])
+        except Exception:
+            continue
+        if topic <= 1:
+            continue
+        by_topic.setdefault(topic, []).append(route)
+
+    single = {t: rs[0] for t, rs in by_topic.items() if len(rs) == 1}
+    shared = sorted(t for t, rs in by_topic.items() if len(rs) > 1)
+
+    log.warning(
+        "[EMPTY TOPIC LAST50 START] "
+        f"dry_run={EMPTY_TOPIC_LAST50_DRY_RUN} limit={EMPTY_TOPIC_LAST50_LIMIT} "
+        f"dest_chat={EMPTY_TOPIC_LAST50_DEST_CHAT} "
+        f"candidate_topics={len(single)} shared_topics_skipped={shared} "
+        f"already_done={len(done)}"
+    )
+
+    seeded = 0
+
+    for topic in sorted(single):
+        key = f"{EMPTY_TOPIC_LAST50_DEST_CHAT}_{topic}"
+
+        if key in done:
+            continue
+
+        route = single[topic]
+
+        empty = await destination_topic_is_empty(EMPTY_TOPIC_LAST50_DEST_CHAT, topic)
+
+        if empty is None:
+            continue
+
+        if not empty:
+            log.info(f"[EMPTY TOPIC LAST50 SKIP - HAS MESSAGES] route={route['name']} dest_topic={topic}")
+            continue
+
+        try:
+            messages = await get_route_poll_messages(route, EMPTY_TOPIC_LAST50_LIMIT)
+        except Exception as exc:
+            log.warning(
+                "[EMPTY TOPIC LAST50 SOURCE FETCH FAILED SAFE] "
+                f"route={route['name']} {type(exc).__name__}: {exc}"
+            )
+            continue
+
+        batch = [m for m in (messages or []) if m is not None]
+        batch.reverse()  # oldest first, so the topic reads in order
+
+        if not batch:
+            log.info(f"[EMPTY TOPIC LAST50 SKIP - NO SOURCE MESSAGES] route={route['name']} dest_topic={topic}")
+            continue
+
+        if EMPTY_TOPIC_LAST50_DRY_RUN:
+            log.warning(
+                "[EMPTY TOPIC LAST50 WOULD SEED] "
+                f"route={route['name']} source={route['source_chat']}_{route.get('source_topic')} "
+                f"dest_topic={topic} messages={len(batch)} "
+                "(dry run, nothing sent)"
+            )
+            continue
+
+        sent = 0
+
+        for message in batch:
+            try:
+                if await copy_one_with_retry(message, route):
+                    sent += 1
+            except FloodWaitError as exc:
+                wait_for = max(1, int(exc.seconds) + 1)
+                log.warning(f"[EMPTY TOPIC LAST50 FLOODWAIT] wait={wait_for}s route={route['name']}")
+                await asyncio.sleep(wait_for)
+            except Exception as exc:
+                log.warning(
+                    "[EMPTY TOPIC LAST50 ITEM FAILED SAFE] "
+                    f"route={route['name']} msg={getattr(message, 'id', None)} "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+            await asyncio.sleep(EMPTY_TOPIC_LAST50_SEND_SLEEP)
+
+        done.add(key)
+        save_empty_topic_last50_done(done)
+        seeded += 1
+
+        log.warning(
+            "[EMPTY TOPIC LAST50 SEEDED] "
+            f"route={route['name']} dest_topic={topic} sent={sent}/{len(batch)}"
+        )
+
+    log.warning(
+        f"[EMPTY TOPIC LAST50 DONE] topics_seeded={seeded} dry_run={EMPTY_TOPIC_LAST50_DRY_RUN}"
+    )
+
+# END EMPTY_TOPIC_LAST50_V1
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     await client.connect()
@@ -10779,6 +10957,7 @@ async def main():
     log.info(f"Logged in as {me.first_name} | id={me.id}")
     await warm_entity_cache_once()
     await drop_routes_with_missing_dest_topics()
+    asyncio.create_task(seed_empty_destination_topics_last50())
     log.info(f"SERVER_URL={SERVER_URL}")
     log.info(f"DATA_DIR={DATA_DIR}")
     log.info(f"DRY_RUN={DRY_RUN}")

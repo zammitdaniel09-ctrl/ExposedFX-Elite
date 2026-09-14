@@ -10596,7 +10596,18 @@ async def warm_entity_cache_once():
         log.warning(f"[ENTITY STILL UNRESOLVED] chat={chat_id} {error_name}")
 
 
-VERIFY_DEST_TOPICS_ON_START = os.environ.get("VERIFY_DEST_TOPICS_ON_START", "1").strip() == "1"
+# OFF BY DEFAULT — DO NOT ENABLE ON THIS TELETHON BUILD.
+#
+# The reliable check is GetForumTopicsByIDRequest, which this Telethon runtime
+# does not expose. The service-message fallback below is NOT a valid substitute:
+# a live topic whose creation service message is missing or unretrievable reads
+# back as deleted, and on 2026-09-14 that wrongly dropped most routes in
+# production (Triad FX, NS Trades, all Route568/Route569, and more).
+#
+# Only turn this on after upgrading Telethon to a version that has
+# GetForumTopicsByIDRequest, and verify the guard reports missing=0 on a healthy
+# start before trusting it.
+VERIFY_DEST_TOPICS_ON_START = os.environ.get("VERIFY_DEST_TOPICS_ON_START", "0").strip() == "1"
 
 
 async def drop_routes_with_missing_dest_topics():

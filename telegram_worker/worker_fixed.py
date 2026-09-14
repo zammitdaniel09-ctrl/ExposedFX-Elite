@@ -1736,8 +1736,12 @@ async def repair_bad_mirror_structure(message, route, target_reply, text, entiti
 # BEGIN MAIN_MAPPED_IN_PLACE_EDITS_V1
 
 MAPPED_EDIT_RECONCILE_FILE = DATA_DIR / "mapped_edit_reconcile_v2.json"
-MAPPED_EDIT_RECONCILE_INTERVAL_SECONDS = 5
-MAPPED_EDIT_RECONCILE_FETCH_LIMIT = 120
+MAPPED_EDIT_RECONCILE_INTERVAL_SECONDS = int(
+    os.environ.get("MAPPED_EDIT_RECONCILE_INTERVAL_SECONDS", "30")
+)
+MAPPED_EDIT_RECONCILE_FETCH_LIMIT = int(
+    os.environ.get("MAPPED_EDIT_RECONCILE_FETCH_LIMIT", "40")
+)
 
 
 def load_mapped_edit_reconcile_state():
@@ -1873,6 +1877,14 @@ async def edit_existing_destination_in_place(
             f"source_msg={source_message_id} dest_msg={destination_id} "
             f"dest={route['dest_chat']}_{route['dest_topic']}"
         )
+
+    except FloodWaitError:
+        # Never swallow a flood wait here. Callers (the Relay508 reconcile loop
+        # and the edited-message handler) have their own backoff, and they can
+        # only reach it if this propagates. Converting it to "return False"
+        # made the reconciler retry the same batch every few seconds, which
+        # kept the account permanently rate limited.
+        raise
 
     except Exception as exc:
         if "not modified" in str(exc).lower():

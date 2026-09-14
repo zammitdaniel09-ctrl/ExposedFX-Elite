@@ -60,12 +60,14 @@ def _remove_own_lock(lock_file: Path, pid: int):
 
 
 async def _auto_install_vip_emoji_registry(log=None):
-    """Install global reply preservation first, then VIP emoji/formatter layers.
+    """Install route contracts/replies first, then VIP emoji/formatter layers.
 
-    Reply preservation must not depend on the emoji registry. As soon as the
-    Telegram user session is authorised, every main-worker route gets the
-    hardened reply mapper/copy wrappers. The Imperium 508 -> VIP7 formatter is
-    installed afterwards when its Saved Messages emoji registry is available.
+    Reply preservation and the requested route bootstrap must not depend on the
+    emoji registry. As soon as the Telegram user session is authorised, every
+    main-worker route gets the hardened reply mapper/copy wrappers and the
+    owner-requested route contract is enforced. The Imperium 508 -> VIP7
+    formatter is installed afterwards when its Saved Messages emoji registry
+    is available.
     """
     while True:
         try:
@@ -83,6 +85,43 @@ async def _auto_install_vip_emoji_registry(log=None):
             if not await client.is_user_authorized():
                 await asyncio.sleep(0.5)
                 continue
+
+            # ----------------------------------------------------------
+            # REQUESTED ROUTE CONTRACT
+            # - confirms the exact requested source -> destination pairs
+            # - removes any forwarding route into hub topic 68237
+            # ----------------------------------------------------------
+            if getattr(main_module, "REQUESTED_ROUTE_CONTRACT_STATE", None) is None:
+                try:
+                    from telegram_worker.requested_route_bootstrap import (
+                        enforce_requested_route_contracts,
+                    )
+
+                    route_contract_state = enforce_requested_route_contracts(
+                        main_module,
+                        logger=log,
+                    )
+                    if main_module is not None:
+                        setattr(
+                            main_module,
+                            "REQUESTED_ROUTE_CONTRACT_STATE",
+                            route_contract_state,
+                        )
+                    if log:
+                        log.warning(
+                            "[REQUESTED ROUTE CONTRACT READY] "
+                            f"confirmed={route_contract_state.get('confirmed')} "
+                            f"missing={len(route_contract_state.get('missing') or [])} "
+                            f"duplicates={len(route_contract_state.get('duplicates') or [])} "
+                            "dest_68237_forwarding=False"
+                        )
+                except Exception as exc:
+                    if log:
+                        log.exception(
+                            "[REQUESTED ROUTE CONTRACT INSTALL FAILED] %s: %s",
+                            type(exc).__name__,
+                            exc,
+                        )
 
             # ----------------------------------------------------------
             # GLOBAL REPLY LAYER - independent of all VIP formatting.
@@ -111,10 +150,51 @@ async def _auto_install_vip_emoji_registry(log=None):
                 await asyncio.sleep(2)
                 continue
 
-            # Reply preservation stays active even if VIP formatting is disabled.
+            # ----------------------------------------------------------
+            # ONE-TIME EMPTY DESTINATION LAST50 BOOTSTRAP
+            # Uses the already-hardened normal copy path, therefore historical
+            # imports retain normal message maps/reply/media behaviour. The task
+            # itself decides which requested destination topics are empty.
+            # ----------------------------------------------------------
+            if getattr(main_module, "REQUESTED_LAST50_TASK", None) is None:
+                try:
+                    from telegram_worker.requested_route_bootstrap import (
+                        run_requested_empty_topic_last50,
+                    )
+
+                    requested_last50_task = asyncio.create_task(
+                        run_requested_empty_topic_last50(
+                            main_module,
+                            logger=log,
+                        )
+                    )
+                    setattr(
+                        main_module,
+                        "REQUESTED_LAST50_TASK",
+                        requested_last50_task,
+                    )
+                    if log:
+                        log.warning(
+                            "[REQUESTED LAST50 TASK READY] "
+                            "empty_destinations_only=True count=50 "
+                            "persistent_progress=True preserve_copy_pipeline=True"
+                        )
+                except Exception as exc:
+                    if log:
+                        log.exception(
+                            "[REQUESTED LAST50 TASK INSTALL FAILED] %s: %s",
+                            type(exc).__name__,
+                            exc,
+                        )
+
+            # Reply preservation and requested-route handling stay active even
+            # if VIP custom-emoji formatting is disabled.
             if os.environ.get("VIP_EMOJI_REGISTRY_ENABLED", "1").strip() != "1":
                 if log:
-                    log.info("[VIP EMOJI REGISTRY] disabled; global reply hardening remains active")
+                    log.info(
+                        "[VIP EMOJI REGISTRY] disabled; global reply hardening "
+                        "and requested-route bootstrap remain active"
+                    )
                 return
 
             try:
@@ -129,8 +209,8 @@ async def _auto_install_vip_emoji_registry(log=None):
                         type(exc).__name__,
                         exc,
                     )
-                # Reply hardening is already installed. Keep retrying only the
-                # optional formatter dependency.
+                # Reply hardening/bootstrap are already installed. Keep retrying
+                # only the optional formatter dependency.
                 await asyncio.sleep(2)
                 continue
 

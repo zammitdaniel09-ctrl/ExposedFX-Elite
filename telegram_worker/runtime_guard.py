@@ -151,6 +151,40 @@ async def _auto_install_vip_emoji_registry(log=None):
                 continue
 
             # ----------------------------------------------------------
+            # DEAD HUB TOPIC 1 KILL-SWITCH
+            # Topic 1 has been retired. This layer audits existing messages,
+            # reverse-maps/quarantines offending routes, purges the thread and
+            # continuously removes any future intrusion from any writer.
+            # ----------------------------------------------------------
+            if getattr(main_module, "TOPIC1_KILL_SWITCH_TASK", None) is None:
+                try:
+                    from telegram_worker.topic1_kill_switch import (
+                        install_topic1_kill_switch,
+                    )
+
+                    topic1_state = install_topic1_kill_switch(
+                        main_module,
+                        logger=log,
+                    )
+                    if main_module is not None:
+                        setattr(main_module, "TOPIC1_KILL_SWITCH_STATE", topic1_state)
+                    if log:
+                        log.error(
+                            "[TOPIC1 PERMANENT BLOCK READY] "
+                            "dest=-1003918958200_1 purge=True live_delete=True "
+                            "persistent_route_quarantine=True"
+                        )
+                except Exception as exc:
+                    if log:
+                        log.exception(
+                            "[TOPIC1 KILL SWITCH INSTALL FAILED] %s: %s",
+                            type(exc).__name__,
+                            exc,
+                        )
+                    await asyncio.sleep(2)
+                    continue
+
+            # ----------------------------------------------------------
             # ONE-TIME EMPTY DESTINATION LAST50 BOOTSTRAP
             # Uses the already-hardened normal copy path, therefore historical
             # imports retain normal message maps/reply/media behaviour. The task

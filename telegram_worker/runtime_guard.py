@@ -113,7 +113,7 @@ async def _auto_install_vip_emoji_registry(log=None):
                             f"confirmed={route_contract_state.get('confirmed')} "
                             f"missing={len(route_contract_state.get('missing') or [])} "
                             f"duplicates={len(route_contract_state.get('duplicates') or [])} "
-                            "dest_68237_forwarding=False"
+                            "dest_68237_forwarding=True source=-1004367822325_2583"
                         )
                 except Exception as exc:
                     if log:

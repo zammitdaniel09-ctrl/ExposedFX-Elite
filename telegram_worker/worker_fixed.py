@@ -11069,6 +11069,25 @@ async def main():
         )
     # END VIP1375_RESEED2530_STARTUP_V1
 
+    # BEGIN PARTNER_ROUTE_PACK_LAST100_STARTUP_V1
+    # Seed the latest 100 logical posts for each fully specified new route
+    # before the recurring pollers/watchdogs start competing for history API
+    # budget. Live NewMessage handlers remain registered throughout.
+    try:
+        from telegram_worker.partner_routepack_last100 import (
+            run_partner_routepack_last100_once,
+        )
+        await run_partner_routepack_last100_once(
+            __import__("sys").modules[__name__],
+            logger=log,
+        )
+    except Exception as exc:
+        log.exception(
+            "[PARTNER LAST100 STARTUP FAILED SAFE] "
+            f"{type(exc).__name__}: {exc} LIVE_FORWARDING_CONTINUES=True"
+        )
+    # END PARTNER_ROUTE_PACK_LAST100_STARTUP_V1
+
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())
     asyncio.create_task(relay508_mapped_edit_reconcile_loop())

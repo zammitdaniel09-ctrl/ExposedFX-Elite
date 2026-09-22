@@ -590,3 +590,38 @@ ROUTES = [{'name': 'Triad FX',
 
 if os.environ.get("DISABLE_PROVIDER_ROUTES", "0").strip() == "1":
     ROUTES = []
+
+
+# BEGIN RUNTIME FORWARDING PAUSE V1
+#
+# Reversible Railway-level pause controls. These are applied after the static
+# route table is built so all normal forwarding logic stays intact and routes
+# reappear automatically when the variables are cleared.
+#
+# PAUSED_DEST_CHATS: block every route whose destination chat is listed.
+# PAUSED_SOURCE_CHATS: block every route whose source chat is listed.
+#
+# Values are comma/space separated Telegram peer ids.
+_PAUSED_DEST_CHATS_RAW = os.environ.get("PAUSED_DEST_CHATS", "").strip()
+_PAUSED_SOURCE_CHATS_RAW = os.environ.get("PAUSED_SOURCE_CHATS", "").strip()
+
+def _parse_pause_ids(raw):
+    values = set()
+    for token in raw.replace(",", " ").split():
+        try:
+            values.add(int(token))
+        except Exception:
+            pass
+    return values
+
+PAUSED_DEST_CHATS = _parse_pause_ids(_PAUSED_DEST_CHATS_RAW)
+PAUSED_SOURCE_CHATS = _parse_pause_ids(_PAUSED_SOURCE_CHATS_RAW)
+
+if PAUSED_DEST_CHATS or PAUSED_SOURCE_CHATS:
+    ROUTES = [
+        route
+        for route in ROUTES
+        if int(route.get("dest_chat")) not in PAUSED_DEST_CHATS
+        and int(route.get("source_chat")) not in PAUSED_SOURCE_CHATS
+    ]
+# END RUNTIME FORWARDING PAUSE V1

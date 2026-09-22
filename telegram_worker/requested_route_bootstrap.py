@@ -25,7 +25,9 @@ from telethon.errors import FloodWaitError
 log = logging.getLogger("requested-route-bootstrap")
 
 HUB_CHAT = -1003918958200
-DISABLED_DEST_TOPIC = 68237
+REASSIGNED_DEST_TOPIC = 68237
+REASSIGNED_SOURCE_CHAT = -1004367822325
+REASSIGNED_SOURCE_TOPIC = 2583
 LAST50_COUNT = 50
 SOURCE_FETCH_LIMIT = 250
 STATE_FILENAME = "requested_empty_topic_last50_v1.json"
@@ -94,33 +96,40 @@ def _save_state(path, state):
 
 
 def enforce_requested_route_contracts(main_module, logger=None):
-    """Disable hub topic 68237 and audit every requested forwarding contract."""
+    """Reserve hub topic 68237 exclusively for relay topic 2583 and audit contracts."""
     logger = logger or log
     routes = getattr(main_module, "ROUTES", None)
     if not isinstance(routes, list):
         raise RuntimeError("main worker ROUTES list unavailable")
 
+    approved_68237 = [
+        route
+        for route in routes
+        if _as_int(route.get("dest_chat")) == HUB_CHAT
+        and _as_int(route.get("dest_topic")) == REASSIGNED_DEST_TOPIC
+        and _as_int(route.get("source_chat")) == REASSIGNED_SOURCE_CHAT
+        and _as_int(route.get("source_topic")) == REASSIGNED_SOURCE_TOPIC
+    ]
+
     removed = [
         route
         for route in routes
         if _as_int(route.get("dest_chat")) == HUB_CHAT
-        and _as_int(route.get("dest_topic")) == DISABLED_DEST_TOPIC
+        and _as_int(route.get("dest_topic")) == REASSIGNED_DEST_TOPIC
+        and route not in approved_68237
     ]
 
     if removed:
-        routes[:] = [
-            route
-            for route in routes
-            if not (
-                _as_int(route.get("dest_chat")) == HUB_CHAT
-                and _as_int(route.get("dest_topic")) == DISABLED_DEST_TOPIC
-            )
-        ]
+        routes[:] = [route for route in routes if route not in removed]
 
     logger.warning(
-        "[REQUESTED DESTINATION DISABLED] dest=%s_%s routes_removed=%s forwarding=False",
+        "[REQUESTED DESTINATION 68237 REASSIGNED] dest=%s_%s source=%s_%s "
+        "approved_routes=%s removed_other_routes=%s forwarding=True",
         HUB_CHAT,
-        DISABLED_DEST_TOPIC,
+        REASSIGNED_DEST_TOPIC,
+        REASSIGNED_SOURCE_CHAT,
+        REASSIGNED_SOURCE_TOPIC,
+        len(approved_68237),
         len(removed),
     )
 
@@ -161,7 +170,8 @@ def enforce_requested_route_contracts(main_module, logger=None):
         "confirmed": len(confirmed),
         "missing": missing,
         "duplicates": duplicates,
-        "disabled_68237_routes": len(removed),
+        "removed_unapproved_68237_routes": len(removed),
+        "approved_68237_routes": len(approved_68237),
         "routes": confirmed,
     }
     setattr(main_module, "REQUESTED_ROUTE_CONTRACT_STATE", state)

@@ -11007,6 +11007,37 @@ async def main():
     await probe_new_mirror_routes_once()
     asyncio.create_task(route_title_checker_loop())
     await cleanup_existing_blocked_sender_copies_once()
+
+    # BEGIN VIP1375_RESEED2530_STARTUP_V1
+    # Run before private-live / FASTVIP2 recovery tasks start. This gives the
+    # old account an exclusive one-time window to purge VIP1375 and rebuild it
+    # from relay2530. If rebuilding fails, only this route is disabled.
+    try:
+        from telegram_worker.vip1375_reseed2530 import (
+            run_vip1375_reseed2530_once,
+        )
+        await run_vip1375_reseed2530_once(
+            __import__("sys").modules[__name__],
+            logger=log,
+        )
+    except Exception as exc:
+        try:
+            from telegram_worker.vip1375_reseed2530 import (
+                disable_route_fail_closed,
+            )
+            disable_route_fail_closed(
+                __import__("sys").modules[__name__],
+                log,
+                f"{type(exc).__name__}: {exc}",
+            )
+        except Exception:
+            pass
+        log.exception(
+            "[VIP1375 RESEED2530 FAILED SAFE] "
+            f"{type(exc).__name__}: {exc}"
+        )
+    # END VIP1375_RESEED2530_STARTUP_V1
+
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())
     asyncio.create_task(relay508_mapped_edit_reconcile_loop())
@@ -11016,7 +11047,9 @@ async def main():
     )
     # END VIP7_REBUILD_STARTUP_TASK_V1
     asyncio.create_task(fast_vip_event_router_v2())
-    relay115_vip1375_history_task = asyncio.create_task(run_relay115_vip1375_last50_once())
+    # Old relay115 -> VIP1375 history path retired. VIP1375 now rebuilds
+    # exclusively from relay topic 2530 before live recovery starts.
+    relay115_vip1375_history_task = None
     relay2_vip1364_v3_task = asyncio.create_task(relay2_to_vip1364_last50_v3())
     vip_topic_move_task = asyncio.create_task(vip_topic_move_last50_v1())
     market_slayers_last50_v2_task = asyncio.create_task(market_slayers_last50_v2())

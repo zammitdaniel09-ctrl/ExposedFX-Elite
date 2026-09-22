@@ -66,14 +66,14 @@ def _swap_replaced_source_in_env() -> int:
 _SOURCE_ROUTE_SWAPS = _swap_replaced_source_in_env()
 
 
-def _replace_pair106_with_split_routes_in_env():
-    """Retire the old conjoined pair106 paths and make both sources exclusive.
+def _ensure_split_routes_alongside_pair106_in_env():
+    """Keep the existing paired topic106 forwarding AND add split routes.
 
-    The owner requested:
-      source A -> relay topic 2583 only
-      source B -> relay topic 2585 only
-    Therefore every previous ALT route from either source is removed before the
-    two exact replacements are added. Unrelated ALT routes remain untouched.
+    Required simultaneous behavior:
+      -1004347858259 -> relay106 (paired/deduped) AND relay2583
+      -1003252087470 -> relay106 (paired/deduped) AND relay2585
+
+    No existing pair106 route is removed. Unrelated ALT routes are untouched.
     """
     raw = os.environ.get("ALT_ROUTES_JSON", "").strip()
     if not raw:
@@ -83,22 +83,6 @@ def _replace_pair106_with_split_routes_in_env():
     items = parsed if isinstance(parsed, list) else [parsed]
     if not isinstance(items, list):
         raise RuntimeError("ALT_ROUTES_JSON must be a route list/object")
-
-    sources = {SPLIT_PAIR_SOURCE_A, SPLIT_PAIR_SOURCE_B}
-    kept = []
-    removed = []
-    for item in items:
-        if not isinstance(item, dict):
-            kept.append(item)
-            continue
-        try:
-            source_chat = int(item.get("source_chat", 0))
-        except Exception:
-            source_chat = 0
-        if source_chat in sources:
-            removed.append(item)
-        else:
-            kept.append(item)
 
     wanted = [
         {
@@ -116,14 +100,30 @@ def _replace_pair106_with_split_routes_in_env():
             "dest_topic": SPLIT_PAIR_DEST_B,
         },
     ]
-    kept.extend(wanted)
 
-    os.environ["ALT_ROUTES_JSON"] = json.dumps(kept, separators=(",", ":"))
-    return len(removed), [str(item.get("name") or "") for item in removed]
+    added = 0
+    for route in wanted:
+        exists = any(
+            isinstance(item, dict)
+            and int(item.get("source_chat", 0)) == int(route["source_chat"])
+            and (
+                int(item["source_topic"])
+                if item.get("source_topic") not in (None, "")
+                else None
+            ) == route["source_topic"]
+            and int(item.get("dest_chat", 0)) == int(route["dest_chat"])
+            and int(item.get("dest_topic", 0)) == int(route["dest_topic"])
+            for item in items
+        )
+        if not exists:
+            items.append(route)
+            added += 1
+
+    os.environ["ALT_ROUTES_JSON"] = json.dumps(items, separators=(",", ":"))
+    return added
 
 
-_SPLIT_PAIR_REMOVED, _SPLIT_PAIR_REMOVED_NAMES = _replace_pair106_with_split_routes_in_env()
-
+_SPLIT_PAIR_ROUTES_ADDED = _ensure_split_routes_alongside_pair106_in_env()
 
 def _ensure_conjoined2530_routes_in_env() -> int:
     """Add the two owner-requested source topics before legacy import.
@@ -188,21 +188,17 @@ from telegram_worker.alt_conjoined2530 import run_alt_conjoined2530_last50_once
 from telegram_worker.alt_split_pair_last100 import run_alt_split_pair_last100_once
 
 
-# The old pair106 provider merge has now been retired completely. These two
-# sources are independent routes, so pair106 dedupe/baseline logic must not
-# capture them.
+# Preserve the original paired-provider dedupe/baseline engine while replacing
+# the retired old source id with the current source id. The same two providers
+# therefore continue feeding relay topic106, first-copy-wins, while ALSO
+# feeding their new independent relay2583/relay2585 routes.
 if hasattr(_legacy, "ALT_PAIR106_SOURCE_CHATS"):
-    _legacy.ALT_PAIR106_SOURCE_CHATS = set()
-
-async def _pair106_retired_noop():
-    _legacy.log.warning(
-        "[ALT PAIR106 RETIRED] old_dest=-1004367822325_106 "
-        "replacement_a=-1004367822325_2583 "
-        "replacement_b=-1004367822325_2585"
-    )
-    return True
-
-_legacy.initialise_alt_pair106_no_history = _pair106_retired_noop
+    _legacy.ALT_PAIR106_SOURCE_CHATS = {
+        NEW_PAIR106_SOURCE_CHAT
+        if int(chat_id) == OLD_PAIR106_SOURCE_CHAT
+        else int(chat_id)
+        for chat_id in _legacy.ALT_PAIR106_SOURCE_CHATS
+    }
 
 # Fail closed if a configured route somehow still points at the retired source.
 _retired_routes = [
@@ -217,12 +213,13 @@ if _retired_routes:
     )
 
 _legacy.log.warning(
-    "[ALT SPLIT PAIR ROUTES READY] "
-    f"source_a={SPLIT_PAIR_SOURCE_A} dest_a={SPLIT_PAIR_DEST_CHAT}_{SPLIT_PAIR_DEST_A} "
-    f"source_b={SPLIT_PAIR_SOURCE_B} dest_b={SPLIT_PAIR_DEST_CHAT}_{SPLIT_PAIR_DEST_B} "
-    f"old_pair_routes_removed={_SPLIT_PAIR_REMOVED} "
-    f"removed_names={_SPLIT_PAIR_REMOVED_NAMES} "
-    "PAIR106_RETIRED=True EXCLUSIVE_SOURCES=True"
+    "[ALT PAIR106 + SPLIT ROUTES READY] "
+    f"pair106_sources={sorted(getattr(_legacy, 'ALT_PAIR106_SOURCE_CHATS', []))} "
+    f"pair106_dest={SPLIT_PAIR_DEST_CHAT}_106 "
+    f"source_a={SPLIT_PAIR_SOURCE_A} split_dest_a={SPLIT_PAIR_DEST_CHAT}_{SPLIT_PAIR_DEST_A} "
+    f"source_b={SPLIT_PAIR_SOURCE_B} split_dest_b={SPLIT_PAIR_DEST_CHAT}_{SPLIT_PAIR_DEST_B} "
+    f"split_routes_added={_SPLIT_PAIR_ROUTES_ADDED} "
+    "PAIR106_KEPT=True FIRST_COPY_WINS=True SPLIT_FORWARDING=True"
 )
 
 

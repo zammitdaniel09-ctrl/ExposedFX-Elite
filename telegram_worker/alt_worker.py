@@ -24,6 +24,12 @@ CONJOINED2530_SOURCE_TOPICS = (185, 9)
 CONJOINED2530_DEST_CHAT = -1004367822325
 CONJOINED2530_DEST_TOPIC = 2530
 
+SPLIT_PAIR_SOURCE_A = -1004347858259
+SPLIT_PAIR_SOURCE_B = -1003252087470
+SPLIT_PAIR_DEST_CHAT = -1004367822325
+SPLIT_PAIR_DEST_A = 2583
+SPLIT_PAIR_DEST_B = 2585
+
 
 def _swap_replaced_source_in_env() -> int:
     """Replace only the old source_chat in ALT_ROUTES_JSON before legacy import."""
@@ -58,6 +64,65 @@ def _swap_replaced_source_in_env() -> int:
 
 
 _SOURCE_ROUTE_SWAPS = _swap_replaced_source_in_env()
+
+
+def _replace_pair106_with_split_routes_in_env():
+    """Retire the old conjoined pair106 paths and make both sources exclusive.
+
+    The owner requested:
+      source A -> relay topic 2583 only
+      source B -> relay topic 2585 only
+    Therefore every previous ALT route from either source is removed before the
+    two exact replacements are added. Unrelated ALT routes remain untouched.
+    """
+    raw = os.environ.get("ALT_ROUTES_JSON", "").strip()
+    if not raw:
+        raise RuntimeError("ALT_ROUTES_JSON is empty")
+
+    parsed = json.loads(raw)
+    items = parsed if isinstance(parsed, list) else [parsed]
+    if not isinstance(items, list):
+        raise RuntimeError("ALT_ROUTES_JSON must be a route list/object")
+
+    sources = {SPLIT_PAIR_SOURCE_A, SPLIT_PAIR_SOURCE_B}
+    kept = []
+    removed = []
+    for item in items:
+        if not isinstance(item, dict):
+            kept.append(item)
+            continue
+        try:
+            source_chat = int(item.get("source_chat", 0))
+        except Exception:
+            source_chat = 0
+        if source_chat in sources:
+            removed.append(item)
+        else:
+            kept.append(item)
+
+    wanted = [
+        {
+            "name": "Split Source4347858259 To Relay2583",
+            "source_chat": SPLIT_PAIR_SOURCE_A,
+            "source_topic": None,
+            "dest_chat": SPLIT_PAIR_DEST_CHAT,
+            "dest_topic": SPLIT_PAIR_DEST_A,
+        },
+        {
+            "name": "Split Source3252087470 To Relay2585",
+            "source_chat": SPLIT_PAIR_SOURCE_B,
+            "source_topic": None,
+            "dest_chat": SPLIT_PAIR_DEST_CHAT,
+            "dest_topic": SPLIT_PAIR_DEST_B,
+        },
+    ]
+    kept.extend(wanted)
+
+    os.environ["ALT_ROUTES_JSON"] = json.dumps(kept, separators=(",", ":"))
+    return len(removed), [str(item.get("name") or "") for item in removed]
+
+
+_SPLIT_PAIR_REMOVED, _SPLIT_PAIR_REMOVED_NAMES = _replace_pair106_with_split_routes_in_env()
 
 
 def _ensure_conjoined2530_routes_in_env() -> int:
@@ -120,16 +185,24 @@ _CONJOINED2530_ROUTES_ADDED = _ensure_conjoined2530_routes_in_env()
 from telegram_worker import alt_worker_legacy as _legacy
 from telegram_worker.alt_reply_hardening import install_alt_reply_hardening
 from telegram_worker.alt_conjoined2530 import run_alt_conjoined2530_last50_once
+from telegram_worker.alt_split_pair_last100 import run_alt_split_pair_last100_once
 
 
-# The paired-provider dedupe set is a separate hard-coded runtime guard in the
-# legacy worker. Swap the same source there while leaving the other provider,
-# destination topic and first-copy-wins logic exactly unchanged.
+# The old pair106 provider merge has now been retired completely. These two
+# sources are independent routes, so pair106 dedupe/baseline logic must not
+# capture them.
 if hasattr(_legacy, "ALT_PAIR106_SOURCE_CHATS"):
-    _legacy.ALT_PAIR106_SOURCE_CHATS = {
-        NEW_PAIR106_SOURCE_CHAT if int(chat_id) == OLD_PAIR106_SOURCE_CHAT else int(chat_id)
-        for chat_id in _legacy.ALT_PAIR106_SOURCE_CHATS
-    }
+    _legacy.ALT_PAIR106_SOURCE_CHATS = set()
+
+async def _pair106_retired_noop():
+    _legacy.log.warning(
+        "[ALT PAIR106 RETIRED] old_dest=-1004367822325_106 "
+        "replacement_a=-1004367822325_2583 "
+        "replacement_b=-1004367822325_2585"
+    )
+    return True
+
+_legacy.initialise_alt_pair106_no_history = _pair106_retired_noop
 
 # Fail closed if a configured route somehow still points at the retired source.
 _retired_routes = [
@@ -144,12 +217,12 @@ if _retired_routes:
     )
 
 _legacy.log.warning(
-    "[ALT SOURCE SWAP ACTIVE] "
-    f"old={OLD_PAIR106_SOURCE_CHAT} "
-    f"new={NEW_PAIR106_SOURCE_CHAT} "
-    f"routes_changed={_SOURCE_ROUTE_SWAPS} "
-    f"pair106_sources={sorted(getattr(_legacy, 'ALT_PAIR106_SOURCE_CHATS', []))} "
-    "LOGIC_UNCHANGED=True DESTINATION_UNCHANGED=True"
+    "[ALT SPLIT PAIR ROUTES READY] "
+    f"source_a={SPLIT_PAIR_SOURCE_A} dest_a={SPLIT_PAIR_DEST_CHAT}_{SPLIT_PAIR_DEST_A} "
+    f"source_b={SPLIT_PAIR_SOURCE_B} dest_b={SPLIT_PAIR_DEST_CHAT}_{SPLIT_PAIR_DEST_B} "
+    f"old_pair_routes_removed={_SPLIT_PAIR_REMOVED} "
+    f"removed_names={_SPLIT_PAIR_REMOVED_NAMES} "
+    "PAIR106_RETIRED=True EXCLUSIVE_SOURCES=True"
 )
 
 
@@ -170,6 +243,18 @@ ROUTES = _legacy.ROUTES
 SOURCE_CHATS = _legacy.SOURCE_CHATS
 
 
+async def _run_split_pair_last100_guarded():
+    try:
+        await run_alt_split_pair_last100_once(_legacy, logger=_legacy.log)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _legacy.log.exception(
+            "[ALT SPLIT LAST100 FAILED SAFE] "
+            f"{type(exc).__name__}: {exc} LIVE_FORWARDING_CONTINUES=True"
+        )
+
+
 async def _run_conjoined2530_history_guarded():
     try:
         await run_alt_conjoined2530_last50_once(_legacy, logger=_legacy.log)
@@ -183,12 +268,14 @@ async def _run_conjoined2530_history_guarded():
 
 
 async def main():
-    history_task = asyncio.create_task(_run_conjoined2530_history_guarded())
+    split_history_task = asyncio.create_task(_run_split_pair_last100_guarded())
+    conjoined_history_task = asyncio.create_task(_run_conjoined2530_history_guarded())
     try:
         return await _legacy.main()
     finally:
-        if not history_task.done():
-            history_task.cancel()
+        for task in (split_history_task, conjoined_history_task):
+            if not task.done():
+                task.cancel()
 
 
 if __name__ == "__main__":

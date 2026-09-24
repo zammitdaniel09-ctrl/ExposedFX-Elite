@@ -2132,29 +2132,7 @@ async def relay508_mapped_edit_reconcile_loop():
 # END MAIN_MAPPED_IN_PLACE_EDITS_V1
 
 
-VIP7_DESTINATION_HARD_STOP_CHAT = -1003726286301
-VIP7_DESTINATION_HARD_STOP_TOPIC = 7
-
-def vip7_destination_hard_stopped(route):
-    try:
-        return (
-            int(route.get("dest_chat", 0)) == VIP7_DESTINATION_HARD_STOP_CHAT
-            and int(route.get("dest_topic", 0)) == VIP7_DESTINATION_HARD_STOP_TOPIC
-        )
-    except Exception:
-        return False
-
-
 async def copy_one(message, route, edited=False, ensure_reply=True):
-    if vip7_destination_hard_stopped(route):
-        log.warning(
-            "[VIP7 DESTINATION HARD STOP] "
-            f"route={route.get('name')!r} "
-            f"source={route.get('source_chat')}_{route.get('source_topic')} "
-            "dest=-1003726286301_7 sent=False"
-        )
-        return None
-
     if has_username_mention(message):
 
         log_username_filter_main(
@@ -2219,15 +2197,6 @@ async def copy_one(message, route, edited=False, ensure_reply=True):
 
 
 async def copy_album(messages, route):
-    if vip7_destination_hard_stopped(route):
-        log.warning(
-            "[VIP7 DESTINATION HARD STOP ALBUM] "
-            f"route={route.get('name')!r} "
-            f"source={route.get('source_chat')}_{route.get('source_topic')} "
-            "dest=-1003726286301_7 sent=False"
-        )
-        return None
-
     if unit_has_username_mention(messages):
 
         log_username_filter_main(

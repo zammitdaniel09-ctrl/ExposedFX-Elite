@@ -689,18 +689,3 @@ if PAUSED_DEST_CHATS or PAUSED_SOURCE_CHATS:
 # END RUNTIME FORWARDING PAUSE V1
 
 
-# BEGIN PERMANENT VIP7 DESTINATION STOP V1
-# Owner-requested hard stop: absolutely no route may write into
-# -1003726286301 topic 7. Outbound routes whose SOURCE is topic 7 are not
-# affected by this destination-only block.
-VIP7_BLOCKED_DEST_CHAT = -1003726286301
-VIP7_BLOCKED_DEST_TOPIC = 7
-ROUTES = [
-    route
-    for route in ROUTES
-    if not (
-        int(route.get("dest_chat", 0)) == VIP7_BLOCKED_DEST_CHAT
-        and int(route.get("dest_topic", 0)) == VIP7_BLOCKED_DEST_TOPIC
-    )
-]
-# END PERMANENT VIP7 DESTINATION STOP V1

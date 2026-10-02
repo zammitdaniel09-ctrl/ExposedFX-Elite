@@ -254,6 +254,22 @@ async def _send_single(client, message, message_map, data_dir, logger):
                 type(exc).__name__,
                 exc,
             )
+            if reply_to is not None:
+                try:
+                    return await _with_floodwait(
+                        lambda: client.send_file(
+                            DEST_CHAT,
+                            message.media,
+                            caption=text or None,
+                            formatting_entities=entities if text else None,
+                            parse_mode=None,
+                            reply_to=None,
+                        ),
+                        logger,
+                        "media-no-reply:" + str(getattr(message, "id", None)),
+                    )
+                except Exception:
+                    pass
 
         cache_dir = data_dir / "wholechat_media_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -290,18 +306,39 @@ async def _send_single(client, message, message_map, data_dir, logger):
     if not text:
         return None
 
-    return await _with_floodwait(
-        lambda: client.send_message(
-            DEST_CHAT,
-            text,
-            formatting_entities=entities,
-            parse_mode=None,
-            reply_to=reply_to,
-            link_preview=True,
-        ),
-        logger,
-        "text:" + str(getattr(message, "id", None)),
-    )
+    try:
+        return await _with_floodwait(
+            lambda: client.send_message(
+                DEST_CHAT,
+                text,
+                formatting_entities=entities,
+                parse_mode=None,
+                reply_to=reply_to,
+                link_preview=True,
+            ),
+            logger,
+            "text:" + str(getattr(message, "id", None)),
+        )
+    except Exception as exc:
+        if reply_to is None:
+            raise
+        logger.warning(
+            "[WHOLECHAT REPLY FALLBACK] source_msg=%s mode=text error=%s",
+            getattr(message, "id", None),
+            type(exc).__name__,
+        )
+        return await _with_floodwait(
+            lambda: client.send_message(
+                DEST_CHAT,
+                text,
+                formatting_entities=entities,
+                parse_mode=None,
+                reply_to=None,
+                link_preview=True,
+            ),
+            logger,
+            "text-no-reply:" + str(getattr(message, "id", None)),
+        )
 
 
 async def _send_album(client, unit, message_map, data_dir, logger):
@@ -348,6 +385,22 @@ async def _send_album(client, unit, message_map, data_dir, logger):
             type(exc).__name__,
             exc,
         )
+        if reply_to is not None:
+            try:
+                return await _with_floodwait(
+                    lambda: client.send_file(
+                        DEST_CHAT,
+                        files,
+                        caption=caption or None,
+                        formatting_entities=entities if caption else None,
+                        parse_mode=None,
+                        reply_to=None,
+                    ),
+                    logger,
+                    "album-no-reply:" + ids_text,
+                )
+            except Exception:
+                pass
 
     cache_dir = data_dir / "wholechat_media_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)

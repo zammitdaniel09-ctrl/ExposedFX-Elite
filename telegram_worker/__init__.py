@@ -37,6 +37,29 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                     )
                 await asyncio.sleep(10)
 
+    async def _run_partner_3885074241_last20_with_retry(main_module, log=None):
+        while True:
+            try:
+                from .partner_3885074241_last20 import (
+                    run_partner_3885074241_last20,
+                )
+
+                await run_partner_3885074241_last20(
+                    main_module,
+                    logger=log,
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if log:
+                    log.exception(
+                        "[PARTNER LAST20 WAIT/RETRY] %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                await asyncio.sleep(10)
+
     async def _wait_and_run_owner_tasks(log=None):
         while True:
             try:
@@ -85,6 +108,32 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                                 "count=50 force_nonempty=True "
                                 "skip_already_mapped=True "
                                 "preserve_copy_pipeline=True"
+                            )
+
+                    if getattr(
+                        main_module,
+                        "PARTNER_3885074241_LAST20_TASK",
+                        None,
+                    ) is None:
+                        partner_task = asyncio.create_task(
+                            _run_partner_3885074241_last20_with_retry(
+                                main_module,
+                                log,
+                            )
+                        )
+                        setattr(
+                            main_module,
+                            "PARTNER_3885074241_LAST20_TASK",
+                            partner_task,
+                        )
+                        if log:
+                            log.warning(
+                                "[PARTNER LAST20 TASK READY] "
+                                "routes=3 count=20 "
+                                "dest_chat=-1003885074241 "
+                                "sources=-1003726286301_11,-1003726286301_1364,-1003726286301_7 "
+                                "dest_topics=4663,4660,4665 "
+                                "live_routes=True persistent_progress=True"
                             )
 
                     if getattr(

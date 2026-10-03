@@ -82,6 +82,28 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                     and client.is_connected()
                     and await client.is_user_authorized()
                 ):
+                    if not getattr(
+                        main_module,
+                        "PARTNER_DEAD_DESTINATION_GUARD_INSTALLED",
+                        False,
+                    ):
+                        from .partner_dead_destination_guard import (
+                            install_partner_dead_destination_guard,
+                        )
+
+                        guard_state = install_partner_dead_destination_guard(
+                            main_module,
+                            logger=log,
+                        )
+                        if log:
+                            log.error(
+                                "[PARTNER DEAD GUARD READY] "
+                                "dest_chat=-1003885074241 "
+                                "topics=4663,4665 "
+                                "routes_removed=%s purge_started=True",
+                                guard_state.get("removed_route_count", 0),
+                            )
+
                     if getattr(
                         main_module,
                         "FORCE_82617_LAST50_TASK",
@@ -129,10 +151,10 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                         if log:
                             log.warning(
                                 "[PARTNER LAST20 TASK READY] "
-                                "routes=3 count=20 "
+                                "routes=1 count=20 "
                                 "dest_chat=-1003885074241 "
-                                "sources=-1003726286301_11,-1003726286301_1364,-1003726286301_7 "
-                                "dest_topics=4663,4660,4665 "
+                                "sources=-1003726286301_1364 "
+                                "dest_topics=4660 "
                                 "live_routes=True persistent_progress=True"
                             )
 

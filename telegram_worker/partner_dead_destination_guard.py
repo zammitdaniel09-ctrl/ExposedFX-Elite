@@ -76,40 +76,20 @@ async def _delete_batch(client, ids, logger, topic):
 async def _purge_topic(client, topic, logger):
     deleted = 0
     found = 0
-    batch = []
+    passes = 0
 
+    # Re-fetch after every delete batch until Telegram reports no children.
+    # This is safer than deleting while walking one long iterator because no
+    # pagination cursor can skip over rows removed during the same traversal.
     while True:
+        passes += 1
+
         try:
-            async for message in client.iter_messages(
+            messages = await client.get_messages(
                 DEST_CHAT,
+                limit=DELETE_BATCH,
                 reply_to=topic,
-            ):
-                mid = _as_int(getattr(message, "id", None))
-                if mid is None or mid == topic:
-                    continue
-
-                found += 1
-                batch.append(mid)
-
-                if len(batch) >= DELETE_BATCH:
-                    deleted += await _delete_batch(
-                        client,
-                        batch,
-                        logger,
-                        topic,
-                    )
-                    batch = []
-
-            if batch:
-                deleted += await _delete_batch(
-                    client,
-                    batch,
-                    logger,
-                    topic,
-                )
-                batch = []
-            break
-
+            )
         except FloodWaitError as exc:
             wait_for = max(1, int(exc.seconds)) + 1
             logger.warning(
@@ -119,52 +99,61 @@ async def _purge_topic(client, topic, logger):
                 wait_for,
             )
             await asyncio.sleep(wait_for)
+            continue
 
-    # Verify with a fresh thread query. Any leftovers get a second delete pass.
-    remaining = []
-    try:
-        check = await client.get_messages(
-            DEST_CHAT,
-            limit=200,
-            reply_to=topic,
-        )
-        remaining = [
+        ids = [
             int(message.id)
-            for message in list(check or [])
+            for message in list(messages or [])
             if _as_int(getattr(message, "id", None)) not in (None, topic)
         ]
-    except Exception as exc:
-        logger.warning(
-            "[PARTNER DEAD PURGE VERIFY FAILED] dest=%s_%s %s: %s",
-            DEST_CHAT,
-            topic,
-            type(exc).__name__,
-            exc,
-        )
 
-    if remaining:
+        if not ids:
+            break
+
+        found += len(ids)
         deleted += await _delete_batch(
             client,
-            remaining,
+            ids,
             logger,
             topic,
         )
 
+        # Prevent a pathological permission/API failure from spinning forever.
+        if passes >= 10000:
+            raise RuntimeError(
+                f"purge exceeded safety pass limit dest={DEST_CHAT}_{topic}"
+            )
+
+    verify = await client.get_messages(
+        DEST_CHAT,
+        limit=5,
+        reply_to=topic,
+    )
+    remaining = [
+        int(message.id)
+        for message in list(verify or [])
+        if _as_int(getattr(message, "id", None)) not in (None, topic)
+    ]
+
+    if remaining:
+        raise RuntimeError(
+            f"purge verification failed dest={DEST_CHAT}_{topic} remaining={remaining}"
+        )
+
     logger.warning(
         "[PARTNER DEAD PURGE DONE] dest=%s_%s found=%s deleted=%s "
-        "verify_remaining=%s root_preserved=True",
+        "verify_remaining=0 root_preserved=True",
         DEST_CHAT,
         topic,
         found,
         deleted,
-        max(0, len(remaining)),
     )
 
     return {
         "topic": topic,
         "found": found,
         "deleted": deleted,
-        "verify_remaining": max(0, len(remaining)),
+        "verify_remaining": 0,
     }
 
 

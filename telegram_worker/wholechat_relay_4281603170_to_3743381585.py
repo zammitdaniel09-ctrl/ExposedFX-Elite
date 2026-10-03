@@ -24,6 +24,12 @@ from pathlib import Path
 from telethon import events
 from telethon.errors import FloodWaitError
 
+from telegram_worker.samgtrades_house_formatter import (
+    format_samgtrades_text,
+    registry_ready,
+    run_self_test as run_samgtrades_formatter_self_test,
+)
+
 log = logging.getLogger("wholechat-4281603170-to-3743381585")
 
 SOURCE_CHAT = -1004281603170
@@ -228,9 +234,22 @@ def _remember_sent(unit, sent, message_map):
             )
 
 
-async def _send_single(client, message, message_map, data_dir, logger):
+async def _send_single(client, message, message_map, data_dir, registry, logger):
     text = _message_text(message)
     entities = _entities(message)
+    text, entities, format_kind = format_samgtrades_text(
+        text,
+        entities,
+        registry,
+    )
+    if format_kind:
+        logger.warning(
+            "[WHOLECHAT HOUSE FORMAT] kind=%s source_msg=%s source=%s dest=%s",
+            format_kind,
+            getattr(message, "id", None),
+            SOURCE_CHAT,
+            DEST_CHAT,
+        )
     reply_to = _mapped_reply_target(message, message_map)
 
     if getattr(message, "media", None):
@@ -341,7 +360,7 @@ async def _send_single(client, message, message_map, data_dir, logger):
         )
 
 
-async def _send_album(client, unit, message_map, data_dir, logger):
+async def _send_album(client, unit, message_map, data_dir, registry, logger):
     files = [
         message.media
         for message in unit
@@ -353,6 +372,7 @@ async def _send_album(client, unit, message_map, data_dir, logger):
             unit[0],
             message_map,
             data_dir,
+            registry,
             logger,
         )
 
@@ -362,6 +382,19 @@ async def _send_album(client, unit, message_map, data_dir, logger):
     )
     caption = _message_text(caption_message)
     entities = _entities(caption_message)
+    caption, entities, format_kind = format_samgtrades_text(
+        caption,
+        entities,
+        registry,
+    )
+    if format_kind:
+        logger.warning(
+            "[WHOLECHAT HOUSE FORMAT] kind=%s source_msg=%s source=%s dest=%s album=True",
+            format_kind,
+            getattr(caption_message, "id", None),
+            SOURCE_CHAT,
+            DEST_CHAT,
+        )
     reply_to = _mapped_reply_target(unit[0], message_map)
     ids_text = ",".join(str(v) for v in _unit_ids(unit))
 
@@ -450,6 +483,7 @@ async def _deliver_unit(
     message_map,
     map_path,
     data_dir,
+    registry,
     lock,
     logger,
     reason,
@@ -472,6 +506,7 @@ async def _deliver_unit(
                 unit,
                 message_map,
                 data_dir,
+                registry,
                 logger,
             )
         else:
@@ -480,6 +515,7 @@ async def _deliver_unit(
                 unit[0],
                 message_map,
                 data_dir,
+                registry,
                 logger,
             )
 
@@ -511,6 +547,22 @@ async def run_wholechat_4281603170_to_3743381585(
     client = getattr(main_module, "client", None)
     if client is None:
         raise RuntimeError("Main Telegram client is unavailable")
+
+    signal_tests, update_tests = run_samgtrades_formatter_self_test()
+    registry = getattr(main_module, "EMOJI_REGISTRY", None)
+    if not registry_ready(registry):
+        raise RuntimeError(
+            "SamGtrades house formatter is waiting for the VIP custom-emoji registry"
+        )
+
+    logger.warning(
+        "[WHOLECHAT HOUSE FORMATTER READY] source=%s dest=%s "
+        "style=VIP_TOPIC_7 signal_tests=%s update_tests=%s aliases=Boom,GreenTick,RedCross,Warning",
+        SOURCE_CHAT,
+        DEST_CHAT,
+        signal_tests,
+        update_tests,
+    )
 
     data_dir = _data_dir(main_module)
     state_path = data_dir / STATE_FILENAME
@@ -552,6 +604,7 @@ async def run_wholechat_4281603170_to_3743381585(
                 message_map,
                 map_path,
                 data_dir,
+                registry,
                 lock,
                 logger,
                 "live",
@@ -575,6 +628,7 @@ async def run_wholechat_4281603170_to_3743381585(
                 message_map,
                 map_path,
                 data_dir,
+                registry,
                 lock,
                 logger,
                 "live-album",

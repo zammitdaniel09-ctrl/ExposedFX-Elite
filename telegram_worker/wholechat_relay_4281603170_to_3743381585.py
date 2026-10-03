@@ -761,6 +761,7 @@ async def run_wholechat_4281603170_to_3743381585(
                     message_map,
                     map_path,
                     data_dir,
+                    registry,
                     lock,
                     logger,
                     "last50",

@@ -1,9 +1,10 @@
 """One-time last-20 bootstrap for three VIP -> partner topic routes.
 
-Contracts:
-- -1003726286301 / 11   -> -1003885074241 / 4663
+Active contract:
 - -1003726286301 / 1364 -> -1003885074241 / 4660
-- -1003726286301 / 7    -> -1003885074241 / 4665
+
+Topics 4663 and 4665 were subsequently retired by the owner and are
+intentionally excluded from this bootstrap.
 
 The normal ROUTES table owns live forwarding. This module only imports the
 latest 20 logical source posts once, oldest -> newest, using the production
@@ -35,9 +36,7 @@ LAST20_COUNT = 20
 STATE_FILENAME = "partner_3885074241_last20_v1.json"
 
 TARGETS = [
-    (-1003726286301, 11, DEST_CHAT, 4663),
     (-1003726286301, 1364, DEST_CHAT, 4660),
-    (-1003726286301, 7, DEST_CHAT, 4665),
 ]
 
 

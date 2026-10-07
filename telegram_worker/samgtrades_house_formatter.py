@@ -123,7 +123,7 @@ def classify_samgtrades_update(text: str) -> Optional[str]:
         return "{RedCross} TRADE CANCELLED"
 
     if "XAUUSD" in upper and re.search(r"\bZONE\s+ACTIVE\b", upper):
-        return "{GreenTick} TRADE STILL ACTIVE"
+        return "{GreenTick} ZONE TRIGGERED/ACTIVATED"
 
     tp = re.search(r"\bTP\s*(\d+)\s+HIT\b", upper)
     if tp:
@@ -210,7 +210,7 @@ Level 4183.955 is no longer valid — a new range has formed.
 
 Filled at 4160.080. Tracking has started.
 
-🔑 Ref: 1790863560000S""": "{GreenTick} TRADE STILL ACTIVE",
+🔑 Ref: 1790863560000S""": "{GreenTick} ZONE TRIGGERED/ACTIVATED",
         """✅ TP1 HIT — XAUUSD
 
 Take Profit reached at 4153.540 (+65.4 pips)

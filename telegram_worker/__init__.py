@@ -37,6 +37,32 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                     )
                 await asyncio.sleep(10)
 
+    async def _run_downstream_3743381585_to_3216105903_with_retry(
+        main_module,
+        log=None,
+    ):
+        while True:
+            try:
+                from .wholechat_relay_3743381585_to_3216105903 import (
+                    run_wholechat_3743381585_to_3216105903,
+                )
+
+                await run_wholechat_3743381585_to_3216105903(
+                    main_module,
+                    logger=log,
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if log:
+                    log.exception(
+                        "[DOWNSTREAM RELAY WAIT/RETRY] %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                await asyncio.sleep(10)
+
     async def _run_partner_3885074241_last20_with_retry(main_module, log=None):
         while True:
             try:
@@ -156,6 +182,32 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                                 "sources=-1003726286301_1364 "
                                 "dest_topics=4660 "
                                 "live_routes=True persistent_progress=True"
+                            )
+
+                    if getattr(
+                        main_module,
+                        "WHOLECHAT_3743381585_TO_3216105903_TASK",
+                        None,
+                    ) is None:
+                        downstream_task = asyncio.create_task(
+                            _run_downstream_3743381585_to_3216105903_with_retry(
+                                main_module,
+                                log,
+                            )
+                        )
+                        setattr(
+                            main_module,
+                            "WHOLECHAT_3743381585_TO_3216105903_TASK",
+                            downstream_task,
+                        )
+                        if log:
+                            log.warning(
+                                "[DOWNSTREAM RELAY TASK READY] "
+                                "source=-1003743381585 "
+                                "dest=-1003216105903 "
+                                "past_messages=1 live=True "
+                                "whole_source=True whole_destination=True "
+                                "preserve_source_format=True"
                             )
 
                     if getattr(

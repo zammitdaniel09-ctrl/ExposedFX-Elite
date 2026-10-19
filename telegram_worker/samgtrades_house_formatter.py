@@ -4,13 +4,13 @@ Converts structured SamGtrades XAUUSD signals/updates into the ImperiumFX
 house presentation used by the AI-forwarded VIP while adding R/R multiples.
 
 RR policy:
-- ENTRY is 0.0 RR.
+- ENTRY is shown without an RR label.
 - SL is -1.0 RR.
 - TP RR values are taken from the provider's source signal when present
   (for example 1R / 2.5R / 6.39R), otherwise calculated from entry/SL/TP.
 - TP-hit updates recover the exact TP RR from the replied-to source signal.
 - SL hit is always -1.0 RR.
-- Zone activation and a pending-order cancellation are 0.0 RR.
+- Zone activation, break-even and cancellations are shown without RR labels.
 Unknown/general-chat messages still pass through unchanged.
 """
 
@@ -199,7 +199,7 @@ def _build_signal_with_rr(registry, parsed):
     lines = [
         f"{{Boom}} {heading}",
         "",
-        f"ENTRY = {entry} (0.0 RR)",
+        f"ENTRY = {entry}",
         "",
     ]
 
@@ -281,7 +281,7 @@ def _append_rr_to_base_update(
         return template
 
     if "BREAKEVEN" in upper or "ENTRY STILL VALID" in upper:
-        return f"{template} (0.0 RR)"
+        return template
 
     pips = _pip_value(raw)
     risk_pips = (
@@ -322,10 +322,10 @@ def classify_samgtrades_update(
     )
 
     if "XAUUSD" in upper and re.search(r"\bCANCEL+ED\b|\bCANCELED\b", upper):
-        return "{RedCross} TRADE CANCELLED — 0.0 RR"
+        return "{RedCross} TRADE CANCELLED"
 
     if "XAUUSD" in upper and re.search(r"\bZONE\s+ACTIVE\b", upper):
-        return "{GreenTick} ZONE TRIGGERED/ACTIVATED — 0.0 RR"
+        return "{GreenTick} ZONE TRIGGERED/ACTIVATED"
 
     tp = re.search(r"\bTP\s*(\d+)\s+HIT\b", upper)
     if tp:
@@ -436,12 +436,12 @@ Trade responsibly! 📈
 
 Level 4183.955 is no longer valid — a new range has formed.
 
-🔑 Ref: 1790863020000S""": "{RedCross} TRADE CANCELLED — 0.0 RR",
+🔑 Ref: 1790863020000S""": "{RedCross} TRADE CANCELLED",
         """✅ ZONE ACTIVE — XAUUSD SELL
 
 Filled at 4183.955. Tracking has started.
 
-🔑 Ref: 1790863020000S""": "{GreenTick} ZONE TRIGGERED/ACTIVATED — 0.0 RR",
+🔑 Ref: 1790863020000S""": "{GreenTick} ZONE TRIGGERED/ACTIVATED",
         """✅ TP1 HIT — XAUUSD
 
 Take Profit reached at 4180.100 (+38.6 pips)

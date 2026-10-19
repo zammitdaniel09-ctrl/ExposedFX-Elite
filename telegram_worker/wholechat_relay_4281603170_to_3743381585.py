@@ -26,6 +26,7 @@ from telethon.errors import FloodWaitError
 
 from telegram_worker.samgtrades_house_formatter import (
     format_samgtrades_text,
+    parse_samgtrades_signal,
     registry_ready,
     run_self_test as run_samgtrades_formatter_self_test,
 )
@@ -234,13 +235,81 @@ def _remember_sent(unit, sent, message_map):
             )
 
 
+async def _resolve_parent_signal_text(client, message, logger, max_hops=4):
+    """Recover the original SamGtrades signal behind an update reply.
+
+    Updates normally reply directly to the source signal, but we follow a few
+    parent hops so RR recovery stays correct even if Telegram/provider replies
+    to an intermediate update.
+    """
+    current = message
+    seen = set()
+
+    for hop in range(max_hops):
+        candidates = _source_reply_ids(current)
+        parent_id = next(
+            (value for value in candidates if value not in seen),
+            None,
+        )
+        if not parent_id:
+            return None
+
+        seen.add(parent_id)
+
+        try:
+            parent = await _with_floodwait(
+                lambda: client.get_messages(
+                    SOURCE_CHAT,
+                    ids=int(parent_id),
+                ),
+                logger,
+                f"rr-parent:{parent_id}",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[WHOLECHAT RR PARENT FETCH FAILED] source_msg=%s parent=%s %s: %s",
+                getattr(message, "id", None),
+                parent_id,
+                type(exc).__name__,
+                exc,
+            )
+            return None
+
+        if isinstance(parent, list):
+            parent = parent[0] if parent else None
+        if parent is None:
+            return None
+
+        parent_text = _message_text(parent)
+        if parse_samgtrades_signal(parent_text):
+            logger.info(
+                "[WHOLECHAT RR PARENT RESOLVED] source_msg=%s parent=%s hop=%s",
+                getattr(message, "id", None),
+                parent_id,
+                hop + 1,
+            )
+            return parent_text
+
+        current = parent
+
+    return None
+
+
 async def _send_single(client, message, message_map, data_dir, registry, logger):
     text = _message_text(message)
     entities = _entities(message)
+    parent_text = None
+    if not parse_samgtrades_signal(text) and _source_reply_ids(message):
+        parent_text = await _resolve_parent_signal_text(
+            client,
+            message,
+            logger,
+        )
     text, entities, format_kind = format_samgtrades_text(
         text,
         entities,
         registry,
+        parent_text=parent_text,
     )
     if format_kind:
         logger.warning(
@@ -382,10 +451,18 @@ async def _send_album(client, unit, message_map, data_dir, registry, logger):
     )
     caption = _message_text(caption_message)
     entities = _entities(caption_message)
+    parent_text = None
+    if not parse_samgtrades_signal(caption) and _source_reply_ids(caption_message):
+        parent_text = await _resolve_parent_signal_text(
+            client,
+            caption_message,
+            logger,
+        )
     caption, entities, format_kind = format_samgtrades_text(
         caption,
         entities,
         registry,
+        parent_text=parent_text,
     )
     if format_kind:
         logger.warning(

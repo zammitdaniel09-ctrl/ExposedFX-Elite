@@ -563,18 +563,6 @@ ROUTES = [{'name': 'Triad FX',
   'strict_source_topic': True,
   'ordered_private': True,
   'loop_guard_peers': [-1004367822325, -1003726286301]},
- {'name': 'VIP RELAY Topic2530 To VIP1375',
-  'source_chat': -1004367822325,
-  'source_topic': 2530,
-  'dest_chat': -1003726286301,
-  'dest_topic': 1375,
-  'verify_title': False,
-  'anonymous_send_as': False,
-  'live_only': True,
-  'copy_reply_parent': False,
-  'strict_source_topic': True,
-  'ordered_private': True,
-  'loop_guard_peers': [-1004367822325, -1003726286301]},
  {'name': 'Relay508 To VIP7',
   'source_chat': -1004367822325,
   'source_topic': 508,
@@ -676,6 +664,28 @@ ROUTES = [
     )
 ]
 # END PARTNER DEAD DESTINATION HARD STOP V1
+
+
+# BEGIN RELAY2530 FORCE STOP V1
+# Owner retired -1004367822325/topic 2530 completely. No route may read from
+# it or write into it.
+_RELAY2530_CHAT = -1004367822325
+_RELAY2530_TOPIC = 2530
+ROUTES = [
+    route
+    for route in ROUTES
+    if not (
+        (
+            int(route.get("source_chat")) == _RELAY2530_CHAT
+            and int(route.get("source_topic") or 0) == _RELAY2530_TOPIC
+        )
+        or (
+            int(route.get("dest_chat")) == _RELAY2530_CHAT
+            and int(route.get("dest_topic") or 0) == _RELAY2530_TOPIC
+        )
+    )
+]
+# END RELAY2530 FORCE STOP V1
 
 if os.environ.get("DISABLE_PROVIDER_ROUTES", "0").strip() == "1":
     ROUTES = []

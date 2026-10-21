@@ -19,10 +19,15 @@ import os
 OLD_PAIR106_SOURCE_CHAT = -1002438454194
 NEW_PAIR106_SOURCE_CHAT = -1004347858259
 
-CONJOINED2530_SOURCE_CHAT = -1004349952583
-CONJOINED2530_SOURCE_TOPICS = (185, 9)
-CONJOINED2530_DEST_CHAT = -1004367822325
-CONJOINED2530_DEST_TOPIC = 2530
+RETIRED2530_CHAT = -1004367822325
+RETIRED2530_TOPIC = 2530
+
+NEW_TOPIC_SOURCE_CHAT = -1004349952583
+NEW_TOPIC_DEST_CHAT = -1004367822325
+NEW_TOPIC_ROUTES = (
+    (5246, 7248),
+    (5247, 7250),
+)
 
 SPLIT_PAIR_SOURCE_A = -1004347858259
 SPLIT_PAIR_SOURCE_B = -1003252087470
@@ -125,12 +130,11 @@ def _ensure_split_routes_alongside_pair106_in_env():
 
 _SPLIT_PAIR_ROUTES_ADDED = _ensure_split_routes_alongside_pair106_in_env()
 
-def _ensure_conjoined2530_routes_in_env() -> int:
-    """Add the two owner-requested source topics before legacy import.
+def _hard_stop_2530_in_env() -> int:
+    """Force-retire relay topic 2530 in both directions before legacy import.
 
-    They intentionally share one destination topic so Telegram posts from both
-    sources form one combined live stream. Existing unrelated routes are left
-    untouched.
+    Any route writing INTO -1004367822325/2530 or reading FROM that exact topic
+    is stripped, including stale routes still present in Railway ALT_ROUTES_JSON.
     """
     raw = os.environ.get("ALT_ROUTES_JSON", "").strip()
     if not raw:
@@ -141,24 +145,81 @@ def _ensure_conjoined2530_routes_in_env() -> int:
     if not isinstance(items, list):
         raise RuntimeError("ALT_ROUTES_JSON must be a route list/object")
 
-    added = 0
+    kept = []
+    removed = 0
+
+    for item in items:
+        if not isinstance(item, dict):
+            kept.append(item)
+            continue
+
+        try:
+            source_chat = int(item.get("source_chat", 0))
+            source_topic = (
+                int(item["source_topic"])
+                if item.get("source_topic") not in (None, "")
+                else None
+            )
+            dest_chat = int(item.get("dest_chat", 0))
+            dest_topic = int(item.get("dest_topic", 0))
+        except Exception:
+            kept.append(item)
+            continue
+
+        retired_source = (
+            source_chat == RETIRED2530_CHAT
+            and source_topic == RETIRED2530_TOPIC
+        )
+        retired_dest = (
+            dest_chat == RETIRED2530_CHAT
+            and dest_topic == RETIRED2530_TOPIC
+        )
+
+        if retired_source or retired_dest:
+            removed += 1
+            continue
+
+        kept.append(item)
+
+    os.environ["ALT_ROUTES_JSON"] = json.dumps(
+        kept,
+        separators=(",", ":"),
+    )
+    return removed
+
+
+_RETIRED2530_ROUTES_REMOVED = _hard_stop_2530_in_env()
+
+
+def _ensure_new_topic_routes_in_env() -> int:
+    """Add the two owner-requested replacement routes on the ALT account."""
+    raw = os.environ.get("ALT_ROUTES_JSON", "").strip()
+    if not raw:
+        raise RuntimeError("ALT_ROUTES_JSON is empty")
+
+    parsed = json.loads(raw)
+    items = parsed if isinstance(parsed, list) else [parsed]
+    if not isinstance(items, list):
+        raise RuntimeError("ALT_ROUTES_JSON must be a route list/object")
+
     wanted = [
         {
-            "name": "Conjoined Topic185 To Relay2530",
-            "source_chat": CONJOINED2530_SOURCE_CHAT,
-            "source_topic": 185,
-            "dest_chat": CONJOINED2530_DEST_CHAT,
-            "dest_topic": CONJOINED2530_DEST_TOPIC,
+            "name": "NewAccount Topic5246 To Relay7248",
+            "source_chat": NEW_TOPIC_SOURCE_CHAT,
+            "source_topic": 5246,
+            "dest_chat": NEW_TOPIC_DEST_CHAT,
+            "dest_topic": 7248,
         },
         {
-            "name": "Conjoined Topic9 To Relay2530",
-            "source_chat": CONJOINED2530_SOURCE_CHAT,
-            "source_topic": 9,
-            "dest_chat": CONJOINED2530_DEST_CHAT,
-            "dest_topic": CONJOINED2530_DEST_TOPIC,
+            "name": "NewAccount Topic5247 To Relay7250",
+            "source_chat": NEW_TOPIC_SOURCE_CHAT,
+            "source_topic": 5247,
+            "dest_chat": NEW_TOPIC_DEST_CHAT,
+            "dest_topic": 7250,
         },
     ]
 
+    added = 0
     for route in wanted:
         exists = any(
             isinstance(item, dict)
@@ -172,11 +233,14 @@ def _ensure_conjoined2530_routes_in_env() -> int:
             items.append(route)
             added += 1
 
-    os.environ["ALT_ROUTES_JSON"] = json.dumps(items, separators=(",", ":"))
+    os.environ["ALT_ROUTES_JSON"] = json.dumps(
+        items,
+        separators=(",", ":"),
+    )
     return added
 
 
-_CONJOINED2530_ROUTES_ADDED = _ensure_conjoined2530_routes_in_env()
+_NEW_TOPIC_ROUTES_ADDED = _ensure_new_topic_routes_in_env()
 
 # Import only AFTER ALT_ROUTES_JSON has been migrated. This is important because
 # the legacy module registers Telethon NewMessage handlers at import time using
@@ -184,7 +248,9 @@ _CONJOINED2530_ROUTES_ADDED = _ensure_conjoined2530_routes_in_env()
 # the old Telegram group.
 from telegram_worker import alt_worker_legacy as _legacy
 from telegram_worker.alt_reply_hardening import install_alt_reply_hardening
-from telegram_worker.alt_conjoined2530 import run_alt_conjoined2530_last50_once
+from telegram_worker.alt_new_topics7248_7250_last20 import (
+    run_alt_new_topics_last20_once,
+)
 from telegram_worker.alt_split_pair_last100 import run_alt_split_pair_last100_once
 
 
@@ -225,13 +291,39 @@ _legacy.log.warning(
 
 install_alt_reply_hardening(_legacy, logger=_legacy.log)
 
+_retired2530_runtime = [
+    route.get("name")
+    for route in getattr(_legacy, "ROUTES", [])
+    if (
+        int(route.get("dest_chat", 0)) == RETIRED2530_CHAT
+        and int(route.get("dest_topic", 0)) == RETIRED2530_TOPIC
+    )
+    or (
+        int(route.get("source_chat", 0)) == RETIRED2530_CHAT
+        and int(route.get("source_topic", 0) or 0) == RETIRED2530_TOPIC
+    )
+]
+if _retired2530_runtime:
+    raise RuntimeError(
+        "FORCE STOP 2530 FAILED; routes remain: "
+        f"{_retired2530_runtime}"
+    )
+
+_legacy.log.error(
+    "[ALT TOPIC2530 FORCE STOP ACTIVE] "
+    f"chat={RETIRED2530_CHAT} topic={RETIRED2530_TOPIC} "
+    f"routes_removed={_RETIRED2530_ROUTES_REMOVED} "
+    "INBOUND=False OUTBOUND=False HISTORY_TASK=False"
+)
+
 _legacy.log.warning(
-    "[ALT CONJOINED2530 ROUTES READY] "
-    f"source={CONJOINED2530_SOURCE_CHAT} "
-    f"topics={list(CONJOINED2530_SOURCE_TOPICS)} "
-    f"dest={CONJOINED2530_DEST_CHAT}_{CONJOINED2530_DEST_TOPIC} "
-    f"routes_added={_CONJOINED2530_ROUTES_ADDED} "
-    "LIVE_FORWARDING=True"
+    "[ALT NEW ACCOUNT TOPIC ROUTES READY] "
+    f"source={NEW_TOPIC_SOURCE_CHAT} "
+    "source_topics=[5246,5247] "
+    f"dest_chat={NEW_TOPIC_DEST_CHAT} "
+    "dest_topics=[7248,7250] "
+    f"routes_added={_NEW_TOPIC_ROUTES_ADDED} "
+    "LIVE_FORWARDING=True LAST20=True"
 )
 
 # Keep useful module attributes available for diagnostics/importers.
@@ -252,25 +344,36 @@ async def _run_split_pair_last100_guarded():
         )
 
 
-async def _run_conjoined2530_history_guarded():
+async def _run_new_topics_last20_guarded():
     try:
-        await run_alt_conjoined2530_last50_once(_legacy, logger=_legacy.log)
+        await run_alt_new_topics_last20_once(
+            _legacy,
+            logger=_legacy.log,
+        )
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         _legacy.log.exception(
-            "[ALT CONJOINED2530 LAST50 FAILED SAFE] "
-            f"{type(exc).__name__}: {exc} LIVE_FORWARDING_CONTINUES=True"
+            "[ALT NEWTOPICS LAST20 FAILED SAFE] "
+            f"{type(exc).__name__}: {exc} "
+            "LIVE_FORWARDING_CONTINUES=True"
         )
 
 
 async def main():
-    split_history_task = asyncio.create_task(_run_split_pair_last100_guarded())
-    conjoined_history_task = asyncio.create_task(_run_conjoined2530_history_guarded())
+    split_history_task = asyncio.create_task(
+        _run_split_pair_last100_guarded()
+    )
+    new_topics_last20_task = asyncio.create_task(
+        _run_new_topics_last20_guarded()
+    )
     try:
         return await _legacy.main()
     finally:
-        for task in (split_history_task, conjoined_history_task):
+        for task in (
+            split_history_task,
+            new_topics_last20_task,
+        ):
             if not task.done():
                 task.cancel()
 

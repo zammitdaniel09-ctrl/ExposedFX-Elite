@@ -2529,13 +2529,27 @@ async def initialise_alt_pair106_no_history():
             continue
 
 
-        current = list(
-            await fetch_route_messages(
-                route,
-                50,
+        try:
+            current = list(
+                await fetch_route_messages(
+                    route,
+                    50,
+                )
+                or []
             )
-            or []
-        )
+        except ValueError as exc:
+            if (
+                int(route["source_chat"]) == -1003252087470
+                and "Could not find the input entity" in str(exc)
+            ):
+                log.warning(
+                    "[ALT PAIR106 OLD SOURCE UNAVAILABLE] "
+                    "source=-1003252087470 "
+                    "BASELINE_PENDING=True "
+                    "OTHER_ROUTES_CONTINUE=True"
+                )
+                continue
+            raise
 
 
         baseline = max(
@@ -5447,9 +5461,23 @@ async def main():
     # ----------------------------------------------------------
 
     for route in ROUTES:
-        source = await client.get_entity(
-            route["source_chat"]
-        )
+        try:
+            source = await client.get_entity(
+                route["source_chat"]
+            )
+        except ValueError as exc:
+            if (
+                int(route["source_chat"]) == -1003252087470
+                and "Could not find the input entity" in str(exc)
+            ):
+                log.warning(
+                    "[ALT OLD SOURCE UNAVAILABLE - SKIPPED] "
+                    f"route={route['name']} "
+                    "source=-1003252087470 "
+                    "OTHER_ROUTES_CONTINUE=True"
+                )
+                continue
+            raise
 
         destination = await client.get_entity(
             route["dest_chat"]

@@ -1074,6 +1074,9 @@ def is_blocked_destination(route):
 
 
 def routes_for(chat_id, topic_id, message=None):
+    if int(chat_id) == -1004367822325 and topic_id == 7250:
+        log.warning("[RELAY7250 PERMANENT OUTBOUND BLOCK] handler=True")
+        return []
     try:
         if int(chat_id) in IGNORED_SOURCE_CHATS:
             log.warning(f"[ignored source chat] source={chat_id}_{topic_id} msg={getattr(message, 'id', None)}")
@@ -2134,6 +2137,12 @@ async def relay508_mapped_edit_reconcile_loop():
 
 
 async def copy_one(message, route, edited=False, ensure_reply=True):
+    if (
+        int(route.get("source_chat") or 0) == -1004367822325
+        and int(route.get("source_topic") or 0) == 7250
+    ):
+        log.warning("[RELAY7250 PERMANENT OUTBOUND BLOCK] copy_one=True")
+        return None
     if has_username_mention(message):
 
         log_username_filter_main(
@@ -2198,6 +2207,12 @@ async def copy_one(message, route, edited=False, ensure_reply=True):
 
 
 async def copy_album(messages, route):
+    if (
+        int(route.get("source_chat") or 0) == -1004367822325
+        and int(route.get("source_topic") or 0) == 7250
+    ):
+        log.warning("[RELAY7250 PERMANENT OUTBOUND BLOCK] copy_album=True")
+        return None
     if unit_has_username_mention(messages):
 
         log_username_filter_main(
@@ -10972,6 +10987,24 @@ async def main():
     log.info(f"Logged in as {me.first_name} | id={me.id}")
     await warm_entity_cache_once()
     await drop_routes_with_missing_dest_topics()
+
+    # BEGIN RETIRED7250 TO VIP10877 CLEANUP V1
+    # Never delete unrelated messages from the shared destination topic.
+    try:
+        from telegram_worker.relay7250_retired_cleanup import (
+            cleanup_relay7250_to_vip10877_once,
+        )
+        await cleanup_relay7250_to_vip10877_once(
+            __import__("sys").modules[__name__], logger=log
+        )
+    except Exception as exc:
+        log.exception(
+            "[RELAY7250 CLEANUP FAILED SAFE] "
+            f"{type(exc).__name__}: {exc} "
+            "OTHER_ROUTES_CONTINUE=True"
+        )
+    # END RETIRED7250 TO VIP10877 CLEANUP V1
+
     asyncio.create_task(seed_empty_destination_topics_last50())
     log.info(f"SERVER_URL={SERVER_URL}")
     log.info(f"DATA_DIR={DATA_DIR}")

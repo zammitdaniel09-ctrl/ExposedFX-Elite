@@ -656,20 +656,6 @@ ROUTES = [{'name': 'Triad FX',
 # Existing topic2530 retirement and Railway pause filters still apply.
 ROUTES.extend([
     {
-        "name": "Relay7250 To VIP10877",
-        "source_chat": -1004367822325,
-        "source_topic": 7250,
-        "dest_chat": -1003726286301,
-        "dest_topic": 10877,
-        "verify_title": False,
-        "anonymous_send_as": False,
-        "live_only": True,
-        "copy_reply_parent": False,
-        "strict_source_topic": True,
-        "ordered_private": True,
-        "loop_guard_peers": [-1004367822325, -1003726286301],
-    },
-    {
         "name": "Relay7248 To VIP10877",
         "source_chat": -1004367822325,
         "source_topic": 7248,
@@ -761,3 +747,18 @@ if PAUSED_DEST_CHATS or PAUSED_SOURCE_CHATS:
 # END RUNTIME FORWARDING PAUSE V1
 
 
+
+# BEGIN RELAY7250 PERMANENT OUTBOUND HARD STOP V1
+# Owner permanently retired forwarding OUT of -1004367822325/topic 7250.
+# The unrelated incoming route *into* this topic belongs to ALT and remains.
+_RETIRED7250_CHAT = -1004367822325
+_RETIRED7250_TOPIC = 7250
+_RETIRED7250_COUNT = len(ROUTES)
+ROUTES = [
+    route for route in ROUTES
+    if not (
+        int(route.get("source_chat") or 0) == _RETIRED7250_CHAT
+        and int(route.get("source_topic") or 0) == _RETIRED7250_TOPIC
+    )
+]
+# END RELAY7250 PERMANENT OUTBOUND HARD STOP V1

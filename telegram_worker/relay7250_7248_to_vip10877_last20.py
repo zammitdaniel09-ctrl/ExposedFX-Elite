@@ -1,4 +1,4 @@
-"""One-time latest-20 logical posts from relay topics 7250 and 7248 to VIP 10877.
+"""One-time latest-20 logical posts from relay topic 7248 to VIP 10877. Topic 7250 is retired.
 
 Uses the MAIN worker's normal filtering, album, media, reply and persistent
 message-mapping pipeline. Each source has its own resumable durable state.
@@ -29,7 +29,6 @@ LAST20_COUNT = 20
 STATE_FILENAME = "relay7250_7248_to_vip10877_last20_v1.json"
 
 TARGETS = [
-    (-1004367822325, 7250, DEST_CHAT, 10877),
     (-1004367822325, 7248, DEST_CHAT, 10877),
 ]
 

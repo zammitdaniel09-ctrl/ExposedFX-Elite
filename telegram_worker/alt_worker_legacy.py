@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from telethon import TelegramClient, events, functions
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, ChannelPrivateError
 from telethon.sessions import StringSession
 from telethon.tl.types import MessageMediaWebPage
 
@@ -2537,19 +2537,20 @@ async def initialise_alt_pair106_no_history():
                 )
                 or []
             )
-        except ValueError as exc:
+        except (ValueError, ChannelPrivateError) as exc:
             if (
-                int(route["source_chat"]) == -1003252087470
-                and "Could not find the input entity" in str(exc)
+                isinstance(exc, ValueError)
+                and "Could not find the input entity" not in str(exc)
             ):
-                log.warning(
-                    "[ALT PAIR106 OLD SOURCE UNAVAILABLE] "
-                    "source=-1003252087470 "
-                    "BASELINE_PENDING=True "
-                    "OTHER_ROUTES_CONTINUE=True"
-                )
-                continue
-            raise
+                raise
+
+            log.warning(
+                "[ALT PAIR106 SOURCE UNAVAILABLE] "
+                f"source={route['source_chat']} "
+                f"reason={type(exc).__name__} "
+                "BASELINE_PENDING=True"
+            )
+            continue
 
 
         baseline = max(
@@ -2848,6 +2849,9 @@ async def watchdog(route):
                     STATE_FILE,
                     route_state,
                 )
+
+                if stored_checkpoint > 0 and alt_pair106_route(route):
+                    ALT_PAIR106_READY_ROUTE_KEYS.add(route_key(route))
 
                 log.warning(
                     "[ALT WATCHDOG FIRST BASELINE] "
@@ -5460,62 +5464,75 @@ async def main():
     # ACCESS PREFLIGHT
     # ----------------------------------------------------------
 
+    required_routes = {
+        (-1004349952583, 5246, -1004367822325, 7248),
+        (-1004349952583, 5247, -1004367822325, 7250),
+    }
+
     for route in ROUTES:
+        identity = (
+            int(route["source_chat"]),
+            int(route["source_topic"])
+            if route["source_topic"] is not None else None,
+            int(route["dest_chat"]),
+            int(route["dest_topic"]),
+        )
+
         try:
-            source = await client.get_entity(
-                route["source_chat"]
-            )
-        except ValueError as exc:
-            if (
-                int(route["source_chat"]) == -1003252087470
-                and "Could not find the input entity" in str(exc)
-            ):
-                log.warning(
-                    "[ALT OLD SOURCE UNAVAILABLE - SKIPPED] "
-                    f"route={route['name']} "
-                    "source=-1003252087470 "
-                    "OTHER_ROUTES_CONTINUE=True"
+            source = await client.get_entity(route["source_chat"])
+            destination = await client.get_entity(route["dest_chat"])
+
+            if route["source_topic"] is not None:
+                await client.get_messages(
+                    route["source_chat"],
+                    limit=1,
+                    reply_to=int(route["source_topic"]),
                 )
-                continue
-            raise
 
-        destination = await client.get_entity(
-            route["dest_chat"]
-        )
-
-        if (
-            route["source_topic"]
-            is not None
-        ):
-            await client.get_messages(
-                route["source_chat"],
-                limit=1,
-                reply_to=int(
-                    route["source_topic"]
-                ),
+            topic_root = await client.get_messages(
+                route["dest_chat"],
+                ids=int(route["dest_topic"]),
             )
 
-        topic_root = await client.get_messages(
-            route["dest_chat"],
-            ids=int(
-                route["dest_topic"]
-            ),
-        )
+            if not topic_root:
+                raise RuntimeError(
+                    "Relay topic does not exist: "
+                    f"{route['dest_chat']}_{route['dest_topic']}"
+                )
 
-        if not topic_root:
-            raise RuntimeError(
-                "Relay topic does not exist: "
-                f"{route['dest_chat']}_"
-                f"{route['dest_topic']}"
+        except (ChannelPrivateError, ValueError, RuntimeError) as exc:
+            recoverable = (
+                isinstance(exc, ChannelPrivateError)
+                or (
+                    isinstance(exc, ValueError)
+                    and "Could not find the input entity" in str(exc)
+                )
+                or (
+                    isinstance(exc, RuntimeError)
+                    and str(exc).startswith(
+                        "Relay topic does not exist:"
+                    )
+                )
             )
+
+            if not recoverable or identity in required_routes:
+                raise
+
+            log.warning(
+                "[ALT LEGACY ROUTE UNAVAILABLE] "
+                f"route={route['name']} "
+                f"source={route['source_chat']} "
+                f"dest={route['dest_chat']}_{route['dest_topic']} "
+                f"reason={type(exc).__name__} "
+                "WORKER_CONTINUES=True"
+            )
+            continue
 
         log.warning(
             "[ALT ROUTE ACCESS OK] "
             f"route={route['name']} "
-            f"source_title="
-            f"{getattr(source, 'title', None)!r} "
-            f"dest_title="
-            f"{getattr(destination, 'title', None)!r}"
+            f"source_title={getattr(source, 'title', None)!r} "
+            f"dest_title={getattr(destination, 'title', None)!r}"
         )
 
     # ----------------------------------------------------------

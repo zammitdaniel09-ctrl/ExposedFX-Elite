@@ -6,9 +6,32 @@ hardening are ready.
 """
 
 import asyncio
+import os
 import sys
 
+from telethon.errors import ChannelPrivateError
+
 from . import runtime_guard as _runtime_guard
+
+
+# Access denied / missing entity hashes will not improve by retrying every
+# 10 seconds. Keep other failures on their original retry cadence.
+WHOLECHAT_ACCESS_RETRY_SECONDS = max(
+    60, int(os.environ.get("WHOLECHAT_ACCESS_RETRY_SECONDS", "300"))
+)
+
+
+def _is_wholechat_access_error(exc):
+    return (
+        isinstance(exc, ChannelPrivateError)
+        or (
+            isinstance(exc, ValueError)
+            and (
+                "Could not find the input entity" in str(exc)
+                or "Could not find input entity" in str(exc)
+            )
+        )
+    )
 
 
 if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
@@ -29,13 +52,24 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if log:
-                    log.exception(
-                        "[WHOLECHAT RELAY WAIT/RETRY] %s: %s",
-                        type(exc).__name__,
-                        exc,
-                    )
-                await asyncio.sleep(10)
+                if _is_wholechat_access_error(exc):
+                    if log:
+                        log.warning(
+                            "[WHOLECHAT ACCESS COOLDOWN] %s: %s "
+                            "retry_seconds=%s LIVE_ROUTES_UNAFFECTED=True",
+                            type(exc).__name__,
+                            exc,
+                            WHOLECHAT_ACCESS_RETRY_SECONDS,
+                        )
+                    await asyncio.sleep(WHOLECHAT_ACCESS_RETRY_SECONDS)
+                else:
+                    if log:
+                        log.exception(
+                            "[WHOLECHAT RELAY WAIT/RETRY] %s: %s",
+                            type(exc).__name__,
+                            exc,
+                        )
+                    await asyncio.sleep(10)
 
     async def _run_downstream_3743381585_to_3216105903_with_retry(
         main_module,
@@ -55,13 +89,24 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if log:
-                    log.exception(
-                        "[DOWNSTREAM RELAY WAIT/RETRY] %s: %s",
-                        type(exc).__name__,
-                        exc,
-                    )
-                await asyncio.sleep(10)
+                if _is_wholechat_access_error(exc):
+                    if log:
+                        log.warning(
+                            "[DOWNSTREAM ACCESS COOLDOWN] %s: %s "
+                            "retry_seconds=%s LIVE_ROUTES_UNAFFECTED=True",
+                            type(exc).__name__,
+                            exc,
+                            WHOLECHAT_ACCESS_RETRY_SECONDS,
+                        )
+                    await asyncio.sleep(WHOLECHAT_ACCESS_RETRY_SECONDS)
+                else:
+                    if log:
+                        log.exception(
+                            "[DOWNSTREAM RELAY WAIT/RETRY] %s: %s",
+                            type(exc).__name__,
+                            exc,
+                        )
+                    await asyncio.sleep(10)
 
     async def _run_partner_3885074241_last20_with_retry(main_module, log=None):
         while True:

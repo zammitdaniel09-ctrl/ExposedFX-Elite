@@ -195,6 +195,7 @@ BLOCKED_SENDER_CLEANUP_DEST_TOPICS = {
 } if BLOCKED_SENDER_CLEANUP_DEST_TOPICS_RAW else set()
 
 SOURCE_CHATS = sorted({r["source_chat"] for r in ROUTES if int(r.get("source_chat")) not in IGNORED_SOURCE_CHATS})
+RELAY10877_BASELINES = {}  # per-start cutoff; live poller owns newer posts
 POSTED_SIGNAL_KEYS = set()
 stats = WeeklyStats(DATA_DIR)
 route_title_status = {}
@@ -3303,6 +3304,20 @@ async def initialise_private_live_poll_state():
     for route in routes:
 
         key = route_poll_key(route)
+
+        # Two new routes have a cutoff captured BEFORE their one-time
+        # backfill task began. Preserve it to avoid losing intervening live
+        # messages. Existing destination mapping prevents duplicate sends.
+        if key in RELAY10877_BASELINES:
+            PRIVATE_LIVE_POLL_LAST_IDS[key] = int(RELAY10877_BASELINES[key])
+            PRIVATE_LIVE_READY_KEYS.add(key)
+            log.warning(
+                "[RELAY10877 LIVE ARMED] "
+                f"route={route['name']} "
+                f"baseline_id={RELAY10877_BASELINES[key]} "
+                "BACKFILL_AND_LIVE_SPLIT=True"
+            )
+            continue
 
         # Fail closed before attempting initialization.
         PRIVATE_LIVE_READY_KEYS.discard(key)
@@ -11056,6 +11071,72 @@ async def main():
             f"{type(exc).__name__}: {exc} LIVE_FORWARDING_CONTINUES=True"
         )
     # END PARTNER_ROUTE_PACK_LAST100_STARTUP_V1
+
+    # BEGIN RELAY7250_7248 TO VIP10877 LAST20 V1
+    # Snapshot each source before starting either history or live writers.
+    # Historical posts at/below that snapshot belong to the one-time importer;
+    # newer posts belong to the existing private-live poller.
+    try:
+        from telegram_worker.relay7250_7248_to_vip10877_last20 import (
+            TARGETS as RELAY10877_TARGETS,
+            run_relay7250_7248_to_vip10877_last20,
+        )
+
+        for contract in RELAY10877_TARGETS:
+            matches = [
+                route for route in ROUTES
+                if (
+                    int(route["source_chat"]),
+                    int(route["source_topic"]) if route.get("source_topic") is not None else None,
+                    int(route["dest_chat"]),
+                    int(route["dest_topic"]),
+                ) == contract
+            ]
+            if len(matches) != 1:
+                log.error(
+                    "[RELAY10877 ROUTE INVALID] "
+                    f"contract={contract} matches={len(matches)}"
+                )
+                continue
+
+            route = matches[0]
+            try:
+                recent = await get_route_poll_messages(route, 20)
+                baseline = max(
+                    [int(m.id) for m in recent if m is not None] or [0]
+                )
+                RELAY10877_BASELINES[route_poll_key(route)] = baseline
+                log.warning(
+                    "[RELAY10877 SOURCE SNAPSHOT] "
+                    f"source={contract[0]}_{contract[1]} "
+                    f"dest={contract[2]}_{contract[3]} "
+                    f"baseline_id={baseline} NO_HISTORY_COPY=True"
+                )
+            except Exception as exc:
+                log.exception(
+                    "[RELAY10877 SOURCE SNAPSHOT FAILED SAFE] "
+                    f"contract={contract} {type(exc).__name__}: {exc}"
+                )
+
+        async def _run_relay10877_last20_guarded():
+            try:
+                await run_relay7250_7248_to_vip10877_last20(
+                    __import__("sys").modules[__name__], logger=log
+                )
+            except Exception as exc:
+                log.exception(
+                    "[RELAY10877 LAST20 FAILED SAFE] "
+                    f"{type(exc).__name__}: {exc} "
+                    "OTHER_ROUTES_CONTINUE=True"
+                )
+        asyncio.create_task(_run_relay10877_last20_guarded())
+    except Exception as exc:
+        log.exception(
+            "[RELAY10877 STARTUP FAILED SAFE] "
+            f"{type(exc).__name__}: {exc} "
+            "OTHER_ROUTES_CONTINUE=True"
+        )
+    # END RELAY7250_7248 TO VIP10877 LAST20 V1
 
     asyncio.create_task(new_mirror_poll_loop())
     asyncio.create_task(private_live_route_poll_loop())

@@ -651,6 +651,41 @@ ROUTES = [{'name': 'Triad FX',
   'loop_guard_peers': [-1003726286301, -1003885074241]}]
 
 
+# BEGIN RELAY7250_7248 TO VIP10877 V1
+# Both source topics feed the SAME VIP topic. Strict topic-only forwarding.
+# Existing topic2530 retirement and Railway pause filters still apply.
+ROUTES.extend([
+    {
+        "name": "Relay7250 To VIP10877",
+        "source_chat": -1004367822325,
+        "source_topic": 7250,
+        "dest_chat": -1003726286301,
+        "dest_topic": 10877,
+        "verify_title": False,
+        "anonymous_send_as": False,
+        "live_only": True,
+        "copy_reply_parent": False,
+        "strict_source_topic": True,
+        "ordered_private": True,
+        "loop_guard_peers": [-1004367822325, -1003726286301],
+    },
+    {
+        "name": "Relay7248 To VIP10877",
+        "source_chat": -1004367822325,
+        "source_topic": 7248,
+        "dest_chat": -1003726286301,
+        "dest_topic": 10877,
+        "verify_title": False,
+        "anonymous_send_as": False,
+        "live_only": True,
+        "copy_reply_parent": False,
+        "strict_source_topic": True,
+        "ordered_private": True,
+        "loop_guard_peers": [-1004367822325, -1003726286301],
+    },
+])
+# END RELAY7250_7248 TO VIP10877 V1
+
 # BEGIN PARTNER DEAD DESTINATION HARD STOP V1
 # Owner-retired topics. No route from any source may write to these topics.
 _PARTNER_DEAD_DEST_CHAT = -1003885074241

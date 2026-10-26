@@ -2810,6 +2810,27 @@ def build_units(messages):
     return units
 
 
+# BEGIN ALT LEGACY WATCHDOG EFFICIENCY V1
+# Only inaccessible legacy PAIR106 sources are cooled down. Live push,
+# healthy watchdogs, route checkpoints, mappings and history are untouched.
+ALT_LEGACY_WATCHDOG_RETRY_SECONDS = max(
+    60, int(os.environ.get("ALT_LEGACY_WATCHDOG_RETRY_SECONDS", "300"))
+)
+
+
+def alt_legacy_watchdog_access_failure(route, exc):
+    return alt_pair106_route(route) and (
+        isinstance(exc, ChannelPrivateError)
+        or (
+            isinstance(exc, ValueError)
+            and "Could not find the input entity" in str(exc)
+        )
+    )
+
+
+# END ALT LEGACY WATCHDOG EFFICIENCY V1
+
+
 async def watchdog(route):
     stored_checkpoint = checkpoint(
         route
@@ -2863,12 +2884,21 @@ async def watchdog(route):
                 break
 
             except Exception as exc:
-                log.warning(
-                    "[ALT WATCHDOG BASELINE FAILED] "
-                    f"{type(exc).__name__}: {exc}"
-                )
-
-                await asyncio.sleep(2)
+                if alt_legacy_watchdog_access_failure(route, exc):
+                    log.warning(
+                        "[ALT LEGACY WATCHDOG ACCESS COOLDOWN] "
+                        f"phase=baseline source={route['source_chat']} "
+                        f"reason={type(exc).__name__} "
+                        f"retry_seconds={ALT_LEGACY_WATCHDOG_RETRY_SECONDS} "
+                        "CHECKPOINT_UNCHANGED=True LIVE_PUSH_UNAFFECTED=True"
+                    )
+                    await asyncio.sleep(ALT_LEGACY_WATCHDOG_RETRY_SECONDS)
+                else:
+                    log.warning(
+                        "[ALT WATCHDOG BASELINE FAILED] "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    await asyncio.sleep(2)
 
     else:
         # ------------------------------------------------------
@@ -2994,11 +3024,21 @@ async def watchdog(route):
             )
 
         except Exception as exc:
-            log.warning(
-                "[ALT WATCHDOG ERROR] "
-                f"{type(exc).__name__}: {exc} "
-                "LIVE_PUSH_UNAFFECTED=True"
-            )
+            if alt_legacy_watchdog_access_failure(route, exc):
+                log.warning(
+                    "[ALT LEGACY WATCHDOG ACCESS COOLDOWN] "
+                    f"phase=recovery source={route['source_chat']} "
+                    f"reason={type(exc).__name__} "
+                    f"retry_seconds={ALT_LEGACY_WATCHDOG_RETRY_SECONDS} "
+                    "CHECKPOINT_UNCHANGED=True LIVE_PUSH_UNAFFECTED=True"
+                )
+                await asyncio.sleep(ALT_LEGACY_WATCHDOG_RETRY_SECONDS)
+            else:
+                log.warning(
+                    "[ALT WATCHDOG ERROR] "
+                    f"{type(exc).__name__}: {exc} "
+                    "LIVE_PUSH_UNAFFECTED=True"
+                )
 
 
 

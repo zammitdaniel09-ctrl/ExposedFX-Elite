@@ -2534,9 +2534,10 @@ async def get_route_poll_messages(route, limit):
                     count = len(msgs)
                 except Exception:
                     count = "unknown"
-                log.info(
-                    f"[new mirror topic poll fetch] route={route['name']} "
-                    f"source={chat_id}_{source_topic} limit={limit} count={count}"
+                log.debug(
+                    "[new mirror topic poll fetch] route=%s source=%s_%s "
+                    "limit=%s count=%s",
+                    route["name"], chat_id, source_topic, limit, count,
                 )
                 return msgs
         except Exception as exc:
@@ -3360,6 +3361,50 @@ async def initialise_private_live_poll_state():
             )
 
 
+# BEGIN MAIN STRICT TOPIC POLL COALESCING V1
+# Reuse responses when multiple destinations poll the SAME strict source
+# within a fraction of a second. Do not share data with snapshots, history
+# importers, whole-chat routes or non-strict fallback routes. Route-specific
+# checkpoints, mapping, ordering and delivery remain unchanged.
+STRICT_TOPIC_POLL_CACHE_TTL_SECONDS = min(
+    0.5, max(0.0, float(os.environ.get("STRICT_TOPIC_POLL_CACHE_TTL_SECONDS", "0.4")))
+)
+STRICT_TOPIC_POLL_CACHE = {}
+
+
+async def shared_strict_topic_poll(route, limit):
+    topic = route.get("source_topic")
+    if (
+        not STRICT_TOPIC_POLL_CACHE_TTL_SECONDS
+        or topic is None
+        or not route.get("strict_source_topic")
+    ):
+        return await get_route_poll_messages(route, limit)
+
+    key = (int(route["source_chat"]), int(topic), int(limit))
+    now = time.monotonic()
+    existing = STRICT_TOPIC_POLL_CACHE.get(key)
+
+    if existing and now - existing[0] <= STRICT_TOPIC_POLL_CACHE_TTL_SECONDS:
+        return list(existing[1])
+
+    messages = await get_route_poll_messages(route, limit)
+    # A failed fetch cannot populate the cache because it raises above.
+    STRICT_TOPIC_POLL_CACHE[key] = (time.monotonic(), tuple(messages or []))
+
+    # Periodic bound: removes expired entries from independent route keys.
+    if len(STRICT_TOPIC_POLL_CACHE) > 128:
+        current = time.monotonic()
+        for old_key, (when, _) in list(STRICT_TOPIC_POLL_CACHE.items()):
+            if current - when > STRICT_TOPIC_POLL_CACHE_TTL_SECONDS:
+                STRICT_TOPIC_POLL_CACHE.pop(old_key, None)
+
+    return list(messages or [])
+
+
+# END MAIN STRICT TOPIC POLL COALESCING V1
+
+
 async def private_live_route_poll_loop():
     """
     Sole writer for NEW live_only private messages.
@@ -3462,7 +3507,7 @@ async def private_live_route_poll_loop():
 
             try:
 
-                messages = await get_route_poll_messages(
+                messages = await shared_strict_topic_poll(
                     route,
                     PRIVATE_LIVE_POLL_LIMIT,
                 )
@@ -5969,7 +6014,7 @@ async def new_mirror_poll_loop():
 
 
             try:
-                msgs = await get_route_poll_messages(
+                msgs = await shared_strict_topic_poll(
                     route,
                     NEW_MIRROR_POLL_LIMIT,
                 )

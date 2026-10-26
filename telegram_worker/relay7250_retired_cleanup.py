@@ -83,6 +83,35 @@ async def cleanup_relay7250_to_vip10877_once(main_module, logger=None):
     data_dir = Path(main_module.DATA_DIR)
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    # No mappings for this retired source -> exact destination means there
+    # is nothing that could be safely deleted. Avoid a 5,000-message
+    # Telegram history request on every Railway restart.
+    has_candidate_mapping = False
+    for key in main_module.message_map:
+        parts = str(key).split(":")
+        if (
+            len(parts) == 4
+            and parts[0] == str(SRC_CHAT)
+            and parts[2] == str(DEST_CHAT)
+            and parts[3] == str(DEST_TOPIC)
+        ):
+            has_candidate_mapping = True
+            break
+
+    if not has_candidate_mapping:
+        log.warning(
+            "[RELAY7250 CLEANUP NO MAPS] "
+            "source=%s_%s dest=%s_%s "
+            "HISTORY_API_CALLS=0 PROVIDER7248_PRESERVED=True",
+            SRC_CHAT, SRC_TOPIC, DEST_CHAT, DEST_TOPIC,
+        )
+        return {
+            "status": "no_source_destination_mappings",
+            "deleted": [],
+            "uncertain": [],
+            "errors": [],
+        }
+
     # The original bootstrap selected its source topic via reply_to=7250.
     bootstrap = _load_json(data_dir / BOOTSTRAP_FILE)
     identified = _ids_from_entry(bootstrap.get(STATE_KEY_7250))

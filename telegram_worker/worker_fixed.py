@@ -10985,6 +10985,43 @@ async def main():
 
     me = await client.get_me()
     log.info(f"Logged in as {me.first_name} | id={me.id}")
+    # BEGIN GENERAL TOPIC1 OWNER-REQUESTED CLEANUP V1
+    # Telegram General is the default history of the forum supergroup.
+    # Run the exact-topic audit-and-delete task independently so that
+    # other Telegram forwarding does not wait for bulk history operations.
+    try:
+        from telegram_worker.general_topic1_cleanup import (
+            remove_general_topic1_history_once,
+        )
+
+        async def _run_general_topic1_cleanup_guarded():
+            try:
+                await remove_general_topic1_history_once(
+                    __import__("sys").modules[__name__],
+                    logger=log,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.exception(
+                    "[GENERAL1 CLEANUP FAILED SAFE] "
+                    f"{type(exc).__name__}: {exc} "
+                    "OTHER_TOPICS_PRESERVED=True"
+                )
+
+        asyncio.create_task(_run_general_topic1_cleanup_guarded())
+        log.warning(
+            "[GENERAL1 CLEANUP TASK STARTED] "
+            "chat=-1003726286301 topic=1 "
+            "DELETING_ONLY_CONFIRMED_GENERAL_MESSAGES=True"
+        )
+    except Exception as exc:
+        log.exception(
+            "[GENERAL1 CLEANUP SETUP FAILED SAFE] "
+            f"{type(exc).__name__}: {exc}"
+        )
+    # END GENERAL TOPIC1 OWNER-REQUESTED CLEANUP V1
+
     await warm_entity_cache_once()
     await drop_routes_with_missing_dest_topics()
 

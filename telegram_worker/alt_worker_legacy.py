@@ -251,7 +251,26 @@ def load_routes():
     return routes
 
 
-ROUTES = load_routes()
+# BEGIN ALT VIP5 DESTINATION PERMANENT STOP V1
+# This topic is retired for ALL providers, even if ALT_ROUTES_JSON is changed.
+ALT_RETIRED_DEST_CHAT = -1003726286301
+ALT_RETIRED_DEST_TOPIC = 5
+
+
+def alt_vip5_block(route):
+    try:
+        return (
+            int(route.get("dest_chat") or 0) == ALT_RETIRED_DEST_CHAT
+            and int(route.get("dest_topic") or 0) == ALT_RETIRED_DEST_TOPIC
+        )
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+# END ALT VIP5 DESTINATION PERMANENT STOP V1
+
+
+ROUTES = [route for route in load_routes() if not alt_vip5_block(route)]
 
 SOURCE_CHATS = sorted({
     route["source_chat"]
@@ -1256,6 +1275,10 @@ async def send_single(
     route,
     message,
 ):
+    if alt_vip5_block(route):
+        log.warning("[ALT VIP5 DESTINATION PERMANENT BLOCK] writer=send_single")
+        return None
+
     if has_username_mention(
         message
     ):
@@ -1362,6 +1385,10 @@ async def send_album(
     route,
     messages,
 ):
+    if alt_vip5_block(route):
+        log.warning("[ALT VIP5 DESTINATION PERMANENT BLOCK] writer=send_album")
+        return None
+
     if unit_has_username_mention(
         messages
     ):
@@ -1503,6 +1530,9 @@ async def copy_unit(
     messages,
     reason,
 ):
+    if alt_vip5_block(route):
+        log.warning("[ALT VIP5 DESTINATION PERMANENT BLOCK] copy_unit")
+        return True
     messages = sorted(
         list(messages),
         key=lambda message: int(

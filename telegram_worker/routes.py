@@ -386,24 +386,6 @@ ROUTES = [{'name': 'Triad FX',
   'dest_chat': -1003918958200,
   'dest_topic': 60566,
   'verify_title': False},
- {'name': 'Private Live 3651353503 To 7',
-  'source_chat': -1003651353503,
-  'source_topic': None,
-  'dest_chat': -1003726286301,
-  'dest_topic': 5,
-  'verify_title': False,
-  'anonymous_send_as': False,
-  'live_only': True,
-  'copy_reply_parent': False},
- {'name': 'Private Live 4442584819 Topic39 To 7',
-  'source_chat': -1004442584819,
-  'source_topic': 39,
-  'dest_chat': -1003726286301,
-  'dest_topic': 5,
-  'verify_title': False,
-  'anonymous_send_as': False,
-  'live_only': True,
-  'copy_reply_parent': False},
  {'name': 'Jamie SUB IB FORWARDING | 11 To 31',
   'source_chat': -1003726286301,
   'source_topic': 11,
@@ -762,3 +744,14 @@ ROUTES = [
     )
 ]
 # END RELAY7250 PERMANENT OUTBOUND HARD STOP V1
+
+# BEGIN VIP5 DESTINATION RETIRED V1
+# All source providers must stop publishing to this destination topic.
+VIP5_RETIRED_DEST_CHAT = -1003726286301
+VIP5_RETIRED_DEST_TOPIC = 5
+ROUTES[:] = [
+    route for route in ROUTES
+    if not (int(route.get("dest_chat") or 0) == VIP5_RETIRED_DEST_CHAT
+            and int(route.get("dest_topic") or 0) == VIP5_RETIRED_DEST_TOPIC)
+]
+# END VIP5 DESTINATION RETIRED V1

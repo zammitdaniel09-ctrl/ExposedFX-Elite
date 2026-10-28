@@ -55,6 +55,7 @@ def check_routes():
         require(source != (-1004367822325, 2530), "Retired 2530 source restored")
         require(dest != (-1004367822325, 2530), "Retired 2530 destination restored")
         require(source != (-1004367822325, 7250), "Retired 7250 source restored")
+        require(dest != (-1003726286301, 5), "Retired VIP5 destination restored")
         require(dest != (-1003885074241, 4663), "Retired partner 4663 restored")
         require(dest != (-1003885074241, 4665), "Retired partner 4665 restored")
 
@@ -80,6 +81,7 @@ def check_routes():
     for marker in (
         "# END RELAY2530 FORCE STOP V1",
         "# END RELAY7250 PERMANENT OUTBOUND HARD STOP V1",
+        "# END VIP5 DESTINATION RETIRED V1",
         "# END PARTNER DEAD DESTINATION HARD STOP V1",
     ):
         require(marker in content, f"Required route hard stop missing: {marker}")
@@ -120,6 +122,8 @@ def check_worker_invariants():
     worker = (PACKAGE / "worker_fixed.py").read_text(encoding="utf-8-sig")
     for marker in (
         "[RELAY7250 PERMANENT OUTBOUND BLOCK]",
+        "[VIP5 DESTINATION BLOCKED]",
+        "delete_existing_vip5_messages_once(",
         "shared_strict_topic_poll(",
         "cleanup_relay7250_to_vip10877_once(",
         "remove_general_topic1_history_once(",

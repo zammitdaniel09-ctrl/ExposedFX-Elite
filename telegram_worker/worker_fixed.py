@@ -1063,7 +1063,21 @@ def same_source_and_destination(route, topic_id):
 
 
 
+# BEGIN VIP5 COPY HARD GUARD V1
+def vip5_retired_destination(route):
+    try:
+        return (int(route.get("dest_chat") or 0) == -1003726286301
+                and int(route.get("dest_topic") or 0) == 5)
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+# END VIP5 COPY HARD GUARD V1
+
+
 def is_blocked_destination(route):
+    if vip5_retired_destination(route):
+        return True
     try:
         return (
             int(route.get("dest_chat")) == BLOCKED_DEST_CHAT
@@ -1468,6 +1482,9 @@ def route_send_as_peer(route):
 
 
 async def send_media_exact(message, route, target_reply, text, entities):
+    if vip5_retired_destination(route):
+        log.warning("[VIP5 DESTINATION BLOCKED] dest=-1003726286301_5")
+        return None
     """
     Robust media copier:
     1. Try direct Telethon media resend.
@@ -2137,6 +2154,9 @@ async def relay508_mapped_edit_reconcile_loop():
 
 
 async def copy_one(message, route, edited=False, ensure_reply=True):
+    if vip5_retired_destination(route):
+        log.warning("[VIP5 DESTINATION BLOCKED] dest=-1003726286301_5")
+        return None
     if (
         int(route.get("source_chat") or 0) == -1004367822325
         and int(route.get("source_topic") or 0) == 7250
@@ -2207,6 +2227,9 @@ async def copy_one(message, route, edited=False, ensure_reply=True):
 
 
 async def copy_album(messages, route):
+    if vip5_retired_destination(route):
+        log.warning("[VIP5 DESTINATION BLOCKED] dest=-1003726286301_5")
+        return None
     if (
         int(route.get("source_chat") or 0) == -1004367822325
         and int(route.get("source_topic") or 0) == 7250
@@ -11068,6 +11091,36 @@ async def main():
     # END GENERAL TOPIC1 OWNER-REQUESTED CLEANUP V1
 
     await warm_entity_cache_once()
+
+    # BEGIN VIP5 TOPIC DELETION STARTUP V1
+    try:
+        from telegram_worker.vip5_retired_topic_cleanup import (
+            delete_existing_vip5_messages_once,
+        )
+        async def _vip5_cleanup_guarded():
+            try:
+                await delete_existing_vip5_messages_once(
+                    __import__("sys").modules[__name__], logger=log
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.exception(
+                    "[VIP5 CLEANUP FAILED SAFE] %s: %s OTHER_TOPICS_PRESERVED=True",
+                    type(exc).__name__, exc,
+                )
+        asyncio.create_task(_vip5_cleanup_guarded())
+        log.warning(
+            "[VIP5 CLEANUP TASK STARTED] dest=-1003726286301_5 "
+            "OUTBOUND_BLOCKED=True OTHER_TOPICS_PRESERVED=True"
+        )
+    except Exception as exc:
+        log.exception(
+            "[VIP5 CLEANUP INSTALL FAILED] %s: %s",
+            type(exc).__name__, exc,
+        )
+    # END VIP5 TOPIC DELETION STARTUP V1
+
     await drop_routes_with_missing_dest_topics()
 
     # BEGIN RETIRED7250 TO VIP10877 CLEANUP V1

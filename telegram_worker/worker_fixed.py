@@ -14,7 +14,13 @@ from telethon import TelegramClient, events, functions
 from telethon.errors import FloodWaitError
 from telethon.tl.types import MessageMediaWebPage
 
-from telegram_worker.runtime_guard import start_runtime_guard, alert_crash
+from telegram_worker.runtime_guard import start_runtime_guard, alert_crash, send_alert
+from telegram_worker.permanent_delivery_errors import (
+    PermanentFailureLedger,
+    Throttle,
+    permanent_error_name,
+    route_key as permanent_route_key,
+)
 from telegram_worker.provider_profiles import is_promo_text
 from telegram_worker.routes import ROUTES
 from telegram_worker.parser import parse_signal
@@ -4134,9 +4140,21 @@ async def fast_vip_build_units(
     return units
 
 
+# BEGIN FASTVIP PERMANENT DESTINATION ERRORS V1
+# Live FASTVIP delivery stops re-sending a message whose destination refuses
+# this account (see permanent_delivery_errors.py). Each NEW message still gets
+# one attempt, so a route recovers by itself once permission is restored.
+FASTVIP_PERMANENT_FAILURES = PermanentFailureLedger(
+    DATA_DIR / "fastvip_permanent_failures_v1.json"
+)
+FASTVIP_IMPAIRED_ALERTS = Throttle(6 * 3600)
+# END FASTVIP PERMANENT DESTINATION ERRORS V1
+
+
 async def fast_vip_deliver_route(
     route,
     unit,
+    skip_permanent_errors=False,
 ):
 
     ids = [
@@ -4185,6 +4203,25 @@ async def fast_vip_deliver_route(
                 f"route={route.get('name')} "
                 f"ids={ids} "
                 f"dest={dest[0]}_{dest[1]}"
+            )
+
+            return True
+
+
+        if (
+            skip_permanent_errors
+            and FASTVIP_PERMANENT_FAILURES.contains_all(
+                route,
+                ids,
+            )
+        ):
+
+            log.info(
+                "[FASTVIP PERMANENT SKIP RECALLED] "
+                f"route={route.get('name')} "
+                f"ids={ids} "
+                f"dest={dest[0]}_{dest[1]} "
+                "NOT_DELIVERED=True RETRY=False"
             )
 
             return True
@@ -4377,6 +4414,54 @@ async def fast_vip_deliver_route(
 
 
     except Exception as exc:
+
+        error_name = (
+            permanent_error_name(
+                exc,
+                dest[0],
+            )
+            if skip_permanent_errors
+            else None
+        )
+
+
+        if error_name:
+
+            saved = FASTVIP_PERMANENT_FAILURES.record(
+                route,
+                ids,
+                error_name,
+            )
+
+            log.error(
+                "[FASTVIP ROUTE IMPAIRED - NOT DELIVERED] "
+                f"route={route.get('name')} "
+                f"ids={ids} "
+                f"dest={dest[0]}_{dest[1]} "
+                f"error={error_name} "
+                f"PERMANENT=True RETRY=False LEDGER_SAVED={saved}"
+            )
+
+            if FASTVIP_IMPAIRED_ALERTS.ready(
+                permanent_route_key(route)
+            ):
+
+                try:
+
+                    await asyncio.to_thread(
+                        send_alert,
+                        "⚠️ <b>Route impaired</b>: "
+                        f"{route.get('name')}\n"
+                        f"<code>{error_name}</code> at {dest[0]}_{dest[1]}. "
+                        "New messages get one attempt each; nothing is retried.",
+                    )
+
+                except Exception:
+
+                    pass
+
+            return True
+
 
         log.exception(
             "[FASTVIP DEST FAILED] "
@@ -4669,6 +4754,7 @@ async def fast_vip_source_loop_v1(
                         fast_vip_deliver_route(
                             route,
                             unit,
+                            skip_permanent_errors=True,
                         )
                         for route in routes
                     ],
@@ -5379,6 +5465,7 @@ async def fastvip2_process_unit(
             fast_vip_deliver_route(
                 route,
                 unit,
+                skip_permanent_errors=True,
             )
             for route in routes
         ],

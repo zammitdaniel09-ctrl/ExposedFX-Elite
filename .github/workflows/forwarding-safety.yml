@@ -5,12 +5,14 @@ on:
     branches: [main]
     paths:
       - "telegram_worker/**"
+      - "tests/**"
       - "scripts/check_forwarding_contracts.py"
       - ".github/workflows/forwarding-safety.yml"
   push:
     branches: [main]
     paths:
       - "telegram_worker/**"
+      - "tests/**"
       - "scripts/check_forwarding_contracts.py"
       - ".github/workflows/forwarding-safety.yml"
   workflow_dispatch:
@@ -29,3 +31,7 @@ jobs:
           python-version: "3.11"
       - name: Check worker syntax and forwarding safety
         run: python scripts/check_forwarding_contracts.py
+      - name: Install test dependencies
+        run: pip install "telethon>=1.41,<2"
+      - name: Run worker regression tests (offline, no credentials)
+        run: python -m unittest discover -s tests -v

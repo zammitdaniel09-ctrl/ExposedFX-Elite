@@ -21,6 +21,8 @@ from telethon.errors import (
     ChatSendPlainForbiddenError,
     ChatWriteForbiddenError,
     FloodWaitError,
+    ForbiddenError,
+    MessageIdInvalidError,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -121,8 +123,24 @@ class ClassificationTests(unittest.TestCase):
 
     def test_flood_wait_and_transient_errors_are_not_permanent(self):
         flood = FloodWaitError(request=None, capture=30)
-        for exc in (flood, ConnectionError("reset"), RuntimeError("no destination message")):
+        bad_request = rpc_error(MessageIdInvalidError)  # 400, not a refusal
+        for exc in (flood, bad_request, ConnectionError("reset"), RuntimeError("no destination message")):
             self.assertIsNone(pde.permanent_error_name(exc, -1003885074241))
+
+    def test_any_telegram_403_is_permanent(self):
+        """Production 31 Oct: Partner4660 began charging Stars per message."""
+        paid = ForbiddenError(None, "ALLOW_PAYMENT_REQUIRED_10")
+        self.assertEqual(
+            pde.permanent_error_name(paid, -1003885074241), "Forbidden:ALLOW_PAYMENT_REQUIRED_10"
+        )
+
+        class FutureSendForbiddenError(ForbiddenError):
+            pass
+
+        self.assertEqual(
+            pde.permanent_error_name(FutureSendForbiddenError(None, "X"), -1003885074241),
+            "FutureSendForbiddenError",
+        )
 
     def test_missing_entity_only_counts_for_this_destination(self):
         dest_missing = ValueError(
@@ -195,6 +213,15 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(all(result is True for result in results))
         self.assertEqual(h.copy_calls, [12053])
         self.assertEqual(len(h.alerts), 1)
+
+    def test_paid_message_destination_is_tried_once(self):
+        h = Harness(self.ledger, raises(ForbiddenError(None, "ALLOW_PAYMENT_REQUIRED_10")))
+        album_or_media = [message(12117)]
+        results = [h.run(album_or_media) for _ in range(100)]
+        self.assertTrue(all(result is True for result in results))
+        self.assertEqual(h.copy_calls, [12117])
+        stored = json.loads(self.ledger.read_text())[pde.route_key(PARTNER_ROUTE)]
+        self.assertEqual(stored["12117"]["error"], "Forbidden:ALLOW_PAYMENT_REQUIRED_10")
 
     def test_skip_survives_worker_restart(self):
         Harness(self.ledger, raises(rpc_error(ChatSendPlainForbiddenError))).run([message(12053)])

@@ -70,7 +70,8 @@ def check_routes():
     require(len(wanted) == 1, "Exactly one 7248 -> VIP10877 route required")
     new_contracts = {(-1004367822325, 7250, -1003726286301, 12161),
                      (-1003726286301, 1364, -1003786932333, 28),
-                     (-1003726286301, 10877, -1003786932333, 8)}
+                     (-1003726286301, 10877, -1003786932333, 8),
+                     (-1003726286301, 12161, -1003786932333, 24)}
     for contract in new_contracts:
         require(sum(tuple(r[k] for k in ("source_chat","source_topic","dest_chat","dest_topic")) == contract for r in routes) == 1,
                 f"Owner route missing/duplicate: {contract}")

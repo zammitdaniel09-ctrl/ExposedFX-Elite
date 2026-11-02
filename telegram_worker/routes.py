@@ -671,6 +671,10 @@ ROUTES.extend([
      "source_topic": 10877, "dest_chat": -1003786932333, "dest_topic": 8,
      "live_only": True, "strict_source_topic": True, "copy_reply_parent": False,
      "anonymous_send_as": False, "owner_managed": True},
+    {"name": "Owner VIP12161 To Partner24", "source_chat": -1003726286301,
+     "source_topic": 12161, "dest_chat": -1003786932333, "dest_topic": 24,
+     "live_only": True, "strict_source_topic": True, "copy_reply_parent": False,
+     "anonymous_send_as": False, "owner_managed": True},
 ])
 # END OWNER REQUESTED ROUTES 20261102
 

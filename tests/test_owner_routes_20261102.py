@@ -110,9 +110,9 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
             for index,route in enumerate(self.worker.ROUTES):
                 entry=state.setdefault(policy.identity(route),{})
                 await self.bootstrap(index,entry,state)
-        self.assertEqual([t for t,_ in self.worker.sent], [12161]*50+[28]*20+[8]*20)
-        self.assertEqual([e["status"] for e in state.values()],["done"]*3)
-        for e,n in zip(state.values(),(50,20,20)):
+        self.assertEqual([t for t,_ in self.worker.sent], [12161]*50+[28]*20+[8]*20+[24]*20)
+        self.assertEqual([e["status"] for e in state.values()],["done"]*4)
+        for e,n in zip(state.values(),(50,20,20,20)):
             self.assertEqual(e["sent"],n)
             self.assertEqual(e["verified_destination_messages"],n)
         before=list(self.worker.sent)
@@ -196,7 +196,7 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(owner.asyncio,"sleep",return_value=None), patch.object(owner,"live_cycle",end_live):
             with self.assertRaises(asyncio.CancelledError):
                 await owner.run_owner_requested_routes(self.worker)
-        self.assertEqual([t for t,_ in self.worker.sent],[28]*20+[8]*20)
+        self.assertEqual([t for t,_ in self.worker.sent],[28]*20+[8]*20+[24]*20)
         self.assertTrue(policy.is_stopped(self.worker.ROUTES[0]))
         self.assertEqual(reached,[28])
 

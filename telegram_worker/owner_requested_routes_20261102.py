@@ -1,4 +1,4 @@
-"""Three exact owner routes; sequential 50/20/20 bootstrap and durable live polling.
+"""Exact owner routes; sequential 50/20/20/20 bootstrap and durable live polling.
 
 Runs inside the already-authorized MAIN process, using its own copy pipeline.
 No new Telegram session, whole-chat fallback, deletion, or credential changes.
@@ -18,6 +18,7 @@ TARGETS = (
     (-1004367822325, 7250, -1003726286301, 12161, 50),
     (-1003726286301, 1364, -1003786932333, 28, 20),
     (-1003726286301, 10877, -1003786932333, 8, 20),
+    (-1003726286301, 12161, -1003786932333, 24, 20),
 )
 STATE_FILE = "owner_requested_routes_20261102_v1.json"
 

@@ -81,6 +81,7 @@ class Harness:
 
         self.namespace = {
             "asyncio": asyncio,
+            "owner_policy": SimpleNamespace(is_stopped=lambda route: False),
             "log": logging.getLogger("test-fastvip"),
             "existing_destination_ids": lambda item, route: False,
             "should_hard_block_sender": lambda item, ctx, route: False,

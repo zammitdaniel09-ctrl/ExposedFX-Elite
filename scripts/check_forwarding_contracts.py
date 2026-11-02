@@ -54,7 +54,8 @@ def check_routes():
         dest = (int(route["dest_chat"]), int(route["dest_topic"] or 0))
         require(source != (-1004367822325, 2530), "Retired 2530 source restored")
         require(dest != (-1004367822325, 2530), "Retired 2530 destination restored")
-        require(source != (-1004367822325, 7250), "Retired 7250 source restored")
+        require(source != (-1004367822325, 7250) or dest == (-1003726286301, 12161),
+                "7250 is authorized only to VIP12161")
         require(dest != (-1003726286301, 5), "Retired VIP5 destination restored")
         require(dest != (-1003885074241, 4663), "Retired partner 4663 restored")
         require(dest != (-1003885074241, 4665), "Retired partner 4665 restored")
@@ -67,6 +68,12 @@ def check_routes():
         ) == (-1004367822325, 7248, -1003726286301, 10877)
     ]
     require(len(wanted) == 1, "Exactly one 7248 -> VIP10877 route required")
+    new_contracts = {(-1004367822325, 7250, -1003726286301, 12161),
+                     (-1003726286301, 1364, -1003786932333, 28),
+                     (-1003726286301, 10877, -1003786932333, 8)}
+    for contract in new_contracts:
+        require(sum(tuple(r[k] for k in ("source_chat","source_topic","dest_chat","dest_topic")) == contract for r in routes) == 1,
+                f"Owner route missing/duplicate: {contract}")
 
     identities = [
         (
@@ -131,8 +138,8 @@ def check_worker_invariants():
     ):
         require(marker in worker, f"Expected live-worker guard missing: {marker}")
     package = (PACKAGE / "__init__.py").read_text(encoding="utf-8-sig")
-    require("[DOWNSTREAM ACCESS COOLDOWN]" in package,
-            "Wholechat access-failure cooldown removed")
+    require("[OWNER DOWNSTREAM STOPPED]" in package,
+            "Owner downstream stop removed")
     print("PASS: worker runtime safeguards still installed")
 
 

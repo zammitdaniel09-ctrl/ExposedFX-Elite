@@ -23,6 +23,7 @@ from telegram_worker.permanent_delivery_errors import (
 )
 from telegram_worker.provider_profiles import is_promo_text
 from telegram_worker.routes import ROUTES
+from telegram_worker import owner_forwarding_policy as owner_policy
 from telegram_worker.parser import parse_signal
 from telegram_worker.stats_reporter import WeeklyStats
 
@@ -155,6 +156,8 @@ VERIFY_ROUTE_TITLES = os.environ.get("VERIFY_ROUTE_TITLES", "1").strip() == "1"
 
 DATA_DIR = Path(os.environ.get("DATA_DIR") or "./data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+owner_policy.configure(DATA_DIR)
+ROUTES[:] = [r for r in ROUTES if not owner_policy.is_stopped(r)]
 SESSION_BASE = DATA_DIR / "session"
 SESSION_FILE = DATA_DIR / "session.session"
 MESSAGE_MAP_FILE = DATA_DIR / "message_map.json"
@@ -1106,6 +1109,8 @@ def routes_for(chat_id, topic_id, message=None):
 
     found = []
     for route in ROUTES:
+        if route.get("owner_managed") or owner_policy.is_stopped(route):
+            continue
         if route["source_chat"] != chat_id:
             continue
 
@@ -1447,16 +1452,9 @@ def maybe_post_signal(route, message, text):
 
 
 def safe_maybe_post_signal(route, message, text, context=""):
-    """
-    Forwarding must never fail because signal parsing/API side logic failed.
-    """
-    try:
-        maybe_post_signal(route, message, text)
-    except Exception as exc:
-        log.warning(
-            f"[signal sidecar skipped] route={route.get('name')} "
-            f"msg={getattr(message, 'id', None)} context={context}: {type(exc).__name__}: {exc}"
-        )
+    # Owner explicitly stopped the signals feed on 2026-11-02.
+    """Owner stopped all signal-feed processing on 2026-11-02."""
+    return
 
 
 def safe_log_stats(route, message, text, context=""):
@@ -2160,12 +2158,15 @@ async def relay508_mapped_edit_reconcile_loop():
 
 
 async def copy_one(message, route, edited=False, ensure_reply=True):
+    if owner_policy.is_stopped(route):
+        return None
     if vip5_retired_destination(route):
         log.warning("[VIP5 DESTINATION BLOCKED] dest=-1003726286301_5")
         return None
     if (
         int(route.get("source_chat") or 0) == -1004367822325
         and int(route.get("source_topic") or 0) == 7250
+        and not owner_policy.relay7250_allowed(route)
     ):
         log.warning("[RELAY7250 PERMANENT OUTBOUND BLOCK] copy_one=True")
         return None
@@ -2233,12 +2234,15 @@ async def copy_one(message, route, edited=False, ensure_reply=True):
 
 
 async def copy_album(messages, route):
+    if owner_policy.is_stopped(route):
+        return None
     if vip5_retired_destination(route):
         log.warning("[VIP5 DESTINATION BLOCKED] dest=-1003726286301_5")
         return None
     if (
         int(route.get("source_chat") or 0) == -1004367822325
         and int(route.get("source_topic") or 0) == 7250
+        and not owner_policy.relay7250_allowed(route)
     ):
         log.warning("[RELAY7250 PERMANENT OUTBOUND BLOCK] copy_album=True")
         return None
@@ -2386,6 +2390,8 @@ def is_transient_copy_error(exc):
 
 
 async def copy_one_with_retry(message, route, edited=False):
+    if owner_policy.is_stopped(route):
+        return None
     attempts = max(1, COPY_RETRY_ATTEMPTS)
     last_exc = None
 
@@ -2402,6 +2408,10 @@ async def copy_one_with_retry(message, route, edited=False):
             await asyncio.sleep(wait)
         except Exception as exc:
             last_exc = exc
+            reason = owner_policy.permanent_access_error(exc)
+            if reason:
+                owner_policy.stop_route(route, reason, log)
+                raise
             if attempt < attempts and is_transient_copy_error(exc):
                 wait = min(2 * attempt, COPY_RETRY_SLEEP_CAP_SECONDS)
                 log.warning(
@@ -2419,6 +2429,8 @@ async def copy_one_with_retry(message, route, edited=False):
 
 
 async def copy_album_with_retry(messages, route):
+    if owner_policy.is_stopped(route):
+        return None
     attempts = max(1, COPY_RETRY_ATTEMPTS)
     first = messages[0] if messages else None
     last_exc = None
@@ -2436,6 +2448,10 @@ async def copy_album_with_retry(messages, route):
             await asyncio.sleep(wait)
         except Exception as exc:
             last_exc = exc
+            reason = owner_policy.permanent_access_error(exc)
+            if reason:
+                owner_policy.stop_route(route, reason, log)
+                raise
             if attempt < attempts and is_transient_copy_error(exc):
                 wait = min(2 * attempt, COPY_RETRY_SLEEP_CAP_SECONDS)
                 log.warning(
@@ -2551,6 +2567,8 @@ def route_poll_key(route):
 
 
 async def get_route_poll_messages(route, limit):
+    if owner_policy.is_stopped(route):
+        return []
     chat_id = int(route["source_chat"])
     source_topic = route.get("source_topic")
     limit = max(1, int(limit))
@@ -2570,6 +2588,10 @@ async def get_route_poll_messages(route, limit):
                 )
                 return msgs
         except Exception as exc:
+            reason = owner_policy.permanent_access_error(exc)
+            if reason:
+                owner_policy.stop_route(route, reason, log)
+                return []
             if route.get("strict_source_topic"):
                 log.exception(
                     f"[STRICT SOURCE TOPIC FETCH FAILED] "
@@ -2585,7 +2607,14 @@ async def get_route_poll_messages(route, limit):
                 f"source={chat_id}_{source_topic}: {type(exc).__name__}: {exc}. Falling back to chat latest."
             )
 
-    return await client.get_messages(chat_id, limit=limit)
+    try:
+        return await client.get_messages(chat_id, limit=limit)
+    except Exception as exc:
+        reason = owner_policy.permanent_access_error(exc)
+        if reason:
+            owner_policy.stop_route(route, reason, log)
+            return []
+        raise
 
 
 
@@ -2960,7 +2989,7 @@ def is_fast_vip_route(route):
     if not isinstance(route, dict):
         return False
 
-    if not route.get("live_only"):
+    if not route.get("live_only") or route.get("owner_managed"):
         return False
 
     try:
@@ -3049,6 +3078,7 @@ def private_live_routes():
         route
         for route in ROUTES
         if route.get("live_only")
+        and not route.get("owner_managed")
         and not is_fast_vip_route(route)
     ]
 
@@ -4156,6 +4186,8 @@ async def fast_vip_deliver_route(
     unit,
     skip_permanent_errors=False,
 ):
+    if owner_policy.is_stopped(route):
+        return True  # Policy stop, NOT a successful delivery.
 
     ids = [
         int(
@@ -11178,6 +11210,10 @@ async def main():
     # END GENERAL TOPIC1 OWNER-REQUESTED CLEANUP V1
 
     await warm_entity_cache_once()
+
+    from telegram_worker.owner_requested_routes_20261102 import run_owner_requested_routes
+    owner_module = __import__("sys").modules[__name__]
+    owner_module.OWNER_REQUESTED_ROUTES_TASK = asyncio.create_task(run_owner_requested_routes(owner_module))
 
     # BEGIN VIP5 TOPIC DELETION STARTUP V1
     try:

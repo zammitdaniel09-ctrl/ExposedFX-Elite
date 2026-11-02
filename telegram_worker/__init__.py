@@ -12,6 +12,7 @@ import sys
 from telethon.errors import ChannelPrivateError
 
 from . import runtime_guard as _runtime_guard
+from . import owner_forwarding_policy as _owner_policy
 
 
 # Access denied / missing entity hashes will not improve by retrying every
@@ -54,14 +55,8 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
             except Exception as exc:
                 if _is_wholechat_access_error(exc):
                     if log:
-                        log.warning(
-                            "[WHOLECHAT ACCESS COOLDOWN] %s: %s "
-                            "retry_seconds=%s LIVE_ROUTES_UNAFFECTED=True",
-                            type(exc).__name__,
-                            exc,
-                            WHOLECHAT_ACCESS_RETRY_SECONDS,
-                        )
-                    await asyncio.sleep(WHOLECHAT_ACCESS_RETRY_SECONDS)
+                        log.warning("[OWNER WHOLECHAT STOPPED] error=%s RETRY=False", type(exc).__name__)
+                    return
                 else:
                     if log:
                         log.exception(
@@ -75,61 +70,14 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
         main_module,
         log=None,
     ):
-        while True:
-            try:
-                from .wholechat_relay_3743381585_to_3216105903 import (
-                    run_wholechat_3743381585_to_3216105903,
-                )
-
-                await run_wholechat_3743381585_to_3216105903(
-                    main_module,
-                    logger=log,
-                )
-                return
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                if _is_wholechat_access_error(exc):
-                    if log:
-                        log.warning(
-                            "[DOWNSTREAM ACCESS COOLDOWN] %s: %s "
-                            "retry_seconds=%s LIVE_ROUTES_UNAFFECTED=True",
-                            type(exc).__name__,
-                            exc,
-                            WHOLECHAT_ACCESS_RETRY_SECONDS,
-                        )
-                    await asyncio.sleep(WHOLECHAT_ACCESS_RETRY_SECONDS)
-                else:
-                    if log:
-                        log.exception(
-                            "[DOWNSTREAM RELAY WAIT/RETRY] %s: %s",
-                            type(exc).__name__,
-                            exc,
-                        )
-                    await asyncio.sleep(10)
+        if log:
+            log.warning("[OWNER DOWNSTREAM STOPPED] dest=-1003216105903 RETRY=False")
+        return
 
     async def _run_partner_3885074241_last20_with_retry(main_module, log=None):
-        while True:
-            try:
-                from .partner_3885074241_last20 import (
-                    run_partner_3885074241_last20,
-                )
-
-                await run_partner_3885074241_last20(
-                    main_module,
-                    logger=log,
-                )
-                return
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                if log:
-                    log.exception(
-                        "[PARTNER LAST20 WAIT/RETRY] %s: %s",
-                        type(exc).__name__,
-                        exc,
-                    )
-                await asyncio.sleep(10)
+        if log:
+            log.warning("[OWNER PAID PARTNER STOPPED] dest=-1003885074241_4660 RETRY=False")
+        return
 
     async def _wait_and_run_owner_tasks(log=None):
         while True:
@@ -175,7 +123,7 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                                 guard_state.get("removed_route_count", 0),
                             )
 
-                    if getattr(
+                    if -1002385852838 not in _owner_policy.STOPPED_SOURCE_CHATS and getattr(
                         main_module,
                         "FORCE_82617_LAST50_TASK",
                         None,

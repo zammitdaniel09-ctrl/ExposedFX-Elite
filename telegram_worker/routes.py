@@ -654,6 +654,26 @@ ROUTES.extend([
 ])
 # END RELAY7250_7248 TO VIP10877 V1
 
+
+# BEGIN OWNER REQUESTED ROUTES 20261102
+# A dedicated sequential bootstrap/poller owns these routes; legacy handlers
+# exclude owner_managed so history and live events cannot race each other.
+ROUTES.extend([
+    {"name": "Owner Relay7250 To VIP12161", "source_chat": -1004367822325,
+     "source_topic": 7250, "dest_chat": -1003726286301, "dest_topic": 12161,
+     "live_only": True, "strict_source_topic": True, "copy_reply_parent": False,
+     "anonymous_send_as": False, "owner_managed": True},
+    {"name": "Owner VIP1364 To Partner28", "source_chat": -1003726286301,
+     "source_topic": 1364, "dest_chat": -1003786932333, "dest_topic": 28,
+     "live_only": True, "strict_source_topic": True, "copy_reply_parent": False,
+     "anonymous_send_as": False, "owner_managed": True},
+    {"name": "Owner VIP10877 To Partner8", "source_chat": -1003726286301,
+     "source_topic": 10877, "dest_chat": -1003786932333, "dest_topic": 8,
+     "live_only": True, "strict_source_topic": True, "copy_reply_parent": False,
+     "anonymous_send_as": False, "owner_managed": True},
+])
+# END OWNER REQUESTED ROUTES 20261102
+
 # BEGIN PARTNER DEAD DESTINATION HARD STOP V1
 # Owner-retired topics. No route from any source may write to these topics.
 _PARTNER_DEAD_DEST_CHAT = -1003885074241
@@ -741,6 +761,7 @@ ROUTES = [
     if not (
         int(route.get("source_chat") or 0) == _RETIRED7250_CHAT
         and int(route.get("source_topic") or 0) == _RETIRED7250_TOPIC
+        and (int(route.get("dest_chat") or 0), int(route.get("dest_topic") or 0)) != (-1003726286301, 12161)
     )
 ]
 # END RELAY7250 PERMANENT OUTBOUND HARD STOP V1
@@ -755,3 +776,7 @@ ROUTES[:] = [
             and int(route.get("dest_topic") or 0) == VIP5_RETIRED_DEST_TOPIC)
 ]
 # END VIP5 DESTINATION RETIRED V1
+
+# Owner stopped inaccessible sources and paid destinations on 2026-11-02.
+from telegram_worker.owner_forwarding_policy import known_stopped
+ROUTES[:] = [route for route in ROUTES if not known_stopped(route)]

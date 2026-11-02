@@ -2524,6 +2524,9 @@ async def copy_unit_pair_deduped(
 
 
 async def initialise_alt_pair106_no_history():
+    if not any(alt_pair106_route(route) for route in ROUTES):
+        log.warning("[OWNER ALT PAIR106 STOPPED] routes=0 INIT_SKIPPED=True RETRY=False")
+        return
     """
     First installation:
 

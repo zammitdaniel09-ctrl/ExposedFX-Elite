@@ -285,7 +285,7 @@ _legacy.log.warning(
     f"source_a={SPLIT_PAIR_SOURCE_A} split_dest_a={SPLIT_PAIR_DEST_CHAT}_{SPLIT_PAIR_DEST_A} "
     f"source_b={SPLIT_PAIR_SOURCE_B} split_dest_b={SPLIT_PAIR_DEST_CHAT}_{SPLIT_PAIR_DEST_B} "
     f"split_routes_added={_SPLIT_PAIR_ROUTES_ADDED} "
-    "PAIR106_KEPT=True FIRST_COPY_WINS=True SPLIT_FORWARDING=True"
+    "PAIR106_KEPT=False FIRST_COPY_WINS=True SPLIT_FORWARDING=False OWNER_STOPPED=True"
 )
 
 
@@ -333,15 +333,8 @@ SOURCE_CHATS = _legacy.SOURCE_CHATS
 
 
 async def _run_split_pair_last100_guarded():
-    try:
-        await run_alt_split_pair_last100_once(_legacy, logger=_legacy.log)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        _legacy.log.exception(
-            "[ALT SPLIT LAST100 FAILED SAFE] "
-            f"{type(exc).__name__}: {exc} LIVE_FORWARDING_CONTINUES=True"
-        )
+    _legacy.log.warning("[OWNER ALT SPLIT STOPPED] ACCESS_UNAVAILABLE=True RETRY=False")
+    return
 
 
 async def _run_new_topics_last20_guarded():

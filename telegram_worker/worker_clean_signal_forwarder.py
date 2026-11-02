@@ -243,6 +243,12 @@ def is_clean_signal_update(text: str) -> bool:
     if "SOURCE:" in u or "EXPOSEDFX |" in u:
         return False
 
+    # A complete formatted signal is never an update. Its TIPS block always
+    # contains "Breakeven after TP1 HIT", which the TP-hit check below would
+    # otherwise match, so every new signal was skipped as an update.
+    if is_my_formatted_signal(t):
+        return False
+
     has_pips = bool(re.search(r"\+\s*\d{1,5}(?:\.\d+)?\s*PIPS\b", u))
     has_tp_hit = bool(re.search(r"\bTP\s*#?\s*\d{1,2}\s+HIT\b", u))
     has_be = bool(re.search(r"\b(?:BE|BREAK\s*EVEN|BREAKEVEN)\s+HIT\b", u))

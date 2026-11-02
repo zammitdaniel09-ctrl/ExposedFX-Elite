@@ -1,8 +1,9 @@
 """Destination errors that retrying cannot fix, and a durable record of them.
 
 A destination that refuses this account (no text/media permission, banned,
-private, admin required, or not resolvable because the account is not a
-member) fails identically on every retry. Live FASTVIP delivery records such
+private, admin required, any other Telegram 403 such as a chat that charges
+Stars per message, or not resolvable because the account is not a member)
+fails identically on every retry. Live FASTVIP delivery records such
 a failure once per message and route, so the watchdog stops re-sending that
 message every few seconds.
 
@@ -54,9 +55,19 @@ def _channel_id(chat_id):
 
 def permanent_error_name(exc, dest_chat):
     """Return a stable name if `exc` is a permanent destination error, else None."""
-    for cls in type(exc).__mro__:
-        if cls.__name__ in PERMANENT_ERROR_NAMES:
-            return cls.__name__
+    names = [cls.__name__ for cls in type(exc).__mro__]
+    for name in names:
+        if name in PERMANENT_ERROR_NAMES:
+            return name
+
+    # Every Telegram 403 is a refusal of this account (e.g. a chat that now
+    # charges Stars per message: ALLOW_PAYMENT_REQUIRED_10). Retrying cannot
+    # succeed and the worker must never pay, so treat all 403s as permanent.
+    if "ForbiddenError" in names or getattr(exc, "code", None) == 403:
+        if names[0] != "ForbiddenError":
+            return names[0]
+        detail = str(getattr(exc, "message", "") or "").strip()
+        return f"Forbidden:{detail}" if detail else "ForbiddenError"
 
     # Telethon raises a plain ValueError when the account cannot resolve a
     # chat. Only treat it as permanent when it names THIS route's destination,

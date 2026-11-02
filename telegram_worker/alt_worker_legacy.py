@@ -10,6 +10,7 @@ from pathlib import Path
 from telethon import TelegramClient, events, functions
 from telethon.errors import FloodWaitError, ChannelPrivateError
 from telethon.sessions import StringSession
+from telegram_worker import owner_forwarding_policy as owner_policy
 from telethon.tl.types import MessageMediaWebPage
 
 
@@ -47,6 +48,7 @@ DATA_DIR.mkdir(
     parents=True,
     exist_ok=True,
 )
+owner_policy.configure(DATA_DIR)
 
 MAP_FILE = DATA_DIR / "message_map.json"
 STATE_FILE = DATA_DIR / "route_state.json"
@@ -270,7 +272,10 @@ def alt_vip5_block(route):
 # END ALT VIP5 DESTINATION PERMANENT STOP V1
 
 
-ROUTES = [route for route in load_routes() if not alt_vip5_block(route)]
+ROUTES = [route for route in load_routes()
+          if not alt_vip5_block(route) and not owner_policy.is_stopped(route)]
+log.warning("[OWNER ALT STOP POLICY] stopped_source_chats=%s remaining_routes=%s",
+            sorted(owner_policy.STOPPED_SOURCE_CHATS), len(ROUTES))
 
 SOURCE_CHATS = sorted({
     route["source_chat"]
@@ -1275,6 +1280,8 @@ async def send_single(
     route,
     message,
 ):
+    if owner_policy.is_stopped(route):
+        return None
     if alt_vip5_block(route):
         log.warning("[ALT VIP5 DESTINATION PERMANENT BLOCK] writer=send_single")
         return None
@@ -1385,6 +1392,8 @@ async def send_album(
     route,
     messages,
 ):
+    if owner_policy.is_stopped(route):
+        return None
     if alt_vip5_block(route):
         log.warning("[ALT VIP5 DESTINATION PERMANENT BLOCK] writer=send_album")
         return None
@@ -1525,7 +1534,7 @@ async def send_album(
 # FORWARD UNIT
 # ==============================================================
 
-async def copy_unit(
+async def _owner_original_copy_unit(
     route,
     messages,
     reason,
@@ -1694,6 +1703,9 @@ async def copy_unit(
             return False
 
         except Exception as exc:
+            permanent = owner_policy.permanent_access_error(exc)
+            if permanent:
+                owner_policy.stop_route(route, permanent, log)
             log.exception(
                 "[ALT COPY FAILED] "
                 f"route={route['name']} "
@@ -1703,6 +1715,20 @@ async def copy_unit(
             )
 
             return False
+
+async def copy_unit(*args, **kwargs):
+    route = kwargs.get("route") or (args[0] if len(args) > 0 else None)
+    if route and owner_policy.is_stopped(route):
+        return False
+    try:
+        return await _owner_original_copy_unit(*args, **kwargs)
+    except Exception as exc:
+        reason = owner_policy.permanent_access_error(exc)
+        if reason and route:
+            owner_policy.stop_route(route, reason, log)
+            return False
+        raise
+
 
 
 # ==============================================================
@@ -2761,7 +2787,7 @@ async def edited_handler(event):
 # WATCHDOG / DEPLOYMENT RECOVERY
 # ==============================================================
 
-async def fetch_route_messages(
+async def _owner_original_fetch_route_messages(
     route,
     limit,
 ):
@@ -2782,6 +2808,20 @@ async def fetch_route_messages(
         route["source_chat"],
         limit=int(limit),
     )
+
+async def fetch_route_messages(*args, **kwargs):
+    route = kwargs.get("route") or (args[0] if len(args) > 0 else None)
+    if route and owner_policy.is_stopped(route):
+        return []
+    try:
+        return await _owner_original_fetch_route_messages(*args, **kwargs)
+    except Exception as exc:
+        reason = owner_policy.permanent_access_error(exc)
+        if reason and route:
+            owner_policy.stop_route(route, reason, log)
+            return []
+        raise
+
 
 
 def build_units(messages):
@@ -2862,6 +2902,8 @@ def alt_legacy_watchdog_access_failure(route, exc):
 
 
 async def watchdog(route):
+    if owner_policy.is_stopped(route):
+        return
     stored_checkpoint = checkpoint(
         route
     )
@@ -2875,6 +2917,8 @@ async def watchdog(route):
 
     if stored_checkpoint <= 0:
         while True:
+            if owner_policy.is_stopped(route):
+                return
             try:
                 current = list(
                     await fetch_route_messages(
@@ -2883,6 +2927,9 @@ async def watchdog(route):
                     )
                     or []
                 )
+
+                if owner_policy.is_stopped(route):
+                    return
 
                 stored_checkpoint = max(
                     [
@@ -2951,6 +2998,8 @@ async def watchdog(route):
     )
 
     while True:
+        if owner_policy.is_stopped(route):
+            return
         await asyncio.sleep(
             WATCHDOG_SECONDS
         )
@@ -5539,7 +5588,7 @@ async def main():
         (-1004349952583, 5247, -1004367822325, 7250),
     }
 
-    for route in ROUTES:
+    for route in list(ROUTES):
         identity = (
             int(route["source_chat"]),
             int(route["source_topic"])
@@ -5585,8 +5634,10 @@ async def main():
                 )
             )
 
-            if not recoverable or identity in required_routes:
+            if not recoverable:
                 raise
+            owner_policy.stop_route(route, type(exc).__name__, log)
+            ROUTES.remove(route)
 
             log.warning(
                 "[ALT LEGACY ROUTE UNAVAILABLE] "

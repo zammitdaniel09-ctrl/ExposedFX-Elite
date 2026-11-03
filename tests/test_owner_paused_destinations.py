@@ -32,7 +32,9 @@ class FakeClient:
 
 class PausedDestinationTests(unittest.TestCase):
     def test_no_live_route_targets_paused_chats(self):
-        self.assertFalse([r for r in ROUTES if int(r["dest_chat"]) in (-1003918958200, -1004442967052)])
+        paused = (-1003918958200, -1004442967052, -1003802436353)
+        self.assertFalse([r for r in ROUTES if int(r["dest_chat"]) in paused])
+        self.assertTrue(policy.blocked_write(SendMessageRequest(InputPeerChannel(3802436353, 0), "x")))
         self.assertTrue(any(int(r["dest_chat"]) == -1003726286301 for r in ROUTES))
 
     def test_writes_to_paused_chats_are_blocked(self):

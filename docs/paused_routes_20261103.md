@@ -1,7 +1,10 @@
 # Paused routes — 3 Nov 2026
 
-Owner request: stop all forwarding into the Hub (`-1003918958200`) and the
-Partner group (`-1004442967052`), keeping every route on record for later.
+Owner request: stop all forwarding into the Hub "ExposedFX VIP"
+(`-1003918958200`) and the Partner group "ExposedFX ELITE" (`-1004442967052`),
+keeping every route on record for later. Later the same day the owner also
+removed "Jamie SUB IB" (`-1003802436353`), which the MAIN account could no
+longer reach.
 
 **Nothing was deleted.** The route definitions remain in
 `telegram_worker/routes.py`; message maps, checkpoints and state files on the
@@ -15,53 +18,58 @@ MAIN volume are untouched. The pause is enforced in
 
 ## How to restore
 
-Remove `-1003918958200` and/or `-1004442967052` from `STOPPED_DEST_CHATS`,
+Remove the chat id (`-1003918958200`, `-1004442967052` or `-1003802436353`)
+from `STOPPED_DEST_CHATS`,
 then deploy MAIN. Routes resume from their saved checkpoints. Any route that
 was stopped at runtime is also listed in `/app/data/owner_stopped_forwarding_20261102.json`;
 remove its entry there too if it should resume.
 
-## Live routes paused (38)
+## Live routes paused (42)
 
 | # | Route | Source chat | Source topic | Destination | Dest topic |
 |---|---|---|---|---|---|
-| 1 | Premium I Live Trade | `-1003814307529` | whole chat | Hub `-1003918958200` | 25 |
-| 2 | Market Slayers VIP | `-1003838973021` | whole chat | Hub `-1003918958200` | 23 |
-| 3 | Dropout VIP | `-1003840418063` | whole chat | Hub `-1003918958200` | 22 |
-| 4 | MANJOX TRADES | `-1003887896696` | whole chat | Hub `-1003918958200` | 31 |
-| 5 | BOLZEGHA VIP | `-1002900239477` | whole chat | Hub `-1003918958200` | 35 |
-| 6 | ELX Premium | `-1003393003521` | whole chat | Hub `-1003918958200` | 36 |
-| 7 | KEY / ALCHEMIST 1 | `-1003681070311` | whole chat | Hub `-1003918958200` | 28 |
-| 8 | MSC Premium | `-1003909296106` | whole chat | Hub `-1003918958200` | 34 |
-| 9 | Master Premium | `-1003457399744` | whole chat | Hub `-1003918958200` | 20 |
-| 10 | ExposedFX Route 362 | `-1002444443378` | whole chat | Hub `-1003918958200` | 362 |
-| 11 | Route569 2 | `-1003860051934` | 2 | Hub `-1003918958200` | 569 |
-| 12 | Route569 155 | `-1003860051934` | 155 | Hub `-1003918958200` | 569 |
-| 13 | Route569 1 | `-1003860051934` | 1 | Hub `-1003918958200` | 569 |
-| 14 | Route569 439 | `-1003860051934` | 439 | Hub `-1003918958200` | 569 |
-| 15 | Route569 116 | `-1003860051934` | 116 | Hub `-1003918958200` | 569 |
-| 16 | Route569 543 | `-1003860051934` | 543 | Hub `-1003918958200` | 569 |
-| 17 | Route569 5 | `-1003860051934` | 5 | Hub `-1003918958200` | 569 |
-| 18 | Route569 54 | `-1003860051934` | 54 | Hub `-1003918958200` | 569 |
-| 19 | Route569 156 | `-1003860051934` | 156 | Hub `-1003918958200` | 569 |
-| 20 | Route569 209 | `-1003860051934` | 209 | Hub `-1003918958200` | 569 |
-| 21 | Route569 243 | `-1003860051934` | 243 | Hub `-1003918958200` | 569 |
-| 22 | Route569 272 | `-1003860051934` | 272 | Hub `-1003918958200` | 569 |
-| 23 | Route569 331 | `-1003860051934` | 331 | Hub `-1003918958200` | 569 |
-| 24 | Route569 363 | `-1003860051934` | 363 | Hub `-1003918958200` | 569 |
-| 25 | Route569 412 | `-1003860051934` | 412 | Hub `-1003918958200` | 569 |
-| 26 | Route570 | `-1003671770570` | whole chat | Hub `-1003918958200` | 570 |
-| 27 | Mirror Route569 3812195730 | `-1003812195730` | whole chat | Hub `-1003918958200` | 569 |
-| 28 | Mirror Route26892 3651353503 | `-1003651353503` | whole chat | Hub `-1003918958200` | 26892 |
-| 29 | Mirror Route28464 3087047858 | `-1003087047858` | whole chat | Hub `-1003918958200` | 28464 |
-| 30 | Mirror Route29327 3770573057 | `-1003770573057` | whole chat | Hub `-1003918958200` | 29327 |
-| 31 | Mirror Route26902 2186832814 | `-1002186832814` | whole chat | Hub `-1003918958200` | 26902 |
-| 32 | Mirror Route568 3894275482 | `-1003894275482` | whole chat | Hub `-1003918958200` | 568 |
-| 33 | Relay2583 To Hub68237 | `-1004367822325` | 2583 | Hub `-1003918958200` | 68237 |
-| 34 | Relay2585 To Partner2 | `-1004367822325` | 2585 | Partner `-1004442967052` | 2 |
-| 35 | Relay508 To Partner9 | `-1004367822325` | 508 | Partner `-1004442967052` | 9 |
-| 36 | Relay115 To Partner11 | `-1004367822325` | 115 | Partner `-1004442967052` | 11 |
-| 37 | Relay2 To Partner15 | `-1004367822325` | 2 | Partner `-1004442967052` | 15 |
-| 38 | MANJOX To Partner20 | `-1003887896696` | whole chat | Partner `-1004442967052` | 20 |
+| 1 | Premium I Live Trade | `-1003814307529` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 25 |
+| 2 | Market Slayers VIP | `-1003838973021` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 23 |
+| 3 | Dropout VIP | `-1003840418063` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 22 |
+| 4 | MANJOX TRADES | `-1003887896696` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 31 |
+| 5 | BOLZEGHA VIP | `-1002900239477` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 35 |
+| 6 | ELX Premium | `-1003393003521` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 36 |
+| 7 | KEY / ALCHEMIST 1 | `-1003681070311` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 28 |
+| 8 | MSC Premium | `-1003909296106` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 34 |
+| 9 | Master Premium | `-1003457399744` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 20 |
+| 10 | ExposedFX Route 362 | `-1002444443378` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 362 |
+| 11 | Route569 2 | `-1003860051934` | 2 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 12 | Route569 155 | `-1003860051934` | 155 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 13 | Route569 1 | `-1003860051934` | 1 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 14 | Route569 439 | `-1003860051934` | 439 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 15 | Route569 116 | `-1003860051934` | 116 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 16 | Route569 543 | `-1003860051934` | 543 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 17 | Route569 5 | `-1003860051934` | 5 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 18 | Route569 54 | `-1003860051934` | 54 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 19 | Route569 156 | `-1003860051934` | 156 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 20 | Route569 209 | `-1003860051934` | 209 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 21 | Route569 243 | `-1003860051934` | 243 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 22 | Route569 272 | `-1003860051934` | 272 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 23 | Route569 331 | `-1003860051934` | 331 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 24 | Route569 363 | `-1003860051934` | 363 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 25 | Route569 412 | `-1003860051934` | 412 | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 26 | Route570 | `-1003671770570` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 570 |
+| 27 | Mirror Route569 3812195730 | `-1003812195730` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 569 |
+| 28 | Mirror Route26892 3651353503 | `-1003651353503` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 26892 |
+| 29 | Mirror Route28464 3087047858 | `-1003087047858` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 28464 |
+| 30 | Mirror Route29327 3770573057 | `-1003770573057` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 29327 |
+| 31 | Mirror Route26902 2186832814 | `-1002186832814` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 26902 |
+| 32 | Mirror Route568 3894275482 | `-1003894275482` | whole chat | ExposedFX VIP (Hub) `-1003918958200` | 568 |
+| 33 | Jamie SUB IB FORWARDING | 11 To 31 | `-1003726286301` | 11 | Jamie SUB IB `-1003802436353` | 31 |
+| 34 | Jamie SUB IB FORWARDING | 7 To 35 | `-1003726286301` | 7 | Jamie SUB IB `-1003802436353` | 35 |
+| 35 | Jamie SUB IB FORWARDING | 13 To 33 | `-1003726286301` | 13 | Jamie SUB IB `-1003802436353` | 33 |
+| 36 | Jamie SUB IB FORWARDING | 5 To 37 | `-1003726286301` | 5 | Jamie SUB IB `-1003802436353` | 37 |
+| 37 | Relay2583 To Hub68237 | `-1004367822325` | 2583 | ExposedFX VIP (Hub) `-1003918958200` | 68237 |
+| 38 | Relay2585 To Partner2 | `-1004367822325` | 2585 | ExposedFX ELITE (Partner) `-1004442967052` | 2 |
+| 39 | Relay508 To Partner9 | `-1004367822325` | 508 | ExposedFX ELITE (Partner) `-1004442967052` | 9 |
+| 40 | Relay115 To Partner11 | `-1004367822325` | 115 | ExposedFX ELITE (Partner) `-1004442967052` | 11 |
+| 41 | Relay2 To Partner15 | `-1004367822325` | 2 | ExposedFX ELITE (Partner) `-1004442967052` | 15 |
+| 42 | MANJOX To Partner20 | `-1003887896696` | whole chat | ExposedFX ELITE (Partner) `-1004442967052` | 20 |
 
 ## Background jobs that also wrote to these chats
 
@@ -305,6 +313,78 @@ remove its entry there too if it should resume.
   "name": "Mirror Route568 3894275482",
   "source_chat": -1003894275482,
   "source_topic": null,
+  "verify_title": false
+ },
+ {
+  "anonymous_send_as": false,
+  "copy_reply_parent": false,
+  "dest_chat": -1003802436353,
+  "dest_topic": 31,
+  "live_only": true,
+  "loop_guard_peers": [
+   -1003726286301,
+   -1003802436353
+  ],
+  "name": "Jamie SUB IB FORWARDING | 11 To 31",
+  "ordered_private": true,
+  "source_chat": -1003726286301,
+  "source_topic": 11,
+  "strict_source_topic": true,
+  "sub_ib_forwarding": "Jamie SUB IB FORWARDING",
+  "verify_title": false
+ },
+ {
+  "anonymous_send_as": false,
+  "copy_reply_parent": false,
+  "dest_chat": -1003802436353,
+  "dest_topic": 35,
+  "live_only": true,
+  "loop_guard_peers": [
+   -1003726286301,
+   -1003802436353
+  ],
+  "name": "Jamie SUB IB FORWARDING | 7 To 35",
+  "ordered_private": true,
+  "source_chat": -1003726286301,
+  "source_topic": 7,
+  "strict_source_topic": true,
+  "sub_ib_forwarding": "Jamie SUB IB FORWARDING",
+  "verify_title": false
+ },
+ {
+  "anonymous_send_as": false,
+  "copy_reply_parent": false,
+  "dest_chat": -1003802436353,
+  "dest_topic": 33,
+  "live_only": true,
+  "loop_guard_peers": [
+   -1003726286301,
+   -1003802436353
+  ],
+  "name": "Jamie SUB IB FORWARDING | 13 To 33",
+  "ordered_private": true,
+  "source_chat": -1003726286301,
+  "source_topic": 13,
+  "strict_source_topic": true,
+  "sub_ib_forwarding": "Jamie SUB IB FORWARDING",
+  "verify_title": false
+ },
+ {
+  "anonymous_send_as": false,
+  "copy_reply_parent": false,
+  "dest_chat": -1003802436353,
+  "dest_topic": 37,
+  "live_only": true,
+  "loop_guard_peers": [
+   -1003726286301,
+   -1003802436353
+  ],
+  "name": "Jamie SUB IB FORWARDING | 5 To 37",
+  "ordered_private": true,
+  "source_chat": -1003726286301,
+  "source_topic": 5,
+  "strict_source_topic": true,
+  "sub_ib_forwarding": "Jamie SUB IB FORWARDING",
   "verify_title": false
  },
  {

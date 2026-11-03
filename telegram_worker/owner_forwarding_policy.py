@@ -15,10 +15,13 @@ STOPPED_SOURCE_CHATS = frozenset({
     -1003801452999,  # Current ChannelPrivateError in MAIN.
     -1003252087470, -1004347858259, -1004369388188,  # ALT.
 })
-# 2026-11-03: owner paused the Hub (-1003918958200) and Partner
-# (-1004442967052) destinations. Route definitions stay in routes.py and are
-# archived in docs/paused_routes_20261103.md; removing an id here restores them.
-STOPPED_DEST_CHATS = frozenset({-1003216105903, -1003918958200, -1004442967052})
+# 2026-11-03: owner paused the Hub (-1003918958200), Partner
+# (-1004442967052) and Jamie SUB IB (-1003802436353) destinations. Route
+# definitions stay in routes.py and are archived in
+# docs/paused_routes_20261103.md; removing an id here restores them.
+STOPPED_DEST_CHATS = frozenset({
+    -1003216105903, -1003918958200, -1004442967052, -1003802436353,
+})
 WRITE_REQUESTS = frozenset({
     "SendMessageRequest", "SendMediaRequest", "SendMultiMediaRequest",
     "ForwardMessagesRequest", "EditMessageRequest", "SendInlineBotResultRequest",

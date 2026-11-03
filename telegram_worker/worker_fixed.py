@@ -11217,6 +11217,8 @@ async def main():
     owner_module.OWNER_REQUESTED_ROUTES_TASK = asyncio.create_task(run_owner_requested_routes(owner_module))
     from telegram_worker.owner_formatted_route_20261103 import run_owner_formatted_route
     owner_module.OWNER_FORMATTED_ROUTE_TASK = asyncio.create_task(run_owner_formatted_route(owner_module))
+    from telegram_worker.destination_directory import log_destination_directory
+    owner_module.DESTINATION_DIRECTORY_TASK = asyncio.create_task(log_destination_directory(owner_module))
 
     # BEGIN VIP5 TOPIC DELETION STARTUP V1
     try:

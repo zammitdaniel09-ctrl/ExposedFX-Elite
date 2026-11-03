@@ -3,8 +3,10 @@
 Owner request: stop all forwarding into the Hub "ExposedFX VIP"
 (`-1003918958200`) and the Partner group "ExposedFX ELITE" (`-1004442967052`),
 keeping every route on record for later. Later the same day the owner also
-removed "Jamie SUB IB" (`-1003802436353`), which the MAIN account could no
-longer reach.
+removed "Jamie SUB IB" (`-1003802436353`) and "Market Slayers forwarding"
+(`-1004365831817`), which the MAIN account could no longer reach. Market
+Slayers forwarding ran from 27 Aug 2026 until the account lost access on
+28 Oct 2026 (`ChannelPrivateError`).
 
 **Nothing was deleted.** The route definitions remain in
 `telegram_worker/routes.py`; message maps, checkpoints and state files on the
@@ -18,13 +20,14 @@ MAIN volume are untouched. The pause is enforced in
 
 ## How to restore
 
-Remove the chat id (`-1003918958200`, `-1004442967052` or `-1003802436353`)
+Remove the chat id (`-1003918958200`, `-1004442967052`, `-1003802436353` or
+`-1004365831817`)
 from `STOPPED_DEST_CHATS`,
 then deploy MAIN. Routes resume from their saved checkpoints. Any route that
 was stopped at runtime is also listed in `/app/data/owner_stopped_forwarding_20261102.json`;
 remove its entry there too if it should resume.
 
-## Live routes paused (42)
+## Live routes paused (45)
 
 | # | Route | Source chat | Source topic | Destination | Dest topic |
 |---|---|---|---|---|---|
@@ -64,12 +67,15 @@ remove its entry there too if it should resume.
 | 34 | Jamie SUB IB FORWARDING | 7 To 35 | `-1003726286301` | 7 | Jamie SUB IB `-1003802436353` | 35 |
 | 35 | Jamie SUB IB FORWARDING | 13 To 33 | `-1003726286301` | 13 | Jamie SUB IB `-1003802436353` | 33 |
 | 36 | Jamie SUB IB FORWARDING | 5 To 37 | `-1003726286301` | 5 | Jamie SUB IB `-1003802436353` | 37 |
-| 37 | Relay2583 To Hub68237 | `-1004367822325` | 2583 | ExposedFX VIP (Hub) `-1003918958200` | 68237 |
-| 38 | Relay2585 To Partner2 | `-1004367822325` | 2585 | ExposedFX ELITE (Partner) `-1004442967052` | 2 |
-| 39 | Relay508 To Partner9 | `-1004367822325` | 508 | ExposedFX ELITE (Partner) `-1004442967052` | 9 |
-| 40 | Relay115 To Partner11 | `-1004367822325` | 115 | ExposedFX ELITE (Partner) `-1004442967052` | 11 |
-| 41 | Relay2 To Partner15 | `-1004367822325` | 2 | ExposedFX ELITE (Partner) `-1004442967052` | 15 |
-| 42 | MANJOX To Partner20 | `-1003887896696` | whole chat | ExposedFX ELITE (Partner) `-1004442967052` | 20 |
+| 37 | Market Slayers FORWARDING | 11 To 33 | `-1003726286301` | 11 | Market Slayers forwarding `-1004365831817` | 33 |
+| 38 | Market Slayers FORWARDING | 7 To 32 | `-1003726286301` | 7 | Market Slayers forwarding `-1004365831817` | 32 |
+| 39 | Market Slayers FORWARDING | 13 To 31 | `-1003726286301` | 13 | Market Slayers forwarding `-1004365831817` | 31 |
+| 40 | Relay2583 To Hub68237 | `-1004367822325` | 2583 | ExposedFX VIP (Hub) `-1003918958200` | 68237 |
+| 41 | Relay2585 To Partner2 | `-1004367822325` | 2585 | ExposedFX ELITE (Partner) `-1004442967052` | 2 |
+| 42 | Relay508 To Partner9 | `-1004367822325` | 508 | ExposedFX ELITE (Partner) `-1004442967052` | 9 |
+| 43 | Relay115 To Partner11 | `-1004367822325` | 115 | ExposedFX ELITE (Partner) `-1004442967052` | 11 |
+| 44 | Relay2 To Partner15 | `-1004367822325` | 2 | ExposedFX ELITE (Partner) `-1004442967052` | 15 |
+| 45 | MANJOX To Partner20 | `-1003887896696` | whole chat | ExposedFX ELITE (Partner) `-1004442967052` | 20 |
 
 ## Background jobs that also wrote to these chats
 
@@ -385,6 +391,60 @@ remove its entry there too if it should resume.
   "source_topic": 5,
   "strict_source_topic": true,
   "sub_ib_forwarding": "Jamie SUB IB FORWARDING",
+  "verify_title": false
+ },
+ {
+  "anonymous_send_as": false,
+  "copy_reply_parent": false,
+  "dest_chat": -1004365831817,
+  "dest_topic": 33,
+  "live_only": true,
+  "loop_guard_peers": [
+   -1003726286301,
+   -1004365831817
+  ],
+  "market_slayers_forwarding": "Market Slayers FORWARDING",
+  "name": "Market Slayers FORWARDING | 11 To 33",
+  "ordered_private": true,
+  "source_chat": -1003726286301,
+  "source_topic": 11,
+  "strict_source_topic": true,
+  "verify_title": false
+ },
+ {
+  "anonymous_send_as": false,
+  "copy_reply_parent": false,
+  "dest_chat": -1004365831817,
+  "dest_topic": 32,
+  "live_only": true,
+  "loop_guard_peers": [
+   -1003726286301,
+   -1004365831817
+  ],
+  "market_slayers_forwarding": "Market Slayers FORWARDING",
+  "name": "Market Slayers FORWARDING | 7 To 32",
+  "ordered_private": true,
+  "source_chat": -1003726286301,
+  "source_topic": 7,
+  "strict_source_topic": true,
+  "verify_title": false
+ },
+ {
+  "anonymous_send_as": false,
+  "copy_reply_parent": false,
+  "dest_chat": -1004365831817,
+  "dest_topic": 31,
+  "live_only": true,
+  "loop_guard_peers": [
+   -1003726286301,
+   -1004365831817
+  ],
+  "market_slayers_forwarding": "Market Slayers FORWARDING",
+  "name": "Market Slayers FORWARDING | 13 To 31",
+  "ordered_private": true,
+  "source_chat": -1003726286301,
+  "source_topic": 13,
+  "strict_source_topic": true,
   "verify_title": false
  },
  {

@@ -15,7 +15,14 @@ STOPPED_SOURCE_CHATS = frozenset({
     -1003801452999,  # Current ChannelPrivateError in MAIN.
     -1003252087470, -1004347858259, -1004369388188,  # ALT.
 })
-STOPPED_DEST_CHATS = frozenset({-1003216105903})
+# 2026-11-03: owner paused the Hub (-1003918958200) and Partner
+# (-1004442967052) destinations. Route definitions stay in routes.py and are
+# archived in docs/paused_routes_20261103.md; removing an id here restores them.
+STOPPED_DEST_CHATS = frozenset({-1003216105903, -1003918958200, -1004442967052})
+WRITE_REQUESTS = frozenset({
+    "SendMessageRequest", "SendMediaRequest", "SendMultiMediaRequest",
+    "ForwardMessagesRequest", "EditMessageRequest", "SendInlineBotResultRequest",
+})
 STOPPED_DEST_TOPICS = frozenset({(-1003885074241, 4660)})
 REOPENED_7250_DESTINATION = (-1003726286301, 12161)
 _RUNTIME = None
@@ -71,6 +78,41 @@ def stop_route(route, reason, logger=None):
     if logger:
         logger.warning("[OWNER ROUTE STOPPED] route=%s contract=%s reason=%s RETRY=False NOT_DELIVERED=True",
                        route.get("name"), key, reason)
+
+
+def blocked_write(request):
+    """True for a send/forward/edit whose destination chat the owner stopped."""
+    if type(request).__name__ not in WRITE_REQUESTS:
+        return False
+    peer = getattr(request, "to_peer", None) or getattr(request, "peer", None)
+    try:
+        from telethon import utils
+        return int(utils.get_peer_id(peer)) in STOPPED_DEST_CHATS
+    except Exception:
+        return False
+
+
+def install_send_guard(client, logger=None):
+    """Refuse writes to stopped chats on every code path of this client.
+
+    Raises ChatWriteForbiddenError, which callers already treat as permanent,
+    so routes stop instead of retrying. Reads and deletes are unaffected."""
+    if getattr(client, "_owner_send_guard", False):
+        return
+    from telethon import utils
+    from telethon.errors import ChatWriteForbiddenError
+    original = client._call
+
+    async def guarded_call(sender, request, ordered=False, flood_sleep_threshold=None):
+        for item in (request if utils.is_list_like(request) else (request,)):
+            if blocked_write(item):
+                if logger:
+                    logger.warning("[OWNER DEST STOPPED] request=%s NOT_SENT=True", type(item).__name__)
+                raise ChatWriteForbiddenError(request=item)
+        return await original(sender, request, ordered=ordered, flood_sleep_threshold=flood_sleep_threshold)
+
+    client._call = guarded_call
+    client._owner_send_guard = True
 
 
 def permanent_access_error(exc):

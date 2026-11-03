@@ -482,6 +482,7 @@ write_login_file()
 message_map = load_map()
 content_dedupe_map = load_dedupe()
 client = TelegramClient(str(SESSION_BASE), API_ID, API_HASH)
+owner_policy.install_send_guard(client, log)
 
 
 def text_of(message):

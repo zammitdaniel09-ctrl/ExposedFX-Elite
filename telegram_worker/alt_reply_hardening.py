@@ -9,10 +9,20 @@ from typing import Any, Dict, List, Optional
 
 log = logging.getLogger("alt-reply-hardening")
 
-RECOVERY_CHAT_LIMIT = 700
-RECOVERY_TOPIC_LIMIT = 180
+# Speed (owner request 3 Nov 2026): a reply never waits on a long history
+# search. Mapped parents are trusted; an in-flight parent gets a short
+# in-memory wait; recovery is one bounded attempt, then the topic root.
+RECOVERY_CHAT_LIMIT = 100
+RECOVERY_TOPIC_LIMIT = 100
+PARENT_INFLIGHT_WAIT_SECONDS = 1.0
+RECOVERY_BUDGET_SECONDS = 2.0
 TEXT_MATCH_MAX_AGE_SECONDS = 6 * 60 * 60
 MEDIA_MATCH_MAX_AGE_SECONDS = 10 * 60
+
+
+def _reply_target_invalid(exc) -> bool:
+    text = str(exc).upper()
+    return "REPLY" in text or "MSG_ID_INVALID" in text or "MESSAGE_ID_INVALID" in text
 
 
 def _as_int(value) -> Optional[int]:
@@ -141,18 +151,116 @@ async def _destination_topic_messages(worker, route):
         return []
 
 
-async def _mapped_parent_that_exists(worker, route, source_parent_id: int) -> Optional[int]:
-    for destination_id in worker.mapped_ids(route, source_parent_id):
-        try:
-            parent = await worker.client.get_messages(
-                int(route["dest_chat"]),
-                ids=int(destination_id),
-            )
-        except Exception:
-            parent = None
-        if parent:
+def _mapped_parent(worker, route, source_parent_id: int) -> Optional[int]:
+    for destination_id in worker.mapped_ids(route, source_parent_id) or []:
+        if _as_int(destination_id):
             return int(destination_id)
     return None
+
+
+async def _wait_for_mapped_parent(worker, route, source_parent_id: int) -> Optional[int]:
+    """A parent posted moments earlier may still be sending; wait in memory only."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PARENT_INFLIGHT_WAIT_SECONDS
+    while True:
+        mapped = _mapped_parent(worker, route, source_parent_id)
+        if mapped or loop.time() >= deadline:
+            return mapped
+        await asyncio.sleep(0.1)
+
+
+async def _recover_parent(worker, route, message, source_parent_id: int, logger) -> Optional[int]:
+    """One bounded attempt to find an unmapped parent's copy in the destination."""
+    try:
+        source_parent = await worker.client.get_messages(
+            int(route["source_chat"]),
+            ids=int(source_parent_id),
+        )
+    except Exception as exc:
+        logger.warning(
+            "[ALT REPLY PARENT FETCH FAILED] route=%s parent=%s %s: %s",
+            route.get("name"),
+            source_parent_id,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+    if not source_parent:
+        return None
+
+    # Translation routes must compare against the translated destination
+    # caption/text, not the raw Arabic source text.
+    try:
+        expected_text, _expected_entities = await worker.translated_payload(
+            route,
+            source_parent,
+        )
+    except Exception:
+        expected_text = _message_text(source_parent)
+
+    expected_key = _normalise_text(expected_text)
+    source_media_kind = _media_kind(source_parent)
+
+    candidates = await _destination_topic_messages(worker, route)
+    if expected_key:
+        matches = [
+            candidate
+            for candidate in candidates
+            if _normalise_text(_message_text(candidate)) == expected_key
+            and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
+        ]
+        max_age = TEXT_MATCH_MAX_AGE_SECONDS
+        mode = "text"
+    elif source_media_kind:
+        matches = [
+            candidate
+            for candidate in candidates
+            if _media_kind(candidate) == source_media_kind
+            and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
+        ]
+        max_age = MEDIA_MATCH_MAX_AGE_SECONDS
+        mode = "media"
+    else:
+        return None
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda candidate: _date_distance_seconds(source_parent, candidate))
+    chosen = matches[0]
+    distance = _date_distance_seconds(source_parent, chosen)
+    if distance > max_age:
+        return None
+
+    if mode == "media" and len(matches) > 1:
+        second_distance = _date_distance_seconds(source_parent, matches[1])
+        if abs(second_distance - distance) < 2.0:
+            logger.warning(
+                "[ALT REPLY MEDIA RECOVERY AMBIGUOUS] route=%s parent=%s candidates=%s",
+                route.get("name"),
+                source_parent_id,
+                len(matches),
+            )
+            return None
+
+    chosen_id = int(chosen.id)
+    _cache_mapping(worker, route, source_parent_id, chosen_id)
+    logger.warning(
+        "[ALT REPLY RECOVERED] route=%s source=%s_%s child=%s parent=%s dest=%s_%s parent_dest=%s candidates=%s distance=%.1fs mode=%s",
+        route.get("name"),
+        route.get("source_chat"),
+        route.get("source_topic"),
+        getattr(message, "id", None),
+        source_parent_id,
+        route.get("dest_chat"),
+        route.get("dest_topic"),
+        chosen_id,
+        len(matches),
+        distance,
+        mode,
+    )
+    return chosen_id
 
 
 async def resolve_reply_target(worker, route, message, logger=None) -> int:
@@ -163,7 +271,7 @@ async def resolve_reply_target(worker, route, message, logger=None) -> int:
         return int(route["dest_topic"])
 
     for source_parent_id in parent_ids:
-        mapped = await _mapped_parent_that_exists(worker, route, source_parent_id)
+        mapped = await _wait_for_mapped_parent(worker, route, source_parent_id)
         if mapped:
             logger.info(
                 "[ALT REPLY MAP HIT] route=%s source=%s_%s child=%s parent=%s dest=%s_%s parent_dest=%s",
@@ -179,102 +287,20 @@ async def resolve_reply_target(worker, route, message, logger=None) -> int:
             return mapped
 
         try:
-            source_parent = await worker.client.get_messages(
-                int(route["source_chat"]),
-                ids=int(source_parent_id),
+            recovered = await asyncio.wait_for(
+                _recover_parent(worker, route, message, source_parent_id, logger),
+                RECOVERY_BUDGET_SECONDS,
             )
-        except Exception as exc:
+        except asyncio.TimeoutError:
+            recovered = None
             logger.warning(
-                "[ALT REPLY PARENT FETCH FAILED] route=%s parent=%s %s: %s",
+                "[ALT REPLY RECOVERY TIMEOUT] route=%s parent=%s budget=%ss",
                 route.get("name"),
                 source_parent_id,
-                type(exc).__name__,
-                exc,
+                RECOVERY_BUDGET_SECONDS,
             )
-            continue
-
-        if not source_parent:
-            continue
-
-        # Translation routes must compare against the translated destination
-        # caption/text, not the raw Arabic source text.
-        try:
-            expected_text, _expected_entities = await worker.translated_payload(
-                route,
-                source_parent,
-            )
-        except Exception:
-            expected_text = _message_text(source_parent)
-
-        expected_key = _normalise_text(expected_text)
-        source_media_kind = _media_kind(source_parent)
-
-        for attempt, delay in enumerate((0.0, 0.20, 0.60, 1.20), start=1):
-            if delay:
-                await asyncio.sleep(delay)
-
-            candidates = await _destination_topic_messages(worker, route)
-            if expected_key:
-                matches = [
-                    candidate
-                    for candidate in candidates
-                    if _normalise_text(_message_text(candidate)) == expected_key
-                    and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
-                ]
-                max_age = TEXT_MATCH_MAX_AGE_SECONDS
-                mode = "text"
-            elif source_media_kind:
-                matches = [
-                    candidate
-                    for candidate in candidates
-                    if _media_kind(candidate) == source_media_kind
-                    and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
-                ]
-                max_age = MEDIA_MATCH_MAX_AGE_SECONDS
-                mode = "media"
-            else:
-                matches = []
-                max_age = 0
-                mode = "none"
-
-            if not matches:
-                continue
-
-            matches.sort(key=lambda candidate: _date_distance_seconds(source_parent, candidate))
-            chosen = matches[0]
-            distance = _date_distance_seconds(source_parent, chosen)
-            if distance > max_age:
-                break
-
-            if mode == "media" and len(matches) > 1:
-                second_distance = _date_distance_seconds(source_parent, matches[1])
-                if abs(second_distance - distance) < 2.0:
-                    logger.warning(
-                        "[ALT REPLY MEDIA RECOVERY AMBIGUOUS] route=%s parent=%s candidates=%s",
-                        route.get("name"),
-                        source_parent_id,
-                        len(matches),
-                    )
-                    break
-
-            chosen_id = int(chosen.id)
-            _cache_mapping(worker, route, source_parent_id, chosen_id)
-            logger.warning(
-                "[ALT REPLY RECOVERED] route=%s source=%s_%s child=%s parent=%s dest=%s_%s parent_dest=%s candidates=%s distance=%.1fs attempt=%s mode=%s",
-                route.get("name"),
-                route.get("source_chat"),
-                route.get("source_topic"),
-                getattr(message, "id", None),
-                source_parent_id,
-                route.get("dest_chat"),
-                route.get("dest_topic"),
-                chosen_id,
-                len(matches),
-                distance,
-                attempt,
-                mode,
-            )
-            return chosen_id
+        if recovered:
+            return recovered
 
         logger.warning(
             "[ALT REPLY UNRESOLVED] route=%s source=%s_%s child=%s parent=%s dest=%s_%s fallback=topic_root",
@@ -333,17 +359,36 @@ def install_alt_reply_hardening(worker, logger=None):
         target_reply = await resolve_reply_target(worker, route, message, logger=logger)
         text, entities = await worker.translated_payload(route, message)
 
+        topic_root = int(route["dest_topic"])
+
         if not worker.real_media(message):
             if not text:
                 return None
-            sent = await worker.client.send_message(
-                route["dest_chat"],
-                text,
-                formatting_entities=entities,
-                parse_mode=None,
-                reply_to=target_reply,
-                link_preview=True,
-            )
+
+            async def send_text(reply_to):
+                return await worker.client.send_message(
+                    route["dest_chat"],
+                    text,
+                    formatting_entities=entities,
+                    parse_mode=None,
+                    reply_to=reply_to,
+                    link_preview=True,
+                )
+
+            try:
+                sent = await send_text(target_reply)
+            except Exception as exc:
+                # A trusted map entry can point at a parent deleted since.
+                if target_reply == topic_root or not _reply_target_invalid(exc):
+                    raise
+                logger.warning(
+                    "[ALT REPLY TARGET GONE] route=%s source_msg=%s parent=%s fallback=topic_root",
+                    route.get("name"),
+                    getattr(message, "id", None),
+                    target_reply,
+                )
+                target_reply = topic_root
+                sent = await send_text(target_reply)
         else:
             try:
                 sent = await worker.client.send_file(
@@ -361,6 +406,8 @@ def install_alt_reply_hardening(worker, logger=None):
                     type(exc).__name__,
                     exc,
                 )
+                if _reply_target_invalid(exc):
+                    target_reply = topic_root
                 downloaded = await message.download_media(
                     file=str(worker.MEDIA_DIR / f"single_{message.id}")
                 )
@@ -433,6 +480,8 @@ def install_alt_reply_hardening(worker, logger=None):
                 type(exc).__name__,
                 exc,
             )
+            if _reply_target_invalid(exc):
+                target_reply = int(route["dest_topic"])
             downloaded_files = []
             try:
                 for message in messages:

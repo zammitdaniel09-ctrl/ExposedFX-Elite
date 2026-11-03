@@ -1,4 +1,4 @@
-"""Owner's library format (Saved Messages, 3 Nov 2026) for signals and trade updates.
+"""Owner's library format (Saved Messages, 3 Nov 2026) for signals, trade updates and recaps.
 
 Pure parsing/rendering: no Telegram client, no I/O. Rendered text is returned
 with Telethon entities (bold, italic, monospace prices, the owner's custom
@@ -50,6 +50,13 @@ CLOSE_RE = re.compile(r"\bCLOSE\s+(?:NOW|ALL|EARLY|FULL|IT|THE\s+TRADE|TRADE|POS
 CANCEL_RE = re.compile(r"\b(?:CANCEL|CANCELLED|CANCELED|DELETE|DELETED|REMOVE|REMOVED)\b")
 CANCEL_OBJECT_RE = re.compile(r"\b(?:ORDER|LIMIT|SETUP|SIGNAL|TRADE|PENDING)\b")
 ENTRY_UPDATED_RE = re.compile(rf"\b(?:NEW\s+ENTRY|ENTRY\s+(?:UPDATED|CHANGED|MOVED))\b\D{{0,12}}({PRICE})")
+RECAP_TITLE_RE = re.compile(r"^.*\b(?:RECAP|RESULTS|SUMMARY)\b[ \t]*[-:|]?[ \t]*(.*)$", re.MULTILINE)
+WINS_RE = re.compile(r"\bWINS?\b\s*[:=\-]?\s*(\d+)")
+LOSSES_RE = re.compile(r"\bLOSS(?:ES)?\b\s*[:=\-]?\s*(\d+)")
+ALL_TARGETS_COUNT_RE = re.compile(r"(\d+)\s+TRADES?\s+(?:HIT\s+|SMASHED\s+)?ALL\s+TARGETS")
+BREAKEVEN_COUNT_RE = re.compile(r"\bBREAK\s*EVENS?\b\s*[:=\-]?\s*(\d+)")
+NET_PIPS_RE = re.compile(r"\bNET\b\s*[:=\-]?\s*([+\-]?)\s*(\d[\d,]*(?:\.\d+)?)\s*PIPS")
+
 # Recaps, promos and links mention "all targets"/"wins" but are not trade updates.
 NOISE_RE = re.compile(r"\b(?:RECAP|WINS?|LOSSES|WIN\s+RATE|RESULTS|SUMMARY|SCREENSHOTS?|ZOOM)\b|HTTPS?://|T\.ME/|@\w")
 UPDATE_MAX_CHARS = 160
@@ -116,6 +123,28 @@ def parse_signal(text: str) -> Optional[Dict[str, Any]]:
         "entry": entry_raw,
         "sl": sl.group(1),
         "tps": [tps[n] for n in sorted(tps)],
+    }
+
+
+def parse_recap(text: str) -> Optional[Dict[str, Any]]:
+    """Provider's end-of-day/week results post; their own counts and pips."""
+    up = _upper(text).replace("−", "-")
+    title = RECAP_TITLE_RE.search(up)
+    wins, losses = WINS_RE.search(up), LOSSES_RE.search(up)
+    if not title or not wins or not losses:
+        return None
+    label = re.sub(r"[^A-Z0-9 /.]", "", title.group(1)).strip(" .")[:24]
+    all_targets = ALL_TARGETS_COUNT_RE.search(up)
+    breakevens = BREAKEVEN_COUNT_RE.search(up)
+    net = NET_PIPS_RE.search(up)
+    return {
+        "period": "WEEKLY" if "WEEK" in title.group(0) else "DAILY",
+        "label": label,
+        "wins": int(wins.group(1)),
+        "losses": int(losses.group(1)),
+        "all_targets": int(all_targets.group(1)) if all_targets else None,
+        "breakevens": int(breakevens.group(1)) if breakevens else None,
+        "net_pips": float(net.group(2).replace(",", "")) * (-1 if net.group(1) == "-" else 1) if net else None,
     }
 
 
@@ -226,6 +255,31 @@ def render_signal(signal) -> Tuple[str, list]:
         b.add("\n")
     b.add("\n").emoji("scythe").add(" ").italic("Breakeven: SL to entry at TP1").add("\n")
     b.emoji("warning").add(" ").italic("Risk max 1% · Not financial advice")
+    return b.result()
+
+
+def render_recap(recap) -> Tuple[str, list]:
+    b = _Builder()
+    title = recap["period"] + " RECAP" + (" · " + recap["label"] if recap["label"] else "")
+    b.emoji("lightning").add(" ").bold(title).add(" ").emoji("lightning").add("\n\n")
+    rows = [("tick", "Wins:", recap["wins"]), ("cross", "Losses:", recap["losses"]),
+            ("scythe", "Breakeven:", recap["breakevens"]), ("boom", "All targets hit:", recap["all_targets"])]
+    for emoji, label, value in rows:
+        if value is not None:
+            b.emoji(emoji).add(" ").bold(label).add(" ").mono(str(value)).add("\n")
+    closed = recap["wins"] + recap["losses"]
+    if closed:
+        b.emoji("star").add(" ").bold("Win rate:").add(" ").mono(f"{round(100 * recap['wins'] / closed)}%").add("\n")
+    net = recap["net_pips"]
+    if net is not None:
+        b.emoji("present").add(" ").bold("Net:").add(" ").mono(f"{format_pips(net)} pips").add("\n")
+    score = net if net is not None else recap["wins"] - recap["losses"]
+    span = "week" if recap["period"] == "WEEKLY" else "day"
+    mood = (f"A green {span} · rest up, we go again" if score > 0
+            else f"A red {span} · reset, we go again" if score < 0
+            else f"A flat {span} · capital protected")
+    b.add("\n").italic(mood).add("\n")
+    b.emoji("warning").add(" ").italic("Posted levels, before spreads and fees · Not financial advice")
     return b.result()
 
 

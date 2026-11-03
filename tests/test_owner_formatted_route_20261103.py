@@ -143,6 +143,15 @@ class ParsingTests(unittest.TestCase):
         for text in CHATTER:
             self.assertIsNone(fmt.parse_signal(text), text)
             self.assertIsNone(fmt.classify_update(text), text)
+            if text is not RECAP:
+                self.assertIsNone(fmt.parse_recap(text), text)
+
+    def test_recap_parses(self):
+        self.assertEqual(fmt.parse_recap(RECAP), {
+            "period": "DAILY", "label": "MON 2 NOV", "wins": 8, "losses": 0,
+            "all_targets": 2, "breakevens": None, "net_pips": 810.0})
+        week = fmt.parse_recap("📊 Weekly Recap\nWins: 20 Losses: 5\nBreakevens: 3\nNet: −1,240 pips")
+        self.assertEqual((week["period"], week["breakevens"], week["net_pips"]), ("WEEKLY", 3, -1240.0))
 
 
 class RenderTests(unittest.TestCase):
@@ -185,6 +194,20 @@ class RenderTests(unittest.TestCase):
         stopped = fmt.resolve_update({"kind": "sl_hit"}, sell, {})
         self.assertIn("SL HIT · 3945", fmt.render_update(stopped, sell)[0])
         self.assertIn("-170 pips", fmt.render_update(stopped, sell)[0])
+
+    def test_recap_matches_library_style(self):
+        text, entities = fmt.render_recap(fmt.parse_recap(RECAP))
+        self.assertEqual(text, "☄️ DAILY RECAP · MON 2 NOV ☄️\n\n"
+                               "✅ Wins: 8\n❌ Losses: 0\n\U0001f4a5 All targets hit: 2\n"
+                               "⭐️ Win rate: 100%\n\U0001f381 Net: +810 pips\n\n"
+                               "A green day · rest up, we go again\n"
+                               "⚠️ Posted levels, before spreads and fees · Not financial advice")
+        self.assert_entities_valid(text, entities)
+        red, _ = fmt.render_recap({"period": "WEEKLY", "label": "", "wins": 1, "losses": 3,
+                                   "all_targets": None, "breakevens": 2, "net_pips": -120.0})
+        self.assertIn("WEEKLY RECAP ☄", red)
+        self.assertIn("Net: -120 pips", red)
+        self.assertIn("A red week", red)
 
     def test_every_update_kind_renders(self):
         signal = fmt.parse_signal(BUY_3904)
@@ -230,11 +253,13 @@ class ReplayTests(unittest.TestCase):
         signals = [s for s in sent if "— " in s.text.splitlines()[0]]
         self.assertEqual(len(signals), 5)
         self.assertTrue(all(s.reply_to == DEST_TOPIC and s.chat == DEST_CHAT for s in signals))
-        updates = [s for s in sent if s not in signals]
+        updates = [s for s in sent if s.reply_to != DEST_TOPIC]
+        self.assertEqual(len(updates), 18)
         signal_ids = {s.id for s in signals}
         self.assertTrue(all(u.reply_to in signal_ids for u in updates))
-        # Repeated TP1, pip brags, recap and greetings are not posted.
-        self.assertEqual(state["counts"], {"signal": 5, "update": 18, "skipped": 4, "repeat": 1})
+        # Repeated TP1, pip brags and greetings are not posted; the recap is reformatted.
+        self.assertEqual(state["counts"], {"signal": 5, "update": 18, "skipped": 3, "repeat": 1, "recap": 1})
+        self.assertIn("☄️ DAILY RECAP · MON 2 NOV ☄️", headers)
         self.assertIn("✅ TP1 HIT · 3907", headers)
         self.assertIn("☠️ SET BREAKEVEN · SL to 3892", headers)
         self.assertIn("\U0001f4a5 ALL TARGETS HIT · 3937 \U0001f4a5", headers)

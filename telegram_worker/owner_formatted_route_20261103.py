@@ -1,7 +1,8 @@
 """Owner route 2026-11-03: relay -1004367822325/8323 -> VIP -1003726286301/12289, formatted.
 
-Signals and trade updates are rewritten in the owner's library format
-(library_signal_format); chatter, promos, links and bare media are not posted.
+Signals, trade updates and end-of-day recaps are rewritten in the owner's
+library format (library_signal_format); chatter, promos, links and bare media
+are not posted.
 Runs inside the already-authorized MAIN process with its client. First start
 takes the latest 30 posts of the source topic, then continues live: a
 NewMessage event wakes the ordered checkpoint reader at once, and a short poll
@@ -61,6 +62,12 @@ async def process(worker, state, message):
         state["latest_signal"] = source_id
         state["posted"][source_id] = int(sent.id)
         return "signal"
+    recap = fmt.parse_recap(text)
+    if recap:
+        out, entities = fmt.render_recap(recap)
+        sent = await send(worker, out, entities, ROUTE["dest_topic"])
+        state["posted"][source_id] = int(sent.id)
+        return "recap"
     update = fmt.classify_update(text)
     if not update:
         return "skipped"

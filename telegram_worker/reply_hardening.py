@@ -15,8 +15,15 @@ IMPERIUM_DEST_TOPIC = 7
 
 # Recovery is deliberately bounded. Normal operation should resolve from the
 # persistent message_map without any Telegram history scan at all.
-RECOVERY_CHAT_LIMIT = 800
-RECOVERY_TOPIC_LIMIT = 220
+# Speed (owner request 3 Nov 2026): an in-flight parent gets a short in-memory
+# wait, recovery is one attempt inside a time budget, and a reply resolved for
+# one copy layer is reused by the next instead of being resolved twice.
+RECOVERY_CHAT_LIMIT = 100
+RECOVERY_TOPIC_LIMIT = 100
+PARENT_INFLIGHT_WAIT_SECONDS = 1.0
+RECOVERY_BUDGET_SECONDS = 2.0
+RESOLVED_MEMO_SECONDS = 30.0
+_RESOLVED_MEMO: Dict[tuple, tuple] = {}
 TEXT_MATCH_MAX_AGE_SECONDS = 6 * 60 * 60
 MEDIA_MATCH_MAX_AGE_SECONDS = 10 * 60
 
@@ -131,6 +138,12 @@ def mapped_destination_ids(main_module, route: Dict[str, Any], source_msg_id: in
         except Exception:
             continue
     return out
+
+
+def _exact_mapped_ids(main_module, route: Dict[str, Any], source_msg_id: int) -> List[int]:
+    """Exact-key lookup only (O(1)); safe to repeat while waiting."""
+    message_map = getattr(main_module, "message_map", {}) or {}
+    return _mapped_ids(main_module, message_map.get(_exact_map_key(main_module, route, int(source_msg_id))))
 
 
 def mapped_reply_id(main_module, message, route: Dict[str, Any]) -> Optional[int]:
@@ -248,7 +261,7 @@ async def _destination_topic_messages(main_module, route: Dict[str, Any], limit:
         messages = list(
             await client.get_messages(
                 dest_chat,
-                limit=max(200, int(limit)),
+                limit=max(1, int(limit)),
             )
             or []
         )
@@ -302,6 +315,14 @@ async def _mapped_parent_that_exists(main_module, route, source_parent_id) -> Op
         return None
 
     existing = mapped_destination_ids(main_module, route, source_parent_id)
+    # A parent posted moments earlier may still be sending; wait in memory
+    # only, on the exact key (new copies are always written under it).
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PARENT_INFLIGHT_WAIT_SECONDS
+    while not existing and loop.time() < deadline:
+        await asyncio.sleep(0.1)
+        existing = _exact_mapped_ids(main_module, route, source_parent_id)
+
     for destination_id in existing:
         try:
             current_parent = await client.get_messages(
@@ -317,6 +338,92 @@ async def _mapped_parent_that_exists(main_module, route, source_parent_id) -> Op
     if existing:
         _drop_exact_mapping(main_module, route, source_parent_id)
     return None
+
+
+async def _recover_parent(main_module, client, route, source_parent_id, registry, logger) -> Optional[int]:
+    """One bounded attempt to find an unmapped parent's copy in the destination."""
+    try:
+        parent = await client.get_messages(
+            int(route["source_chat"]),
+            ids=int(source_parent_id),
+        )
+    except Exception as exc:
+        logger.warning(
+            "[REPLY PARENT FETCH FAILED] route=%s source_parent=%s %s: %s",
+            route.get("name"),
+            source_parent_id,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+    if not parent:
+        return None
+
+    expected = _expected_destination_text(parent, route, registry)
+    expected_key = _normalise_text(expected)
+    source_media_kind = _media_kind(parent)
+
+    candidates = await _destination_topic_messages(main_module, route)
+    if expected_key:
+        matches = [
+            candidate
+            for candidate in candidates
+            if _normalise_text(_message_text(candidate)) == expected_key
+            and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
+        ]
+        max_age = TEXT_MATCH_MAX_AGE_SECONDS
+    elif source_media_kind:
+        # Media-only recovery is deliberately stricter: same Telegram
+        # media class and a close timestamp, otherwise we do not guess.
+        matches = [
+            candidate
+            for candidate in candidates
+            if _media_kind(candidate) == source_media_kind
+            and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
+        ]
+        max_age = MEDIA_MATCH_MAX_AGE_SECONDS
+    else:
+        return None
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda candidate: _date_distance_seconds(parent, candidate))
+    chosen = matches[0]
+    chosen_id = int(chosen.id)
+    distance = _date_distance_seconds(parent, chosen)
+
+    if distance > max_age:
+        return None
+
+    # For media-only recovery, reject ambiguous near-equal candidates.
+    if not expected_key and len(matches) > 1:
+        second_distance = _date_distance_seconds(parent, matches[1])
+        if abs(second_distance - distance) < 2.0:
+            logger.warning(
+                "[REPLY MEDIA RECOVERY AMBIGUOUS] route=%s source_parent=%s candidates=%s",
+                route.get("name"),
+                source_parent_id,
+                len(matches),
+            )
+            return None
+
+    _cache_mapping(main_module, route, source_parent_id, chosen_id)
+    logger.warning(
+        "[REPLY RECOVERED] route=%s source=%s_%s parent=%s dest=%s_%s parent_dest=%s candidates=%s distance=%.1fs mode=%s",
+        route.get("name"),
+        route.get("source_chat"),
+        route.get("source_topic"),
+        source_parent_id,
+        route.get("dest_chat"),
+        route.get("dest_topic"),
+        chosen_id,
+        len(matches),
+        distance,
+        "text" if expected_key else "media",
+    )
+    return chosen_id
 
 
 async def ensure_reply_mapping(
@@ -345,6 +452,29 @@ async def ensure_reply_mapping(
     if client is None:
         return None
 
+    memo_key = (
+        route.get("source_chat"), route.get("source_topic"),
+        route.get("dest_chat"), route.get("dest_topic"), getattr(message, "id", None),
+    )
+    loop = asyncio.get_running_loop()
+    memo = _RESOLVED_MEMO.get(memo_key)
+    if memo and loop.time() - memo[0] < RESOLVED_MEMO_SECONDS:
+        # A miss is reused only while the parent is still unmapped; the VIP7
+        # hook may import a missing signal parent between the two calls.
+        if memo[1] is not None or not any(
+            _exact_mapped_ids(main_module, route, parent_id) for parent_id in parent_ids
+        ):
+            return memo[1]
+    result = await _ensure_reply_mapping_uncached(
+        main_module, client, message, route, parent_ids, registry, logger,
+    )
+    if len(_RESOLVED_MEMO) > 2000:
+        _RESOLVED_MEMO.clear()
+    _RESOLVED_MEMO[memo_key] = (loop.time(), result)
+    return result
+
+
+async def _ensure_reply_mapping_uncached(main_module, client, message, route, parent_ids, registry, logger):
     for source_parent_id in parent_ids:
         mapped = await _mapped_parent_that_exists(main_module, route, source_parent_id)
         if mapped:
@@ -361,93 +491,20 @@ async def ensure_reply_mapping(
             return mapped
 
         try:
-            parent = await client.get_messages(
-                int(route["source_chat"]),
-                ids=int(source_parent_id),
+            recovered = await asyncio.wait_for(
+                _recover_parent(main_module, client, route, source_parent_id, registry, logger),
+                RECOVERY_BUDGET_SECONDS,
             )
-        except Exception as exc:
+        except asyncio.TimeoutError:
+            recovered = None
             logger.warning(
-                "[REPLY PARENT FETCH FAILED] route=%s source_parent=%s %s: %s",
+                "[REPLY RECOVERY TIMEOUT] route=%s source_parent=%s budget=%ss",
                 route.get("name"),
                 source_parent_id,
-                type(exc).__name__,
-                exc,
+                RECOVERY_BUDGET_SECONDS,
             )
-            continue
-
-        if not parent:
-            continue
-
-        expected = _expected_destination_text(parent, route, registry)
-        expected_key = _normalise_text(expected)
-        source_media_kind = _media_kind(parent)
-
-        for attempt, delay in enumerate((0.0, 0.20, 0.60, 1.20), start=1):
-            if delay:
-                await asyncio.sleep(delay)
-
-            candidates = await _destination_topic_messages(main_module, route)
-            if expected_key:
-                matches = [
-                    candidate
-                    for candidate in candidates
-                    if _normalise_text(_message_text(candidate)) == expected_key
-                    and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
-                ]
-                max_age = TEXT_MATCH_MAX_AGE_SECONDS
-            elif source_media_kind:
-                # Media-only recovery is deliberately stricter: same Telegram
-                # media class and a close timestamp, otherwise we do not guess.
-                matches = [
-                    candidate
-                    for candidate in candidates
-                    if _media_kind(candidate) == source_media_kind
-                    and _as_int(getattr(candidate, "id", None)) != _as_int(route.get("dest_topic"))
-                ]
-                max_age = MEDIA_MATCH_MAX_AGE_SECONDS
-            else:
-                matches = []
-                max_age = 0
-
-            if not matches:
-                continue
-
-            matches.sort(key=lambda candidate: _date_distance_seconds(parent, candidate))
-            chosen = matches[0]
-            chosen_id = int(chosen.id)
-            distance = _date_distance_seconds(parent, chosen)
-
-            if distance > max_age:
-                break
-
-            # For media-only recovery, reject ambiguous near-equal candidates.
-            if not expected_key and len(matches) > 1:
-                second_distance = _date_distance_seconds(parent, matches[1])
-                if abs(second_distance - distance) < 2.0:
-                    logger.warning(
-                        "[REPLY MEDIA RECOVERY AMBIGUOUS] route=%s source_parent=%s candidates=%s",
-                        route.get("name"),
-                        source_parent_id,
-                        len(matches),
-                    )
-                    break
-
-            _cache_mapping(main_module, route, source_parent_id, chosen_id)
-            logger.warning(
-                "[REPLY RECOVERED] route=%s source=%s_%s parent=%s dest=%s_%s parent_dest=%s candidates=%s distance=%.1fs attempt=%s mode=%s",
-                route.get("name"),
-                route.get("source_chat"),
-                route.get("source_topic"),
-                source_parent_id,
-                route.get("dest_chat"),
-                route.get("dest_topic"),
-                chosen_id,
-                len(matches),
-                distance,
-                attempt,
-                "text" if expected_key else "media",
-            )
-            return chosen_id
+        if recovered:
+            return recovered
 
         logger.warning(
             "[REPLY UNRESOLVED] route=%s source=%s_%s msg=%s parent=%s dest=%s_%s",

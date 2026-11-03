@@ -9,6 +9,7 @@ import logging
 import time
 from pathlib import Path
 
+from telethon import events
 from telethon.errors import FloodWaitError
 from telegram_worker import owner_forwarding_policy as policy
 from telegram_worker.requested_route_bootstrap import _build_units
@@ -21,6 +22,7 @@ TARGETS = (
     (-1003726286301, 12161, -1003786932333, 24, 20),
 )
 STATE_FILE = "owner_requested_routes_20261102_v1.json"
+LIVE_POLL_SECONDS = 5
 
 
 def load_state(path):
@@ -245,9 +247,38 @@ async def run_owner_requested_routes(worker):
                     break
                 log.warning("[OWNER BACKFILL WAIT] contract=%s error=%s", key, type(exc).__name__)
                 await asyncio.sleep(15)
-    log.warning("[OWNER REQUESTED LIVE READY] active_routes=%s SEQUENTIAL_BACKFILLS_COMPLETE=True", len(active))
+    log.warning("[OWNER REQUESTED LIVE READY] active_routes=%s SEQUENTIAL_BACKFILLS_COMPLETE=True EVENT_WAKE=True",
+                len(active))
+    # Speed (owner request 3 Nov 2026): a NewMessage in a route's exact source
+    # topic wakes that route at once; a full sweep every LIVE_POLL_SECONDS
+    # remains the backstop for any missed update.
+    wake = asyncio.Event()
+    pending = set()
+    by_source = {}
+    for route in active:
+        by_source.setdefault(int(route["source_chat"]), []).append(route)
+
+    async def on_new(event):
+        topic = topic_id(event.message)
+        for candidate in by_source.get(int(event.chat_id or 0), ()):
+            if topic == candidate["source_topic"]:
+                pending.add(policy.identity(candidate))
+                wake.set()
+
+    add_handler = getattr(worker.client, "add_event_handler", None)
+    if active and add_handler:
+        add_handler(on_new, events.NewMessage(chats=list(by_source)))
+    last_full = 0.0
     while active:
-        for route in list(active):
+        full = not pending or time.monotonic() - last_full >= LIVE_POLL_SECONDS
+        due = [r for r in active if full or policy.identity(r) in pending]
+        if full:
+            last_full = time.monotonic()
+        pending.clear()
+        wake.clear()
+        for route in due:
+            if route not in active:
+                continue
             entry = state[policy.identity(route)]
             if policy.is_stopped(route):
                 active.remove(route)
@@ -265,5 +296,8 @@ async def run_owner_requested_routes(worker):
                     active.remove(route)
                 else:
                     log.warning("[OWNER LIVE WAIT] contract=%s error=%s", policy.identity(route), type(exc).__name__)
-        await asyncio.sleep(5)
+        try:
+            await asyncio.wait_for(wake.wait(), LIVE_POLL_SECONDS)
+        except asyncio.TimeoutError:
+            pass
 

@@ -31,8 +31,8 @@ CONTRACTS = (
 STATE_FILE = "alt_topics5246_5247_to_7248_7250_last20_v1.json"
 
 
-def _state_path(legacy):
-    return Path(legacy.DATA_DIR) / STATE_FILE
+def _state_path(legacy, state_file=STATE_FILE):
+    return Path(legacy.DATA_DIR) / state_file
 
 
 def _load(path):
@@ -104,9 +104,15 @@ def _copyable(legacy, message, source_topic):
     )
 
 
-async def run_alt_new_topics_last20_once(legacy, logger=None):
+async def run_alt_new_topics_last20_once(
+    legacy,
+    logger=None,
+    contracts=CONTRACTS,
+    count=COUNT,
+    state_file=STATE_FILE,
+):
     log = logger or legacy.log
-    path = _state_path(legacy)
+    path = _state_path(legacy, state_file)
     state = _load(path)
 
     while not legacy.client.is_connected():
@@ -117,7 +123,7 @@ async def run_alt_new_topics_last20_once(legacy, logger=None):
 
     await legacy.client.get_dialogs(limit=None)
 
-    for contract in CONTRACTS:
+    for contract in contracts:
         key = _key(contract)
 
         if (
@@ -143,20 +149,21 @@ async def run_alt_new_topics_last20_once(legacy, logger=None):
             )
 
         route = matches[0]
+        source_chat = int(contract[0])
         source_topic = int(contract[1])
 
         source_root = await _call(
             lambda: legacy.client.get_messages(
-                SOURCE_CHAT,
+                source_chat,
                 ids=source_topic,
             ),
             log,
-            f"source-root:{SOURCE_CHAT}_{source_topic}",
+            f"source-root:{source_chat}_{source_topic}",
         )
         if not source_root:
             raise RuntimeError(
                 f"ALT source topic missing: "
-                f"{SOURCE_CHAT}_{source_topic}"
+                f"{source_chat}_{source_topic}"
             )
 
         dest_root = await _call(
@@ -200,7 +207,7 @@ async def run_alt_new_topics_last20_once(legacy, logger=None):
             )
             units.append(filtered)
 
-        selected = units[-COUNT:]
+        selected = units[-count:]
         if not selected:
             raise RuntimeError(
                 "ALT source returned no copyable posts: "
@@ -362,6 +369,6 @@ async def run_alt_new_topics_last20_once(legacy, logger=None):
 
     log.warning(
         "[ALT NEWTOPICS LAST20 ALL DONE] routes=%s",
-        len(CONTRACTS),
+        len(contracts),
     )
     return state

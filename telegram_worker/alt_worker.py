@@ -29,6 +29,14 @@ NEW_TOPIC_ROUTES = (
     (5247, 7250),
 )
 
+# Owner request 2026-11-03: Select Signals topic -> relay topic 8323 (MAIN
+# formats 8323 into VIP12289), with the latest 30 posts imported once.
+SELECT_SOURCE_CHAT = -1004410975295
+SELECT_SOURCE_TOPIC = 7194
+SELECT_DEST_TOPIC = 8323
+SELECT_LAST_COUNT = 30
+SELECT_LAST_STATE_FILE = "alt_select7194_to_relay8323_last30_v1.json"
+
 SPLIT_PAIR_SOURCE_A = -1004347858259
 SPLIT_PAIR_SOURCE_B = -1003252087470
 SPLIT_PAIR_DEST_CHAT = -1004367822325
@@ -217,6 +225,13 @@ def _ensure_new_topic_routes_in_env() -> int:
             "dest_chat": NEW_TOPIC_DEST_CHAT,
             "dest_topic": 7250,
         },
+        {
+            "name": "NewAccount Select7194 To Relay8323",
+            "source_chat": SELECT_SOURCE_CHAT,
+            "source_topic": SELECT_SOURCE_TOPIC,
+            "dest_chat": NEW_TOPIC_DEST_CHAT,
+            "dest_topic": SELECT_DEST_TOPIC,
+        },
     ]
 
     added = 0
@@ -322,6 +337,7 @@ _legacy.log.warning(
     "source_topics=[5246,5247] "
     f"dest_chat={NEW_TOPIC_DEST_CHAT} "
     "dest_topics=[7248,7250] "
+    f"select={SELECT_SOURCE_CHAT}_{SELECT_SOURCE_TOPIC}->{SELECT_DEST_TOPIC} "
     f"routes_added={_NEW_TOPIC_ROUTES_ADDED} "
     "LIVE_FORWARDING=True LAST20=True"
 )
@@ -353,6 +369,32 @@ async def _run_new_topics_last20_guarded():
         )
 
 
+async def _run_select_last30_guarded():
+    try:
+        await run_alt_new_topics_last20_once(
+            _legacy,
+            logger=_legacy.log,
+            contracts=(
+                (
+                    SELECT_SOURCE_CHAT,
+                    SELECT_SOURCE_TOPIC,
+                    NEW_TOPIC_DEST_CHAT,
+                    SELECT_DEST_TOPIC,
+                ),
+            ),
+            count=SELECT_LAST_COUNT,
+            state_file=SELECT_LAST_STATE_FILE,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _legacy.log.exception(
+            "[ALT SELECT LAST30 FAILED SAFE] "
+            f"{type(exc).__name__}: {exc} "
+            "LIVE_FORWARDING_CONTINUES=True"
+        )
+
+
 async def main():
     split_history_task = asyncio.create_task(
         _run_split_pair_last100_guarded()
@@ -360,12 +402,16 @@ async def main():
     new_topics_last20_task = asyncio.create_task(
         _run_new_topics_last20_guarded()
     )
+    select_last30_task = asyncio.create_task(
+        _run_select_last30_guarded()
+    )
     try:
         return await _legacy.main()
     finally:
         for task in (
             split_history_task,
             new_topics_last20_task,
+            select_last30_task,
         ):
             if not task.done():
                 task.cancel()

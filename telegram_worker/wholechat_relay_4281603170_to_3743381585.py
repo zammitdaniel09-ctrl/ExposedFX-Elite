@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from telethon import events
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, MessageNotModifiedError
 
 from telegram_worker.samgtrades_house_formatter import (
     format_samgtrades_text,
@@ -40,6 +40,21 @@ SOURCE_FETCH_LIMIT = 250
 
 STATE_FILENAME = "wholechat_4281603170_to_3743381585_last50_v1.json"
 MAP_FILENAME = "wholechat_4281603170_to_3743381585_map_v1.json"
+RESTYLE_FILENAME = "wholechat_4281603170_to_3743381585_restyle_last100_v1.json"
+RESTYLE_COUNT = 100
+
+# Source signal texts seen by this process, so a TP/SL reply can recover its
+# signal's RR without a Telegram round-trip.
+_SIGNAL_TEXTS = {}
+_SIGNAL_TEXTS_MAX = 500
+
+
+def _remember_signal_text(message):
+    text = _message_text(message)
+    if parse_samgtrades_signal(text):
+        _SIGNAL_TEXTS[int(message.id)] = text
+        while len(_SIGNAL_TEXTS) > _SIGNAL_TEXTS_MAX:
+            _SIGNAL_TEXTS.pop(next(iter(_SIGNAL_TEXTS)))
 
 
 def _data_dir(main_module):
@@ -255,6 +270,8 @@ async def _resolve_parent_signal_text(client, message, logger, max_hops=4):
             return None
 
         seen.add(parent_id)
+        if int(parent_id) in _SIGNAL_TEXTS:
+            return _SIGNAL_TEXTS[int(parent_id)]
 
         try:
             parent = await _with_floodwait(
@@ -298,6 +315,7 @@ async def _resolve_parent_signal_text(client, message, logger, max_hops=4):
 async def _send_single(client, message, message_map, data_dir, registry, logger):
     text = _message_text(message)
     entities = _entities(message)
+    _remember_signal_text(message)
     parent_text = None
     if not parse_samgtrades_signal(text) and _source_reply_ids(message):
         parent_text = await _resolve_parent_signal_text(
@@ -616,6 +634,145 @@ async def _deliver_unit(
         return "sent"
 
 
+def _entity_signature(entities):
+    return sorted(
+        (
+            type(entity).__name__,
+            int(entity.offset),
+            int(entity.length),
+            int(getattr(entity, "document_id", 0) or 0),
+        )
+        for entity in entities or []
+    )
+
+
+async def _restyle_one(client, dest, source, registry, logger):
+    if source is None:
+        return "source_missing"
+    text = _message_text(source)
+    if not text:
+        return "no_text"
+    parent_text = None
+    if not parse_samgtrades_signal(text) and _source_reply_ids(source):
+        parent_text = await _resolve_parent_signal_text(client, source, logger)
+    new_text, new_entities, kind = format_samgtrades_text(
+        text,
+        _entities(source),
+        registry,
+        parent_text=parent_text,
+    )
+    if not kind:
+        return "passthrough"
+    if (
+        new_text == _message_text(dest)
+        and _entity_signature(new_entities) == _entity_signature(_entities(dest))
+    ):
+        return "unchanged"
+    try:
+        await _with_floodwait(
+            lambda: client.edit_message(
+                DEST_CHAT,
+                int(dest.id),
+                new_text,
+                formatting_entities=new_entities,
+            ),
+            logger,
+            f"restyle:{dest.id}",
+        )
+    except MessageNotModifiedError:
+        return "unchanged"
+    except Exception as exc:
+        logger.warning(
+            "[WHOLECHAT RESTYLE SKIPPED] dest_msg=%s %s: %s",
+            dest.id,
+            type(exc).__name__,
+            exc,
+        )
+        return "not_editable"
+    return "edited"
+
+
+async def _restyle_recent_once(client, message_map, data_dir, registry, logger):
+    """One-time owner request (3 Nov 2026): re-render the latest 100 posts in
+    the destination in the new library style. Only posts this relay formats
+    (signals and updates) are edited; passthrough posts stay as they are.
+    Progress is durable, so a restart resumes without editing twice."""
+    path = data_dir / RESTYLE_FILENAME
+    state = _load_json(path)
+    if state.get("status") == "done":
+        return state
+    done = set(str(value) for value in state.get("done") or [])
+    counts = dict(state.get("counts") or {})
+
+    by_dest = {}
+    for source_id, value in list(message_map.items()):
+        ids = _normalise_dest_ids(value)
+        if len(ids) == 1:
+            by_dest[ids[0]] = int(source_id)
+
+    recent = await _with_floodwait(
+        lambda: client.get_messages(DEST_CHAT, limit=RESTYLE_COUNT),
+        logger,
+        "restyle-dest",
+    )
+    recent = sorted(
+        (m for m in recent or [] if m is not None and int(m.id) in by_dest),
+        key=lambda m: int(m.id),
+    )
+    source_ids = [by_dest[int(m.id)] for m in recent]
+    sources = {}
+    if source_ids:
+        fetched = await _with_floodwait(
+            lambda: client.get_messages(SOURCE_CHAT, ids=source_ids),
+            logger,
+            "restyle-source",
+        )
+        fetched = fetched if isinstance(fetched, list) else [fetched]
+        sources = {int(m.id): m for m in fetched if m is not None}
+    for message in sources.values():
+        _remember_signal_text(message)
+
+    for dest in recent:
+        if str(dest.id) in done:
+            continue
+        outcome = await _restyle_one(
+            client,
+            dest,
+            sources.get(by_dest[int(dest.id)]),
+            registry,
+            logger,
+        )
+        counts[outcome] = counts.get(outcome, 0) + 1
+        done.add(str(dest.id))
+        state.update(status="running", done=sorted(done), counts=counts)
+        _save_json(path, state)
+        if outcome == "edited":
+            await asyncio.sleep(0.3)
+
+    state.update(status="done", counts=counts, completed_at=time.time())
+    _save_json(path, state)
+    logger.warning(
+        "[WHOLECHAT RESTYLE LAST100 DONE] dest=%s relayed_posts=%s counts=%s",
+        DEST_CHAT,
+        len(recent),
+        counts,
+    )
+    return state
+
+
+async def _restyle_recent_guarded(client, message_map, data_dir, registry, logger):
+    try:
+        await _restyle_recent_once(client, message_map, data_dir, registry, logger)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "[WHOLECHAT RESTYLE FAILED SAFE] %s: %s LIVE_UNAFFECTED=True",
+            type(exc).__name__,
+            exc,
+        )
+
+
 async def run_wholechat_4281603170_to_3743381585(
     main_module,
     logger=None,
@@ -626,8 +783,15 @@ async def run_wholechat_4281603170_to_3743381585(
         raise RuntimeError("Main Telegram client is unavailable")
 
     signal_tests, update_tests = run_samgtrades_formatter_self_test()
+    # The registry loads from Saved Messages during startup; wait for it here
+    # rather than failing and sitting out the outer 10s retry.
     registry = getattr(main_module, "EMOJI_REGISTRY", None)
-    if not registry_ready(registry):
+    for _ in range(240):
+        if registry_ready(registry):
+            break
+        await asyncio.sleep(0.25)
+        registry = getattr(main_module, "EMOJI_REGISTRY", None)
+    else:
         raise RuntimeError(
             "SamGtrades house formatter is waiting for the VIP custom-emoji registry"
         )
@@ -739,8 +903,18 @@ async def run_wholechat_4281603170_to_3743381585(
         on_album,
     )
 
+    def start_restyle():
+        setattr(
+            main_module,
+            "WHOLECHAT_4281603170_RESTYLE_TASK",
+            asyncio.create_task(
+                _restyle_recent_guarded(client, message_map, data_dir, registry, logger)
+            ),
+        )
+
     if state.get("status") == "done":
         bootstrap_ready.set()
+        start_restyle()
         logger.warning(
             "[WHOLECHAT LAST50 STATE SKIP] already_done=True "
             "selected=%s sent=%s existing=%s skipped=%s",
@@ -889,6 +1063,7 @@ async def run_wholechat_4281603170_to_3743381585(
     finally:
         bootstrap_ready.set()
 
+    start_restyle()
     logger.warning(
         "[WHOLECHAT RELAY READY] source=%s dest=%s "
         "live=True last50_complete=%s",

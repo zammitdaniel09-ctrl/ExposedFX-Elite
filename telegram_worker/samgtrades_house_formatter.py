@@ -19,9 +19,12 @@ import unicodedata
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
-from telethon.tl.types import MessageEntityBold
+from telethon.tl.types import (
+    MessageEntityBold,
+    MessageEntityCode,
+    MessageEntityItalic,
+)
 
-from telegram_worker.imperium_vip_formatter import build_update
 from telegram_worker.imperium_vip_trade_update_hardening import (
     classify_trade_update,
 )
@@ -29,6 +32,32 @@ from telegram_worker.imperium_vip_trade_update_hardening import (
 
 PRICE = r"\d{1,7}(?:\.\d+)?"
 REQUIRED_ALIASES = ("Boom", "GreenTick", "RedCross", "Warning")
+
+# Owner-approved Exposed | VIP library (Saved Messages, 3 Nov 2026): same
+# emojis and layout, plus bold labels, tap-to-copy prices and italic notes.
+_MARKS = {"**": MessageEntityBold, "__": MessageEntityItalic, "`": MessageEntityCode}
+_MARKUP_RE = re.compile(r"(\*\*|__|`|\{\w+\})")
+_PENDING_NOTES = {
+    ("BUY", "LIMIT"): "Pending · wait for price to drop to entry",
+    ("SELL", "LIMIT"): "Pending · wait for price to rise to entry",
+    ("BUY", "STOP"): "Only enter on a break above entry",
+    ("SELL", "STOP"): "Only enter on a break below entry",
+}
+_EXACT_TIPS = {
+    "ZONE TRIGGERED/ACTIVATED": "Order filled · trade is live",
+    "MOVE SL TO BREAKEVEN": "Trade is now risk-free",
+    "ENTRY STILL VALID": "Setup unchanged · entry can still be taken",
+    "TRADE STILL ACTIVE": "Hold · targets still in play",
+    "LAYER ENTRY NOW": "Add a second entry at current price",
+    "DELETE PENDING ORDER": "Remove the order and enter at market",
+    "CLOSE TRADE NOW": "Exit at market price",
+    "CLOSE AT ENTRY NOW": "Exit at entry · no loss taken",
+    "SL HIT": "Trade closed · on to the next",
+    "TRADE CANCELLED": "Setup no longer valid",
+    "PENDING ORDER CANCELLED": "Remove the pending order",
+    "TP HIT": "Target reached",
+}
+_TP_TIPS = {1: "Secure partials · consider SL to breakeven", 2: "Runner continues toward TP3"}
 
 
 def _utf16_len(value: str) -> int:
@@ -185,6 +214,36 @@ def parse_samgtrades_signal(text: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def _render_markup(registry, markup: str):
+    """**bold**, __italic__, `code` and {Alias} emoji markup -> (text, entities)."""
+    parts: List[str] = []
+    entities = []
+    open_marks: Dict[str, int] = {}
+    offset = 0
+    for token in _MARKUP_RE.split(markup):
+        if not token:
+            continue
+        if token in _MARKS:
+            if token in open_marks:
+                start = open_marks.pop(token)
+                if offset > start:
+                    entities.append(_MARKS[token](offset=start, length=offset - start))
+            else:
+                open_marks[token] = offset
+            continue
+        if token.startswith("{"):
+            text, emoji_entities = registry.render(token)
+            for entity in emoji_entities:
+                entity.offset += offset
+            entities.extend(emoji_entities)
+        else:
+            text = token
+        parts.append(text)
+        offset += _utf16_len(text)
+    entities.sort(key=lambda entity: int(getattr(entity, "offset", 0)))
+    return "".join(parts), entities
+
+
 def _build_signal_with_rr(registry, parsed):
     direction = parsed["direction"]
     kind = parsed["kind"]
@@ -196,10 +255,13 @@ def _build_signal_with_rr(registry, parsed):
     }[kind]
 
     entry = parsed["entry_a"]
-    lines = [
-        f"{{Boom}} {heading}",
+    lines = [f"{{Boom}} **{heading}**"]
+    note = _PENDING_NOTES.get((direction, kind))
+    if note:
+        lines.append(f"__{note}__")
+    lines += [
         "",
-        f"ENTRY = {entry}",
+        f"**ENTRY** = `{entry}`",
         "",
     ]
 
@@ -208,28 +270,70 @@ def _build_signal_with_rr(registry, parsed):
         rr = rrs[idx - 1] if idx - 1 < len(rrs) else None
         rr_text = _format_rr_value(rr, signed=True) or "RR N/A"
         lines.append(
-            f"TP{idx}{{GreenTick}} = {price} ({rr_text})"
+            f"**TP{idx}**{{GreenTick}} = `{price}` ({rr_text})"
         )
 
     lines += [
         "",
-        f"SL{{RedCross}} = {parsed['sl']} (-1.0 RR)",
+        f"**SL**{{RedCross}} = `{parsed['sl']}` (-1.0 RR)",
         "",
-        "{Warning} NOT FINANCIAL ADVICE {Warning}",
+        "{Warning} **NOT FINANCIAL ADVICE** {Warning}",
     ]
 
-    text, entities = registry.render("\n".join(lines))
+    return _render_markup(registry, "\n".join(lines))
 
-    pos = text.find(heading)
-    if pos >= 0:
-        entities.append(
-            MessageEntityBold(
-                offset=_utf16_len(text[:pos]),
-                length=_utf16_len(heading),
-            )
-        )
-    entities.sort(key=lambda entity: int(getattr(entity, "offset", 0)))
-    return text, entities
+
+def _update_tip(head: str, extra: List[str]) -> Optional[str]:
+    head = head.upper()
+    if re.search(r"\bTP\d+\s*&\s*TP\d+", head):
+        return "Both targets reached"
+    tp = re.match(r"TP(\d+) HIT$", head)
+    if tp:
+        return _TP_TIPS.get(int(tp.group(1)), "Final target reached · trade closed")
+    if head == "SECURE PARTIAL PROFITS":
+        if any("BREAKEVEN" in line.upper() for line in extra):
+            return "Close part · trade is now risk-free"
+        return "Close part, let the rest run"
+    if head in _EXACT_TIPS:
+        return _EXACT_TIPS[head]
+    if "MISSED" in head:
+        return "Price turned before the target"
+    if head.startswith("MOVE SL"):
+        return "Update your stop loss now"
+    if "PIPS" in head:
+        return "Trade in profit · protect it"
+    return None
+
+
+def style_update(registry, template: str):
+    """House update template ({Alias} HEAD — PIPS (RR)) in the library style."""
+    lines = [line.strip() for line in (template or "").split("\n") if line.strip()]
+    match = re.match(r"^\{(\w+)\}\s+(.+)$", lines[0]) if lines else None
+    if not match:
+        return registry.render(template)
+    alias, head = match.groups()
+    rr = re.search(r"\s*(?:—\s*)?\(?([+-]?\d+(?:\.\d+)?\s+RR|RR N/A)\)?$", head)
+    if rr:
+        head = head[:rr.start()]
+    pips = re.search(r"\s+—\s+([+-]?\d[\d,]*(?:\.\d+)?\s+PIPS)$", head)
+    if pips:
+        head = head[:pips.start()]
+    value = re.match(rf"^(.*?)\s*=\s*({PRICE})$", head)
+    if value:
+        head = value.group(1)
+    markup = f"{{{alias}}} **{head}**"
+    if value:
+        markup += f" = `{value.group(2)}`"
+    if pips:
+        markup += f" — `{pips.group(1)}`"
+    if rr:
+        markup += f" ({rr.group(1)})"
+    for line in lines[1:]:
+        markup += f"\n**{line}**"
+    tip = _update_tip(head, lines[1:])
+    if tip:
+        markup += f"\n__{tip}__"
+    return _render_markup(registry, markup)
 
 
 def _pip_value(raw: str) -> Optional[str]:
@@ -386,7 +490,7 @@ def format_samgtrades_text(
         parent_text=parent_text,
     )
     if update_template:
-        out_text, out_entities = build_update(
+        out_text, out_entities = style_update(
             registry,
             update_template,
         )

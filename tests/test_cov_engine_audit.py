@@ -1,6 +1,7 @@
 """MAIN replay audit: field comparison, mapped-pair selection and the once-per-deploy run."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import logging
 import sys
 import tempfile
@@ -171,6 +172,32 @@ class AuditRouteTests(unittest.TestCase):
                 }
             ],
         )
+
+
+class EditedAfterCopyTests(unittest.TestCase):
+    """A post edited after it was copied (4 Nov 2026: Arabic VIP posts 33400/33405 had media changed)."""
+
+    def test_posts_edited_after_the_copy_are_left_to_the_edit_path(self):
+        sent = datetime(2026, 11, 4, 15, 1, tzinfo=timezone.utc)
+        mapping = {f"{RELAY}:{i}:{VIP}:1364": 9000 + i for i in (1, 2)}
+        edited = msg(1, "TP1 with chart", media=PHOTO)
+        edited.edit_date = sent + timedelta(minutes=9)
+        unchanged = msg(2, "TP2")
+        unchanged.edit_date = None
+        copies = {9001: msg(9001, "TP1", reply_to=1364), 9002: msg(9002, "TP2", reply_to=1364)}
+        for copy in copies.values():
+            copy.date = sent
+        stored = {(RELAY, 1): edited, (RELAY, 2): unchanged, **{(VIP, i): m for i, m in copies.items()}}
+        planner = Planner(rules=Rules(), maps=MessageMap(mapping))
+        result = asyncio.run(audit.audit_route(Reader(stored), planner, ROUTE, "copy"))
+        self.assertEqual((result["edited_after_copy"], result["checked"], result["match"]), (1, 1, 1))
+        self.assertNotIn("mismatch", result)
+
+    def test_edit_before_the_copy_is_still_audited(self):
+        sent = datetime(2026, 11, 4, 15, 1, tzinfo=timezone.utc)
+        source = SimpleNamespace(edit_date=sent - timedelta(seconds=5))
+        self.assertFalse(audit.edited_after_copy(source, SimpleNamespace(date=sent)))
+        self.assertFalse(audit.edited_after_copy(SimpleNamespace(), SimpleNamespace(date=sent)))
 
 
 class RunReplayAuditTests(unittest.TestCase):

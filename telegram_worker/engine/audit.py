@@ -46,6 +46,16 @@ def _reply_to(message: Any) -> int:
     return int(getattr(reply, "reply_to_msg_id", 0) or 0)
 
 
+def edited_after_copy(source: Any, dest: Any) -> bool:
+    """The source changed after it was copied: the edit path owns it, not the send path audited here.
+
+    (An edit that adds or removes media is never applied to the copy, so such
+    a post would always look different.)
+    """
+    edited, sent = getattr(source, "edit_date", None), getattr(dest, "date", None)
+    return bool(edited and sent and edited > sent)
+
+
 def compare(plan: Plan, source: Any, dest: Any) -> List[str]:
     """Fields where the engine's plan differs from the delivered copy."""
     if not isinstance(plan, Send):
@@ -92,6 +102,9 @@ async def audit_route(
     for source, dest in zip(sources, dests):
         if source is None or dest is None or getattr(source, "grouped_id", None):
             result["unavailable_or_album"] += 1
+            continue
+        if edited_after_copy(source, dest):
+            result["edited_after_copy"] += 1
             continue
         plan = planner.plan(route, [source], legacy_route, facts=Facts(all_mapped=False, any_mapped=False))
         fields = compare(plan, source, dest)

@@ -245,7 +245,7 @@ class AltDifferentialTests(unittest.TestCase):
         for route in (SELECT, ARABIC):
             for case in cases:
                 legacy_client, engine_client = Client(), Client()
-                with tempfile.TemporaryDirectory() as tmp:
+                with tempfile.TemporaryDirectory():
                     harness = AltEngineTests("test_copy_is_exact_and_advances_the_checkpoint")
                     harness.setUp()
                     try:

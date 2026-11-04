@@ -2,8 +2,6 @@
 
 import ast
 import asyncio
-import json
-import logging
 import sys
 import tempfile
 import types
@@ -245,6 +243,18 @@ class DelivererTests(unittest.TestCase):
         self.assertEqual([c[3]["reply_to"] for c in self.client.calls], [7777, 1364])
         self.assertTrue(any("REPLY TARGET GONE" in line for line in logs.output))
         self.assertEqual(self.worker.message_map[f"{RELAY}:91:{VIP}:1364"], 9001)
+
+    def test_telethons_deleted_parent_error_class_falls_back_too(self):
+        from telethon.errors import MsgIdInvalidError
+
+        self.worker.message_map[f"{RELAY}:92:{VIP}:1364"] = 7778
+        reply = message(93, "TP2 hit")
+        reply.reply_to = SimpleNamespace(reply_to_msg_id=92, reply_to_top_id=2, top_msg_id=None)
+        reply.reply_to_msg_id = 92
+        self.client.fail = [MsgIdInvalidError(request=None)]
+        with self.assertLogs("imperium-worker", "WARNING"):
+            self.assertTrue(self.deliver([reply]))
+        self.assertEqual([c[3]["reply_to"] for c in self.client.calls], [7778, 1364])
 
     def test_unsupported_post_is_handled_without_sending(self):
         self.assertTrue(self.deliver([message(70, "")]))

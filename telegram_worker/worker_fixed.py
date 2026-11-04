@@ -1006,11 +1006,16 @@ async def warm_entity_cache_once():
         async for _dialog in client.iter_dialogs():
             dialogs += 1
     except FloodWaitError as exc:
-        log.warning(f"[ENTITY CACHE WARMUP FLOODWAIT] wait={exc.seconds}s; continuing without a full warmup")
+        # Until the chat list loads, "Could not find the input entity" means "not
+        # cached yet": the stop policy must not count it as lost access.
+        owner_policy.ENTITY_CACHE_READY = False
+        log.warning(f"[ENTITY CACHE WARMUP FLOODWAIT] wait={exc.seconds}s; retrying after the wait")
+        WARMUP_RETRY.append(asyncio.create_task(retry_entity_cache_warmup(exc.seconds)))
         return
     except Exception as exc:
         log.warning(f"[ENTITY CACHE WARMUP FAILED SAFE] {type(exc).__name__}: {exc}")
         return
+    owner_policy.ENTITY_CACHE_READY = True
     resolved = 0
     unresolved = []
     for chat_id in sorted(wanted):
@@ -1024,6 +1029,39 @@ async def warm_entity_cache_once():
     )
     for chat_id, error_name in unresolved:
         log.warning(f"[ENTITY STILL UNRESOLVED] chat={chat_id} {error_name}")
+
+
+WARMUP_RETRY = []  # keeps the background retry task referenced
+
+
+async def retry_entity_cache_warmup(wait_seconds):
+    await asyncio.sleep(int(wait_seconds) + 1)
+    await warm_entity_cache_once()
+
+
+SUPERVISED_RESTART_SECONDS = 30
+
+
+def supervised(name, start):
+    """Run a long-lived job for the life of the worker; if it crashes, log it (the
+    health monitor alerts on the traceback) and start it again, instead of the job
+    staying dead until the next deploy while everything else looks healthy."""
+
+    async def run():
+        while True:
+            try:
+                await start()
+                return  # finished on purpose (e.g. its routes were stopped)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.exception(
+                    f"[TASK CRASHED] task={name} {type(exc).__name__}: {exc} "
+                    f"RESTART_IN={SUPERVISED_RESTART_SECONDS}s"
+                )
+                await asyncio.sleep(SUPERVISED_RESTART_SECONDS)
+
+    return asyncio.create_task(run(), name=name)
 
 
 async def main():
@@ -1046,15 +1084,19 @@ async def main():
     install_engine(owner_module)
     from telegram_worker.samgtrades_relay import run_with_retry as run_wholechat
 
-    owner_module.WHOLECHAT_4281603170_TO_3743381585_TASK = asyncio.create_task(
-        run_wholechat(owner_module, log)
+    owner_module.WHOLECHAT_4281603170_TO_3743381585_TASK = supervised(
+        "samgtrades_relay", lambda: run_wholechat(owner_module, log)
     )
     from telegram_worker.owner_routes import run_owner_requested_routes
 
-    owner_module.OWNER_REQUESTED_ROUTES_TASK = asyncio.create_task(run_owner_requested_routes(owner_module))
+    owner_module.OWNER_REQUESTED_ROUTES_TASK = supervised(
+        "owner_routes", lambda: run_owner_requested_routes(owner_module)
+    )
     from telegram_worker.owner_formatted_route import run_owner_formatted_route
 
-    owner_module.OWNER_FORMATTED_ROUTE_TASK = asyncio.create_task(run_owner_formatted_route(owner_module))
+    owner_module.OWNER_FORMATTED_ROUTE_TASK = supervised(
+        "owner_formatted_route", lambda: run_owner_formatted_route(owner_module)
+    )
     from telegram_worker.health_monitor import install_health_monitor
 
     owner_module.HEALTH_MONITOR = install_health_monitor("ExposedFX MAIN", client, DATA_DIR)
@@ -1074,9 +1116,11 @@ async def main():
         f"copy_retry_attempts={COPY_RETRY_ATTEMPTS} blocked_senders={sorted(BLOCKED_SENDER_IDS)} "
         f"telethon={telethon_version} python={sys.version.split()[0]}"
     )
-    asyncio.create_task(relay508_mapped_edit_reconcile_loop())
+    owner_module.RELAY508_EDIT_RECONCILER_TASK = supervised(
+        "relay508_edit_reconciler", relay508_mapped_edit_reconcile_loop
+    )
     await start_engine_intake()
-    asyncio.create_task(stats.loop(client))
+    owner_module.WEEKLY_STATS_TASK = supervised("weekly_stats", lambda: stats.loop(client))
     log.info("Weekly stats reporter running for Sunday 00:00 Europe/Malta")
     await client.run_until_disconnected()
     liveness.exit_disconnected("ExposedFX MAIN", DATA_DIR, log)

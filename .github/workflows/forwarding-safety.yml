@@ -8,6 +8,8 @@ on:
       - "tests/**"
       - "scripts/check_forwarding_contracts.py"
       - ".github/workflows/forwarding-safety.yml"
+      - "requirements.txt"
+      - ".python-version"
   push:
     branches: [main]
     paths:
@@ -15,6 +17,8 @@ on:
       - "tests/**"
       - "scripts/check_forwarding_contracts.py"
       - ".github/workflows/forwarding-safety.yml"
+      - "requirements.txt"
+      - ".python-version"
   workflow_dispatch:
 
 permissions:
@@ -28,7 +32,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"  # same as Railway
+          python-version-file: ".python-version"  # the version Railway builds both workers with
       - name: Check worker syntax and forwarding safety
         run: python scripts/check_forwarding_contracts.py
       - name: Install test dependencies

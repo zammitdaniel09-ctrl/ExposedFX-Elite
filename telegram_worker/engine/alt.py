@@ -176,7 +176,7 @@ async def run_alt_replay_audit(
     import json
     from pathlib import Path
 
-    from .audit import audit_key, compare, media_changed_by_edit, newest_mapped
+    from .audit import audit_key, compare, media_changed_by_edit, newest_mapped, unavailable_reason
     from .plan import Facts
 
     path = Path(legacy.DATA_DIR) / AUDIT_STATE_FILE
@@ -189,13 +189,7 @@ async def run_alt_replay_audit(
     report = {}
     for legacy_route in list(legacy.ROUTES):
         route = alt_route(legacy, legacy_route)
-        outcome: Dict[str, Any] = {
-            "checked": 0,
-            "match": 0,
-            "mismatch": 0,
-            "unavailable_or_album": 0,
-            "examples": [],
-        }
+        outcome: Dict[str, Any] = {"checked": 0, "match": 0, "mismatch": 0, "examples": []}
         report[route.name] = outcome
         try:
             limit = 10 if route.formatter == "translate" else per_route
@@ -204,8 +198,9 @@ async def run_alt_replay_audit(
                 sources = await legacy.client.get_messages(route.source_chat, ids=[s for s, _ in pairs])
                 dests = await legacy.client.get_messages(route.dest_chat, ids=[d for _, d in pairs])
                 for source, dest in zip(sources, dests):
-                    if source is None or dest is None or getattr(source, "grouped_id", None):
-                        outcome["unavailable_or_album"] += 1
+                    reason = unavailable_reason(source, dest)
+                    if reason:
+                        outcome[reason] = outcome.get(reason, 0) + 1
                         continue
                     _, plan = await engine.plan_unit(legacy_route, [source], facts=Facts(False, False))
                     fields = compare(plan, source, dest)

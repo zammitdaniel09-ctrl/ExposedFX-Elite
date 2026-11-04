@@ -21,14 +21,18 @@ from telethon.errors import FloodWaitError
 from telegram_worker import library_signal_format as fmt
 from telegram_worker import owner_forwarding_policy as policy
 from telegram_worker import route_table
-from telegram_worker.owner_routes import load_state, rpc, save_state, topic_id, verify_roots
+from telegram_worker.engine.deliver import REPLY_GONE_ERRORS
+from telegram_worker.owner_routes import load_state, note_failure, rpc, save_state, topic_id, verify_roots
+from telegram_worker.state_store import SENDS
 
 log = logging.getLogger("owner-formatted-20261103")
 ROUTE = route_table.one("Owner Relay8323 To VIP12289 Formatted").as_dict()
 BACKFILL = 30
-POLL_SECONDS = 3
+# Only a backstop: a NewMessage in the source topic wakes the reader at once.
+POLL_SECONDS = 15
 ORPHAN_MAX_AGE = 24 * 3600
 STATE_FILE = "owner_formatted_8323_to_12289_v1.json"
+REPLY_GONE_CODES = ("REPLY_MESSAGE_ID_INVALID", "MSG_ID_INVALID", "MESSAGE_ID_INVALID")
 
 
 def parent_id(message):
@@ -41,6 +45,14 @@ def parent_id(message):
 
 def _copy(value):
     return json.loads(json.dumps(value))
+
+
+def reply_parent_gone(exc):
+    """Telegram refused the reply parent (the signal's copy was deleted), not the update."""
+    if type(exc).__name__ in REPLY_GONE_ERRORS:
+        return True
+    text = str(exc).upper()
+    return any(code in text for code in REPLY_GONE_CODES)
 
 
 async def send(worker, text, entities, reply_to):
@@ -93,7 +105,20 @@ async def process(worker, state, message):
     if not resolved:
         return "repeat"
     out, entities = fmt.render_update(resolved, signal)
-    sent = await send(worker, out, entities, record["dest"])
+    try:
+        sent = await send(worker, out, entities, record["dest"])
+    except Exception as exc:
+        if not reply_parent_gone(exc):
+            raise
+        # An admin deleted the signal's copy: post the update in the topic
+        # instead of failing it forever (the delivery engine does the same).
+        log.warning(
+            "[OWNER FORMATTED REPLY PARENT GONE] source_id=%s parent=%s error=%s fallback=topic_root",
+            source_id,
+            record["dest"],
+            type(exc).__name__,
+        )
+        sent = await send(worker, out, entities, ROUTE["dest_topic"])
     record["signal"], record["progress"] = signal, progress
     state["thread"][source_id] = owner_id
     state["posted"][source_id] = int(sent.id)
@@ -136,10 +161,20 @@ async def cycle(worker, state, path):
             continue
         if topic_id(message) not in (None, ROUTE["source_topic"]):
             raise RuntimeError("Owner formatted source topic mismatch")
-        outcome = await process(worker, state, message)
-        state["checkpoint"] = checkpoint = int(message.id)
-        state["counts"][outcome] = state["counts"].get(outcome, 0) + 1
-        save_state(path, state)
+        async with SENDS.sending():
+            try:
+                outcome = await process(worker, state, message)
+            except Exception as exc:
+                if not note_failure(state, [int(message.id)], exc, ROUTE["name"], log):
+                    save_state(path, state)  # the first failure time survives a restart
+                    raise
+                state["checkpoint"] = checkpoint = int(message.id)
+                save_state(path, state)
+                continue
+            state.get("failures", {}).pop(str(message.id), None)
+            state["checkpoint"] = checkpoint = int(message.id)
+            state["counts"][outcome] = state["counts"].get(outcome, 0) + 1
+            save_state(path, state)
         log.warning(
             "[OWNER FORMATTED POST] contract=%s source_id=%s outcome=%s lag=%.1fs",
             policy.identity(ROUTE),
@@ -155,13 +190,14 @@ async def reformat_edited_signal(worker, state, path, message):
     if not signal or signal == record["signal"]:
         return
     out, entities = fmt.render_signal(signal)
-    await rpc(
-        lambda: worker.client.edit_message(
-            ROUTE["dest_chat"], record["dest"], out, formatting_entities=entities, link_preview=False
+    async with SENDS.sending():
+        await rpc(
+            lambda: worker.client.edit_message(
+                ROUTE["dest_chat"], record["dest"], out, formatting_entities=entities, link_preview=False
+            )
         )
-    )
-    record["signal"] = signal
-    save_state(path, state)
+        record["signal"] = signal
+        save_state(path, state)
     log.warning("[OWNER FORMATTED SIGNAL EDITED] source_id=%s dest_id=%s", message.id, record["dest"])
 
 
@@ -239,6 +275,7 @@ async def run_owner_formatted_route(worker):
             try:
                 async with lock:
                     await cycle(worker, state, path)
+                policy.note_success(ROUTE)
             except asyncio.CancelledError:
                 raise
             except FloodWaitError as exc:

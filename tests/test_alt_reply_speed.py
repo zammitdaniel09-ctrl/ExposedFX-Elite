@@ -114,6 +114,14 @@ class AltReplySpeedTests(unittest.TestCase):
         )
         self.assertFalse(arh._reply_target_invalid(Exception("FLOOD_WAIT_X")))
 
+    def test_telethons_own_error_classes_are_recognised(self):
+        # Their text ("The message ID used in the peer was invalid ...") has no RPC code.
+        from telethon.errors import MessageIdInvalidError, MsgIdInvalidError
+
+        for error in (MsgIdInvalidError(request=None), MessageIdInvalidError(request=None)):
+            self.assertNotIn("MSG_ID_INVALID", str(error).upper())
+            self.assertTrue(arh._reply_target_invalid(error), type(error).__name__)
+
 
 if __name__ == "__main__":
     unittest.main()

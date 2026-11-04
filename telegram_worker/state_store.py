@@ -16,6 +16,7 @@ reader keeps working, but:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -25,16 +26,56 @@ import threading
 import time
 from collections.abc import MutableMapping
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Iterator, List, Optional, Tuple
 
 log = logging.getLogger("state-store")
 SNAPSHOT_SECONDS = 300
 DRAIN_SECONDS = 2.0
+EXIT_SNAPSHOT_WAIT_SECONDS = 0.5  # a background snapshot already writing on SIGTERM
 SHUTDOWN_HOOKS: List[Callable[[], Awaitable[Any]]] = []  # awaited (bounded) before the shutdown snapshot
 
 
 def register_shutdown_hook(hook: Callable[[], Awaitable[Any]]) -> None:
     SHUTDOWN_HOOKS.append(hook)
+
+
+class SendGuard:
+    """Sends in progress outside the intake (owner routes, 8323 formatter, SamGtrades relay).
+
+    Wrap a send and the write that records it in `async with SENDS.sending():`.
+    On SIGTERM the shutdown waits (bounded) for those in flight, so a post
+    Telegram accepted is recorded and the next start does not send it again,
+    and no new send starts: the process is about to exit.
+    """
+
+    def __init__(self, timeout: float = DRAIN_SECONDS) -> None:
+        self.timeout = timeout
+        self.inflight = 0
+        self.closing = False
+        self.registered = False
+
+    @contextlib.asynccontextmanager
+    async def sending(self) -> AsyncIterator[None]:
+        if not self.registered:
+            self.registered = True
+            register_shutdown_hook(self.drain)
+        if self.closing:
+            await asyncio.Event().wait()  # shutting down: hold it until the process exits
+        self.inflight += 1
+        try:
+            yield
+        finally:
+            self.inflight -= 1
+
+    async def drain(self) -> None:
+        self.closing = True
+        deadline = time.monotonic() + self.timeout
+        while self.inflight and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        log.warning("[SENDS DRAINED] in_flight=%s", self.inflight)
+
+
+SENDS = SendGuard()
 
 
 _MISSING = object()
@@ -58,7 +99,18 @@ class SQLiteMap(MutableMapping):
         )
         self.last_snapshot = 0.0
         self._snapshot_thread: Optional[threading.Thread] = None
+        self._remove_orphan_snapshots()
         self.imported = self._merge_legacy(load_legacy)
+
+    def _remove_orphan_snapshots(self) -> None:
+        """Temp files of snapshots a kill cut short (each write uses its own name)."""
+        if self.legacy_json is None:
+            return
+        for orphan in self.legacy_json.parent.glob(f"{self.legacy_json.name}.*.snapshot.tmp"):
+            try:
+                orphan.unlink()
+            except OSError:
+                pass
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(str(self.path), isolation_level=None, check_same_thread=False, timeout=30)
@@ -189,7 +241,8 @@ class SQLiteMap(MutableMapping):
         draining: List[bool] = []
 
         def finish() -> None:
-            self.wait_snapshot(5.0)
+            # Railway kills 3 s after SIGTERM: drain (<= DRAIN_SECONDS) + this + the write fit.
+            self.wait_snapshot(EXIT_SNAPSHOT_WAIT_SECONDS)
             self._write_snapshot(target)
             signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
             os.kill(os.getpid(), signal.SIGTERM)

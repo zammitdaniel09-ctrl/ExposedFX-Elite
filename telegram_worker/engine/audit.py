@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from .model import Plan, Route, Send, entity_keys
 from .plan import Facts, Planner
+from .replies import keys_starting
 from .rules import is_real_media
 
 log = logging.getLogger("engine-audit")
@@ -77,17 +78,39 @@ def compare(plan: Plan, source: Any, dest: Any) -> List[str]:
 
 
 def newest_mapped(message_map: Mapping[str, Any], route: Route, limit: int) -> List[tuple]:
-    prefix, suffix = f"{route.source_chat}:", f":{route.dest_chat}:{route.dest_topic}"
-    pairs = []
-    for key, value in message_map.items():
-        if not (key.startswith(prefix) and key.endswith(suffix)):
-            continue
-        ids = value if isinstance(value, list) else [value]
+    """(source id, first copy id) of the route's newest `limit` mapped posts, oldest first.
+
+    Reads keys through the map's index and decodes only the values it returns."""
+    suffix = f":{route.dest_chat}:{route.dest_topic}"
+    candidates = []
+    for key in keys_starting(message_map, f"{route.source_chat}:"):
+        if key.endswith(suffix):
+            try:
+                candidates.append((int(key.split(":")[1]), key))
+            except (IndexError, ValueError):
+                continue
+    pairs: List[tuple] = []
+    for source_id, key in sorted(candidates, reverse=True):
+        if len(pairs) >= limit:
+            break
+        value = message_map.get(key)
+        ids: List[Any] = value if isinstance(value, list) else [value]
         try:
-            pairs.append((int(key.split(":")[1]), int(ids[0])))
+            pairs.append((source_id, int(ids[0])))
         except (TypeError, ValueError, IndexError):
             continue
-    return sorted(pairs)[-limit:]
+    return pairs[::-1]
+
+
+def unavailable_reason(source: Any, dest: Any) -> Optional[str]:
+    """Why a mapped pair cannot be compared one post to one copy (None when it can)."""
+    if source is None:
+        return "source_deleted"
+    if dest is None:
+        return "copy_deleted"
+    if getattr(source, "grouped_id", None):
+        return "album"
+    return None
 
 
 async def audit_route(
@@ -102,8 +125,9 @@ async def audit_route(
     result: Counter = Counter()
     examples: List[Dict] = []
     for source, dest in zip(sources, dests):
-        if source is None or dest is None or getattr(source, "grouped_id", None):
-            result["unavailable_or_album"] += 1
+        reason = unavailable_reason(source, dest)
+        if reason:
+            result[reason] += 1
             continue
         plan = planner.plan(route, [source], legacy_route, facts=Facts(all_mapped=False, any_mapped=False))
         fields = compare(plan, source, dest)

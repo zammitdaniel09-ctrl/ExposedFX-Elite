@@ -15,6 +15,7 @@ from telethon import events
 from telethon.errors import FloodWaitError
 from telegram_worker import owner_forwarding_policy as policy
 from telegram_worker import route_table
+from telegram_worker.state_store import SENDS
 
 log = logging.getLogger("owner-routes-20261102")
 # route_table.py history(...) lines: (source chat, topic, dest chat, topic, posts imported once)
@@ -22,7 +23,10 @@ TARGETS = tuple(
     (*spec.identity, int(spec.option("backfill", 0))) for spec in route_table.TABLE if spec.path == "owner"
 )
 STATE_FILE = "owner_requested_routes_20261102_v1.json"
-LIVE_POLL_SECONDS = 5
+# Only a backstop: a NewMessage in the source topic wakes the live loop at once.
+LIVE_POLL_SECONDS = 15
+# A post whose send keeps failing this long is skipped, so it cannot hold the route forever.
+GIVE_UP_SECONDS = 3600
 
 
 def load_state(path):
@@ -73,6 +77,25 @@ async def rpc(call):
             return await call()
         except FloodWaitError as exc:
             await asyncio.sleep(max(1, int(exc.seconds)) + 1)
+
+
+def note_failure(holder, ids, exc, route_name, logger):
+    """Counts one failed send of a source post in holder["failures"].
+
+    True once the post has failed for GIVE_UP_SECONDS: it is reported and the
+    caller moves its checkpoint past it. Flood waits are slept through and
+    permanent access errors stop the route, so neither counts.
+    """
+    if isinstance(exc, FloodWaitError) or policy.permanent_access_error(exc):
+        return False
+    now = time.time()
+    record = holder.setdefault("failures", {}).setdefault(str(ids[0]), {"first": now, "attempts": 0})
+    record["attempts"] += 1
+    if now - record["first"] < GIVE_UP_SECONDS:
+        return False
+    del holder["failures"][str(ids[0])]
+    logger.error("[INTAKE GAVE UP] route=%s ids=%s attempts=%s", route_name, list(ids), record["attempts"])
+    return True
 
 
 async def verify_roots(worker, route):
@@ -186,11 +209,12 @@ async def bootstrap_route(worker, route, count, entry, state, path):
         unit = [m for m in raw if m]
         if len(unit) != len(ids) or any(topic_id(m) not in (None, route["source_topic"]) for m in unit):
             raise RuntimeError("Owner source selection changed or crossed topics")
-        outcome, destinations = await copy_unit(worker, route, unit)
-        entry["completed"][token] = {"outcome": outcome, "dest_ids": destinations}
-        entry[outcome] += 1
-        entry["last_source_id"] = max(entry["last_source_id"], max(ids))
-        save_state(path, state)
+        async with SENDS.sending():
+            outcome, destinations = await copy_unit(worker, route, unit)
+            entry["completed"][token] = {"outcome": outcome, "dest_ids": destinations}
+            entry[outcome] += 1
+            entry["last_source_id"] = max(entry["last_source_id"], max(ids))
+            save_state(path, state)
         log.warning(
             "[OWNER BACKFILL POST] contract=%s outcome=%s progress=%s/%s",
             key,
@@ -260,13 +284,24 @@ async def live_cycle(worker, route, entry, state, path):
             dates = [m.date.timestamp() for m in unit if getattr(m, "date", None)]
             if dates and time.time() - max(dates) < 2:
                 break
-        outcome, destinations = await copy_unit(worker, route, unit)
-        entry["last_source_id"] = max(int(m.id) for m in unit)
-        entry["last_live_outcome"] = outcome
-        entry["last_live_at"] = time.time()
-        if destinations:
-            entry["last_live_dest_ids"] = destinations
-        save_state(path, state)
+        ids = [int(m.id) for m in unit]
+        async with SENDS.sending():
+            try:
+                outcome, destinations = await copy_unit(worker, route, unit)
+            except Exception as exc:
+                if not note_failure(entry, ids, exc, route.get("name"), log):
+                    save_state(path, state)  # the first failure time survives a restart
+                    raise
+                entry["last_source_id"] = max(ids)
+                save_state(path, state)
+                continue
+            entry.get("failures", {}).pop(str(ids[0]), None)
+            entry["last_source_id"] = max(ids)
+            entry["last_live_outcome"] = outcome
+            entry["last_live_at"] = time.time()
+            if destinations:
+                entry["last_live_dest_ids"] = destinations
+            save_state(path, state)
         log.warning(
             "[OWNER LIVE POST] contract=%s outcome=%s source_id=%s",
             policy.identity(route),
@@ -333,38 +368,48 @@ async def run_owner_requested_routes(worker):
                 wake.set()
 
     add_handler = getattr(worker.client, "add_event_handler", None)
+    handler = None
     if active and add_handler:
-        add_handler(on_new, events.NewMessage(chats=list(by_source)))
-    last_full = 0.0
-    while active:
-        full = not pending or time.monotonic() - last_full >= LIVE_POLL_SECONDS
-        due = [r for r in active if full or policy.identity(r) in pending]
-        if full:
-            last_full = time.monotonic()
-        pending.clear()
-        wake.clear()
-        for route in due:
-            if route not in active:
-                continue
-            entry = state[policy.identity(route)]
-            if policy.is_stopped(route):
-                active.remove(route)
-                continue
-            try:
-                await live_cycle(worker, route, entry, state, path)
-            except asyncio.CancelledError:
-                raise
-            except FloodWaitError as exc:
-                await asyncio.sleep(max(1, int(exc.seconds)) + 1)
-            except Exception as exc:
-                reason = policy.permanent_access_error(exc)
-                if reason and stop(worker, route, entry, state, path, reason):
+        handler = (on_new, events.NewMessage(chats=list(by_source)))
+        add_handler(*handler)
+    try:
+        last_full = 0.0
+        while active:
+            full = not pending or time.monotonic() - last_full >= LIVE_POLL_SECONDS
+            due = [r for r in active if full or policy.identity(r) in pending]
+            if full:
+                last_full = time.monotonic()
+            pending.clear()
+            wake.clear()
+            for route in due:
+                if route not in active:
+                    continue
+                entry = state[policy.identity(route)]
+                if policy.is_stopped(route):
                     active.remove(route)
-                else:
-                    log.warning(
-                        "[OWNER LIVE WAIT] contract=%s error=%s", policy.identity(route), type(exc).__name__
-                    )
-        try:
-            await asyncio.wait_for(wake.wait(), LIVE_POLL_SECONDS)
-        except asyncio.TimeoutError:
-            pass
+                    continue
+                try:
+                    await live_cycle(worker, route, entry, state, path)
+                    policy.note_success(route)
+                except asyncio.CancelledError:
+                    raise
+                except FloodWaitError as exc:
+                    await asyncio.sleep(max(1, int(exc.seconds)) + 1)
+                except Exception as exc:
+                    reason = policy.permanent_access_error(exc)
+                    if reason and stop(worker, route, entry, state, path, reason):
+                        active.remove(route)
+                    else:
+                        log.warning(
+                            "[OWNER LIVE WAIT] contract=%s error=%s",
+                            policy.identity(route),
+                            type(exc).__name__,
+                        )
+            try:
+                await asyncio.wait_for(wake.wait(), LIVE_POLL_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        # A restarted task must not stack a second handler on the shared client.
+        if handler:
+            worker.client.remove_event_handler(*handler)

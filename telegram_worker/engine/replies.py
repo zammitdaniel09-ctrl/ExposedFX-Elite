@@ -25,6 +25,15 @@ def _ids(value: Any) -> List[int]:
     return out
 
 
+def keys_starting(mapping: Mapping[str, object], prefix: str) -> List[str]:
+    """Map keys that start with `prefix`: an index range read on the SQLite map
+    (no full scan on the event loop), a plain scan on a dict."""
+    by_prefix = getattr(mapping, "keys_with_prefix", None)
+    if callable(by_prefix):
+        return list(by_prefix(prefix))
+    return [key for key in list(mapping) if str(key).startswith(prefix)]
+
+
 class MessageMap:
     """Read access to source -> destination message ids.
 
@@ -48,9 +57,9 @@ class MessageMap:
             return ids
         wanted = route.map_key(source_msg_id).split(":")
         out: List[int] = []
-        for key, value in list(mapping.items()):
+        for key in keys_starting(mapping, f"{route.source_chat}:{int(source_msg_id)}:"):
             if str(key).split(":") == wanted:
-                out.extend(i for i in _ids(value) if i not in out)
+                out.extend(i for i in _ids(mapping.get(key)) if i not in out)
         return out
 
     def all_mapped(self, route: Route, unit: Iterable) -> bool:

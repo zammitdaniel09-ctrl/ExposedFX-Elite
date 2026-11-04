@@ -207,17 +207,39 @@ class CommunityEmojiRegistry:
         messages = list(await client.get_messages("me", limit=max(1, int(limit))) or [])
         messages.reverse()  # oldest -> newest, so latest assignment wins
 
-        # Telegram Saved Messages are the source of truth. Drop stale cache data,
-        # including entries produced by older parser versions.
+        # Saved Messages are the source of truth for every alias they still show
+        # (the latest assignment wins, DELETE removes). An alias whose assignment
+        # has scrolled out of the newest `limit` messages (health alerts and
+        # digests land there too) keeps its saved value instead of vanishing,
+        # which would leave VIP 7 unformatted and the SamGtrades relay waiting.
+        cached = dict(self.entries)
         self.entries = {}
-        self.save()
 
         handled_messages = 0
+        deleted = set()
 
         for message in messages:
             handled, _ = self.capture_message(message)
             if handled:
                 handled_messages += 1
+            for match in _ASSIGNMENT_LINE_RE.finditer(getattr(message, "message", None) or ""):
+                alias = match.group(1).strip().casefold()
+                if match.group(2).strip().upper() in {"DELETE", "REMOVE"}:
+                    deleted.add(alias)
+                else:
+                    deleted.discard(alias)
+
+        present = {alias.casefold() for alias in self.entries}
+        kept = sorted(alias for alias in cached if alias.casefold() not in present | deleted)
+        for alias in kept:
+            self.entries[alias] = cached[alias]
+        self.save()
+        if kept:
+            self.log.warning(
+                "[COMMUNITY EMOJI KEPT] aliases=%s reason=assignment_older_than_scan_limit=%s",
+                ",".join(kept),
+                limit,
+            )
 
         self.log.warning(
             "[COMMUNITY EMOJI REBUILD DONE] scanned=%s assignment_messages=%s aliases=%s alias_names=%s",

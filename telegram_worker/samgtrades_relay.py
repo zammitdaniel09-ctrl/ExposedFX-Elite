@@ -8,7 +8,11 @@ Owner-requested behavior:
 - albums count as one logical post and are never intentionally split;
 - preserve text/captions/entities/media and mapped replies where possible;
 - persist source->destination message IDs so restarts do not duplicate the
-  one-time bootstrap and future replies can target mirrored parents.
+  one-time bootstrap and future replies can target mirrored parents;
+- catch up (4 Nov 2026): live delivery is push only, so a post made while the
+  worker was down (every deploy, any disconnect) or whose live send failed is
+  read back from a durable checkpoint every CATCHUP_SECONDS and sent, unless
+  it is older than STALE_SECONDS (reported, like the main intake).
 
 This relay intentionally lives outside ROUTES because the main route engine is
 forum-topic oriented and assumes integer destination topic IDs in several
@@ -32,10 +36,12 @@ from telegram_worker.samgtrades_house_formatter import (
     registry_ready,
     run_self_test as run_samgtrades_formatter_self_test,
 )
+from telegram_worker.state_store import SENDS
 
 log = logging.getLogger("wholechat-4281603170-to-3743381585")
 
 _ROUTE = route_table.one("SamGtrades To Exposed VIP")
+ROUTE_NAME = _ROUTE.name
 SOURCE_CHAT = _ROUTE.source_chat
 DEST_CHAT = _ROUTE.dest_chat
 LAST50_COUNT = 50
@@ -45,6 +51,19 @@ STATE_FILENAME = "wholechat_4281603170_to_3743381585_last50_v1.json"
 MAP_FILENAME = "wholechat_4281603170_to_3743381585_map_v1.json"
 RESTYLE_FILENAME = "wholechat_4281603170_to_3743381585_restyle_last100_v1.json"
 RESTYLE_COUNT = 100
+
+CATCHUP_FILENAME = "wholechat_4281603170_to_3743381585_catchup_v1.json"
+CATCHUP_SECONDS = 30
+CATCHUP_PAGE = 50
+STALE_SECONDS = 600  # same rule as the main intake: a late signal misleads members
+GIVE_UP_SECONDS = 3600
+ALBUM_SETTLE_SECONDS = 2.0
+ALBUM_BUFFER_SECONDS = 60
+
+NEW_HANDLER_ATTR = "WHOLECHAT_4281603170_NEW_HANDLER"
+ALBUM_HANDLER_ATTR = "WHOLECHAT_4281603170_ALBUM_HANDLER"
+CATCHUP_TASK_ATTR = "WHOLECHAT_4281603170_CATCHUP_TASK"
+ALBUM_SWEEP_TASK_ATTR = "WHOLECHAT_4281603170_ALBUM_SWEEP_TASK"
 
 # Source signal texts seen by this process, so a TP/SL reply can recover its
 # signal's RR without a Telegram round-trip.
@@ -513,17 +532,20 @@ async def _deliver_unit(client, unit, message_map, map_path, data_dir, registry,
             logger.info("[WHOLECHAT ALREADY MAPPED] reason=%s source_ids=%s", reason, _unit_ids(unit))
             return "existing"
 
-        if len(unit) > 1 and getattr(unit[0], "grouped_id", None):
-            sent = await _send_album(client, unit, message_map, data_dir, registry, logger)
-        else:
-            sent = await _send_single(client, unit[0], message_map, data_dir, registry, logger)
+        # On SIGTERM the shutdown waits for this block, so a post Telegram
+        # accepted is in the map before exit, and no new send starts.
+        async with SENDS.sending():
+            if len(unit) > 1 and getattr(unit[0], "grouped_id", None):
+                sent = await _send_album(client, unit, message_map, data_dir, registry, logger)
+            else:
+                sent = await _send_single(client, unit[0], message_map, data_dir, registry, logger)
 
-        if sent is None:
-            logger.info("[WHOLECHAT SKIP UNSUPPORTED] reason=%s source_ids=%s", reason, _unit_ids(unit))
-            return "skipped"
+            if sent is None:
+                logger.info("[WHOLECHAT SKIP UNSUPPORTED] reason=%s source_ids=%s", reason, _unit_ids(unit))
+                return "skipped"
 
-        _remember_sent(unit, sent, message_map)
-        _save_json(map_path, message_map)
+            _remember_sent(unit, sent, message_map)
+            _save_json(map_path, message_map)
         logger.warning(
             "[WHOLECHAT SENT] reason=%s source=%s dest=%s source_ids=%s",
             reason,
@@ -643,6 +665,191 @@ async def _restyle_recent_guarded(client, message_map, data_dir, registry, logge
         )
 
 
+def _unit_age(unit, now):
+    dates = [message.date.timestamp() for message in unit if getattr(message, "date", None)]
+    return now - max(dates) if dates else None
+
+
+def _page_units(raw, checkpoint):
+    """Units after the checkpoint, oldest first, and how far the checkpoint may
+    move once they are all handled."""
+    page = [message for message in raw if message is not None and int(message.id) > checkpoint]
+    units = _build_units(page)
+    end = max([checkpoint] + [int(message.id) for message in page])
+    if len(raw) >= CATCHUP_PAGE and len(units) > 1 and getattr(units[-1][0], "grouped_id", None):
+        end = min(_unit_ids(units.pop())) - 1  # a full page may end part-way through an album
+    return units, end
+
+
+class _CatchUp:
+    """Reads the posts after a durable checkpoint every CATCHUP_SECONDS and
+    sends the ones not mapped yet. The checkpoint ("every post up to here is
+    handled") only moves over a contiguous run of handled posts, so a later
+    success never skips an earlier failure."""
+
+    def __init__(self, client, deliver, message_map, data_dir, logger, clock=time.time):
+        self.client = client
+        self.deliver = deliver
+        self.message_map = message_map
+        self.path = data_dir / CATCHUP_FILENAME
+        self.logger = logger
+        self.clock = clock
+        self.checkpoint = None
+        self.failures = {}  # first source id -> (first failure time, attempts)
+
+    async def run(self, sleep=asyncio.sleep):
+        while True:
+            try:
+                if self.checkpoint is None:
+                    self.checkpoint = await self.start()
+                await self.run_pass()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.logger.warning("[WHOLECHAT CATCHUP PASS FAILED] %s: %s", type(exc).__name__, exc)
+            await sleep(CATCHUP_SECONDS)
+
+    async def start(self):
+        checkpoint = self.stored()
+        if checkpoint is None:
+            checkpoint = await self.first_checkpoint()
+            self.save(checkpoint)
+        self.logger.warning(
+            "[WHOLECHAT CATCHUP READY] source=%s dest=%s checkpoint=%s every=%ss stale_after=%ss",
+            SOURCE_CHAT,
+            DEST_CHAT,
+            checkpoint,
+            CATCHUP_SECONDS,
+            STALE_SECONDS,
+        )
+        return checkpoint
+
+    def stored(self):
+        try:
+            return int(_load_json(self.path)["catchup_last_id"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def save(self, checkpoint):
+        _save_json(self.path, {"catchup_last_id": int(checkpoint), "updated_at": time.time()})
+
+    async def first_checkpoint(self):
+        """The newest post already relayed or, with an empty map, the newest in
+        the chat: a first start sends nothing old."""
+        mapped = [int(key) for key in self.message_map if str(key).isdigit()]
+        if mapped:
+            return max(mapped)
+        newest = await _with_floodwait(
+            lambda: self.client.get_messages(SOURCE_CHAT, limit=1), self.logger, "catchup-start"
+        )
+        newest = [message for message in newest or [] if message is not None]
+        return int(newest[0].id) if newest else 0
+
+    async def run_pass(self):
+        checkpoint = self.checkpoint
+        raw = await _with_floodwait(
+            lambda: self.client.get_messages(
+                SOURCE_CHAT, min_id=checkpoint, reverse=True, limit=CATCHUP_PAGE
+            ),
+            self.logger,
+            "catchup",
+        )
+        units, advance = _page_units(list(raw or []), checkpoint)
+        sent = []
+        for unit in units:
+            ids = _unit_ids(unit)
+            outcome = await self.handle(unit, ids)
+            if outcome == "wait":
+                advance = ids[0] - 1
+                break
+            self.failures.pop(ids[0], None)
+            if outcome == "sent":
+                sent.extend(ids)
+        if sent:
+            self.logger.warning("[WHOLECHAT CATCHUP SENT] source_ids=%s", sent)
+        if advance > checkpoint:
+            self.save(advance)
+            self.checkpoint = advance
+
+    async def handle(self, unit, ids):
+        """'sent', 'handled' (nothing left to do) or 'wait' (stop the pass here)."""
+        now = self.clock()
+        age = _unit_age(unit, now)
+        if getattr(unit[0], "grouped_id", None) and age is not None and age < ALBUM_SETTLE_SECONDS:
+            return "wait"  # Telegram may still be adding items to this album
+        if _unit_already_mapped(unit, self.message_map):
+            return "handled"
+        if age is not None and age > STALE_SECONDS:
+            self.logger.warning(
+                "[GAP STALE NOT SENT] route=%s ids=%s age=%ss max=%ss",
+                ROUTE_NAME,
+                ids,
+                int(age),
+                STALE_SECONDS,
+            )
+            return "handled"
+        try:
+            outcome = await self.deliver(unit, "catchup")
+        except FloodWaitError as exc:  # not the post's fault: retry next pass, uncounted
+            self.logger.warning("[WHOLECHAT CATCHUP FLOODWAIT] source_ids=%s wait=%ss", ids, exc.seconds)
+            return "wait"
+        except Exception as exc:
+            return self.failed(ids, exc, now)
+        return "sent" if outcome == "sent" else "handled"
+
+    def failed(self, ids, exc, now):
+        first_failure, attempts = self.failures.get(ids[0], (now, 0))
+        attempts += 1
+        self.failures[ids[0]] = (first_failure, attempts)
+        if now - first_failure >= GIVE_UP_SECONDS:
+            self.logger.error("[INTAKE GAVE UP] route=%s ids=%s attempts=%s", ROUTE_NAME, ids, attempts)
+            return "handled"
+        self.logger.warning(
+            "[WHOLECHAT CATCHUP RETRY] source_ids=%s attempts=%s %s: %s",
+            ids,
+            attempts,
+            type(exc).__name__,
+            exc,
+        )
+        return "wait"
+
+
+def _sweep_album_buffer(client):
+    """Telethon 1.45 keeps an AlbumHack in client._albums for every album seen
+    (in any chat) while an events.Album handler is registered, and never drops
+    it. Drop the ones delivered over ALBUM_BUFFER_SECONDS ago."""
+    albums = getattr(client, "_albums", None)
+    if not isinstance(albums, dict):
+        return 0
+    cutoff = asyncio.get_running_loop().time() - ALBUM_BUFFER_SECONDS
+    expired = [key for key, hack in list(albums.items()) if getattr(hack, "_due", cutoff) < cutoff]
+    for key in expired:
+        albums.pop(key, None)
+    return len(expired)
+
+
+async def _album_buffer_sweeper(client, logger):
+    while True:
+        await asyncio.sleep(ALBUM_BUFFER_SECONDS)
+        try:
+            _sweep_album_buffer(client)
+        except Exception as exc:
+            logger.warning("[WHOLECHAT ALBUM BUFFER SWEEP FAILED] %s: %s", type(exc).__name__, exc)
+
+
+def _detach_previous(main_module, client):
+    """A retry after the handlers were added must not leave the last attempt's
+    handlers (with their own map) live: every post would be sent twice."""
+    for name in (NEW_HANDLER_ATTR, ALBUM_HANDLER_ATTR):
+        handler = getattr(main_module, name, None)
+        if handler is not None:
+            client.remove_event_handler(handler)
+    for name in (CATCHUP_TASK_ATTR, ALBUM_SWEEP_TASK_ATTR):
+        task = getattr(main_module, name, None)
+        if task is not None:
+            task.cancel()
+
+
 async def run_wholechat_4281603170_to_3743381585(main_module, logger=None):
     logger = logger or log
     client = getattr(main_module, "client", None)
@@ -716,22 +923,31 @@ async def run_wholechat_4281603170_to_3743381585(main_module, logger=None):
         except Exception as exc:
             logger.exception("[WHOLECHAT LIVE ALBUM FAILED] %s: %s", type(exc).__name__, exc)
 
+    async def deliver(unit, reason):
+        return await _deliver_unit(
+            client, unit, message_map, map_path, data_dir, registry, lock, logger, reason
+        )
+
+    _detach_previous(main_module, client)
     client.add_event_handler(on_new_message, events.NewMessage(chats=SOURCE_CHAT))
     client.add_event_handler(on_album, events.Album(chats=SOURCE_CHAT))
 
-    setattr(main_module, "WHOLECHAT_4281603170_NEW_HANDLER", on_new_message)
-    setattr(main_module, "WHOLECHAT_4281603170_ALBUM_HANDLER", on_album)
+    setattr(main_module, NEW_HANDLER_ATTR, on_new_message)
+    setattr(main_module, ALBUM_HANDLER_ATTR, on_album)
+    setattr(main_module, ALBUM_SWEEP_TASK_ATTR, asyncio.create_task(_album_buffer_sweeper(client, logger)))
 
-    def start_restyle():
+    def start_background():
         setattr(
             main_module,
             "WHOLECHAT_4281603170_RESTYLE_TASK",
             asyncio.create_task(_restyle_recent_guarded(client, message_map, data_dir, registry, logger)),
         )
+        catchup = _CatchUp(client, deliver, message_map, data_dir, logger)
+        setattr(main_module, CATCHUP_TASK_ATTR, asyncio.create_task(catchup.run()))
 
     if state.get("status") == "done":
         bootstrap_ready.set()
-        start_restyle()
+        start_background()
         logger.warning(
             "[WHOLECHAT LAST50 STATE SKIP] already_done=True " "selected=%s sent=%s existing=%s skipped=%s",
             state.get("selected", 0),
@@ -854,7 +1070,7 @@ async def run_wholechat_4281603170_to_3743381585(main_module, logger=None):
     finally:
         bootstrap_ready.set()
 
-    start_restyle()
+    start_background()
     logger.warning(
         "[WHOLECHAT RELAY READY] source=%s dest=%s " "live=True last50_complete=%s",
         SOURCE_CHAT,

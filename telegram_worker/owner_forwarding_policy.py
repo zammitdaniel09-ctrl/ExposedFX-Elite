@@ -96,11 +96,29 @@ CONFIRM_REASONS = frozenset({"EntityUnavailable", "TopicUnavailable"})
 CONFIRM_STRIKES = 3
 CONFIRM_SECONDS = 600
 _STRIKES = {}
+# False while MAIN's start-up chat list has not loaded (e.g. a flood wait):
+# "entity unavailable" then means "not cached yet", never "access lost".
+ENTITY_CACHE_READY = True
+
+
+def note_success(route):
+    """A route that worked again: its pending stop strikes no longer count."""
+    _STRIKES.pop(identity(route), None)
 
 
 def _confirmed(key, reason, logger, route):
     if str(reason) not in CONFIRM_REASONS:
         return True
+    if str(reason) == "EntityUnavailable" and not ENTITY_CACHE_READY:
+        if logger:
+            logger.warning(
+                "[OWNER ROUTE STOP PENDING] route=%s contract=%s reason=%s strike=0 "
+                "entity_cache_loading=True RETRY=True",
+                route.get("name"),
+                key,
+                reason,
+            )
+        return False
     strikes = _STRIKES.setdefault(key, [])
     strikes.append(time.time())
     if len(strikes) >= CONFIRM_STRIKES and strikes[-1] - strikes[0] >= CONFIRM_SECONDS:

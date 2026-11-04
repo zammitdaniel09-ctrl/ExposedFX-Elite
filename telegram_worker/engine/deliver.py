@@ -57,8 +57,14 @@ def is_transient(exc: Exception) -> bool:
     return any(p in text for p in TRANSIENT)
 
 
+# Telethon's text for these errors does not contain the RPC code, so match the class too.
+REPLY_GONE_ERRORS = frozenset({"MsgIdInvalidError", "MessageIdInvalidError", "ReplyMessageIdInvalidError"})
+
+
 def reply_target_gone(exc: Exception) -> bool:
     """Telegram refused the reply parent (deleted or invalid), not the post."""
+    if type(exc).__name__ in REPLY_GONE_ERRORS:
+        return True
     text = str(exc).upper()
     return "REPLY" in text or "MSG_ID_INVALID" in text or "MESSAGE_ID_INVALID" in text
 

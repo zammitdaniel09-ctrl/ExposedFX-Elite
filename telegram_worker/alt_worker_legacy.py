@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from telethon import TelegramClient, events, functions
-from telethon.errors import ChannelPrivateError
+from telethon.errors import ChannelPrivateError, FloodWaitError
 from telethon.sessions import StringSession
 from telegram_worker import owner_forwarding_policy as owner_policy
 from telegram_worker import route_table
@@ -49,7 +49,7 @@ MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 CONNECT_DELAY = max(0, int(os.environ.get("TELEGRAM_CONNECT_DELAY_SECONDS", "5")))
 
-WATCHDOG_SECONDS = max(2.0, float(os.environ.get("ALT_WATCHDOG_SECONDS", "5")))
+WATCHDOG_SECONDS = max(2.0, float(os.environ.get("ALT_WATCHDOG_SECONDS", "30")))
 
 
 # ==============================================================
@@ -723,6 +723,47 @@ def start_engine_intake():
 # ==============================================================
 
 
+ACCESS_CHECK_ATTEMPTS = 3
+ACCESS_CHECK_RETRY_SECONDS = 5
+
+
+async def startup_call(call, step):
+    """A start-up read that waits out a flood wait instead of crashing (each restart
+    would hit the same wait again)."""
+    while True:
+        try:
+            return await call()
+        except FloodWaitError as exc:
+            log.warning("[ALT STARTUP FLOODWAIT] step=%s wait=%ss", step, exc.seconds)
+            await asyncio.sleep(int(exc.seconds) + 1)
+
+
+async def check_route_access(route):
+    source = await client.get_entity(route["source_chat"])
+    destination = await client.get_entity(route["dest_chat"])
+    if route["source_topic"] is not None:
+        await client.get_messages(route["source_chat"], limit=1, reply_to=int(route["source_topic"]))
+    topic_root = await client.get_messages(route["dest_chat"], ids=int(route["dest_topic"]))
+    if not topic_root:
+        raise RuntimeError("Relay topic does not exist: " f"{route['dest_chat']}_{route['dest_topic']}")
+    return source, destination
+
+
+def access_stop_reason(exc):
+    """The stop reason for a failed access check, or None if it is not one.
+
+    Only a private channel stops at once; "not found" reasons must repeat over
+    10 minutes (owner_forwarding_policy) before a stop is written, so one bad
+    start never stops a route for good."""
+    if isinstance(exc, ChannelPrivateError):
+        return type(exc).__name__
+    if isinstance(exc, ValueError) and "Could not find the input entity" in str(exc):
+        return "EntityUnavailable"
+    if isinstance(exc, RuntimeError) and str(exc).startswith("Relay topic does not exist:"):
+        return "TopicUnavailable"
+    return None
+
+
 async def main():
     if CONNECT_DELAY:
         log.warning("[ALT CONNECT GUARD] " f"waiting={CONNECT_DELAY}s")
@@ -742,7 +783,7 @@ async def main():
         )
 
     try:
-        await client.get_dialogs(limit=None)
+        await startup_call(lambda: client.get_dialogs(limit=None), "dialogs")
     finally:
         DIALOGS_READY.set()
 
@@ -769,30 +810,23 @@ async def main():
     # ----------------------------------------------------------
 
     for route in list(ROUTES):
-        try:
-            source = await client.get_entity(route["source_chat"])
-            destination = await client.get_entity(route["dest_chat"])
-
-            if route["source_topic"] is not None:
-                await client.get_messages(route["source_chat"], limit=1, reply_to=int(route["source_topic"]))
-
-            topic_root = await client.get_messages(route["dest_chat"], ids=int(route["dest_topic"]))
-
-            if not topic_root:
-                raise RuntimeError(
-                    "Relay topic does not exist: " f"{route['dest_chat']}_{route['dest_topic']}"
+        for attempt in range(1, ACCESS_CHECK_ATTEMPTS + 1):
+            try:
+                source, destination = await startup_call(
+                    lambda: check_route_access(route), "access:" + route["name"]
                 )
+                reason = None
+                break
+            except (ChannelPrivateError, ValueError, RuntimeError) as exc:
+                reason = access_stop_reason(exc)
+                if reason is None:
+                    raise
+                if reason == "ChannelPrivateError" or attempt == ACCESS_CHECK_ATTEMPTS:
+                    break
+                await asyncio.sleep(ACCESS_CHECK_RETRY_SECONDS)
 
-        except (ChannelPrivateError, ValueError, RuntimeError) as exc:
-            recoverable = (
-                isinstance(exc, ChannelPrivateError)
-                or (isinstance(exc, ValueError) and "Could not find the input entity" in str(exc))
-                or (isinstance(exc, RuntimeError) and str(exc).startswith("Relay topic does not exist:"))
-            )
-
-            if not recoverable:
-                raise
-            owner_policy.stop_route(route, type(exc).__name__, log)
+        if reason:
+            owner_policy.stop_route(route, reason, log)
             ROUTES.remove(route)
 
             log.warning(
@@ -800,7 +834,7 @@ async def main():
                 f"route={route['name']} "
                 f"source={route['source_chat']} "
                 f"dest={route['dest_chat']}_{route['dest_topic']} "
-                f"reason={type(exc).__name__} "
+                f"reason={reason} "
                 "WORKER_CONTINUES=True"
             )
             continue

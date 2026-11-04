@@ -27,8 +27,9 @@ def _reupload_cannot_help(exc) -> bool:
 
 
 def _reply_target_invalid(exc) -> bool:
-    text = str(exc).upper()
-    return "REPLY" in text or "MSG_ID_INVALID" in text or "MESSAGE_ID_INVALID" in text
+    from telegram_worker.engine.deliver import reply_target_gone
+
+    return reply_target_gone(exc)
 
 
 def _as_int(value) -> Optional[int]:

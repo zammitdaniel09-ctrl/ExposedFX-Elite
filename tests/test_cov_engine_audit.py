@@ -136,6 +136,61 @@ class NewestMappedTests(unittest.TestCase):
         self.assertEqual(audit.newest_mapped(mapping, route, 2), [(20, 9020), (30, 9030)])
 
 
+class IndexedMap(dict):
+    """The SQLite map's read surface: an index lookup by key prefix, and no full scans."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.prefixes = []
+        self.decoded = []
+
+    def keys_with_prefix(self, prefix):
+        self.prefixes.append(prefix)
+        return [key for key in dict.keys(self) if key.startswith(prefix)]
+
+    def get(self, key, default=None):
+        self.decoded.append(key)
+        return super().get(key, default)
+
+    def items(self):
+        raise AssertionError("full scan of the message map")
+
+    def __iter__(self):
+        raise AssertionError("full scan of the message map")
+
+
+class IndexedMapTests(unittest.TestCase):
+    """Audits and reply lookups read the map through its index (no event-loop stall as it grows)."""
+
+    def test_audit_decodes_only_the_newest_pairs(self):
+        route = Route.from_legacy(ROUTE)
+        mapping = IndexedMap({f"{RELAY}:{i}:{VIP}:1364": 9000 + i for i in range(1, 101)})
+        mapping[f"{RELAY}:500:{VIP}:7"] = 1
+        self.assertEqual(audit.newest_mapped(mapping, route, 3), [(98, 9098), (99, 9099), (100, 9100)])
+        self.assertEqual(mapping.prefixes, [f"{RELAY}:"])
+        self.assertEqual(len(mapping.decoded), 3, "values are read only for the pairs returned")
+
+    def test_reply_parent_lookup_by_parts_uses_the_index(self):
+        route = Route.from_legacy(ROUTE)
+        mapping = IndexedMap({f"{RELAY}:7:{VIP}:1364": [9007, 9008], f"{RELAY}:7:{VIP}:9": 1})
+        self.assertEqual(MessageMap(mapping).dest_ids(route, 7, scan=True), [9007, 9008])
+        self.assertEqual(MessageMap(mapping).dest_ids(route, 8, scan=True), [])
+        self.assertEqual(mapping.prefixes, [f"{RELAY}:8:"], "the exact key answers first")
+
+    def test_reply_hardening_lookup_by_parts_uses_the_index(self):
+        from telegram_worker import reply_hardening
+
+        mapping = IndexedMap({f"{RELAY}:7:{VIP}:1364": [9007, 9008], f"{RELAY}:70:{VIP}:1364": 1})
+        worker = SimpleNamespace(message_map=mapping, map_key=lambda *parts: "an-older-key-format")
+        self.assertEqual(reply_hardening.mapped_destination_ids(worker, ROUTE, 7), [9007, 9008])
+        self.assertEqual(mapping.prefixes, [f"{RELAY}:7:"])
+
+    def test_plain_dicts_are_scanned(self):
+        route = Route.from_legacy(ROUTE)
+        self.assertEqual(MessageMap({f"{RELAY}:7:{VIP}:1364": 9007}).dest_ids(route, 7, scan=True), [9007])
+        self.assertEqual(MessageMap({f"{RELAY}:70:{VIP}:1364": 1}).dest_ids(route, 7, scan=True), [])
+
+
 class AuditRouteTests(unittest.TestCase):
     def planner(self, mapping):
         return Planner(rules=Rules(), maps=MessageMap(mapping))
@@ -157,7 +212,8 @@ class AuditRouteTests(unittest.TestCase):
             (VIP, 9004): msg(9004, "TP4", reply_to=1364),
         }
         result = asyncio.run(audit.audit_route(Reader(stored), self.planner(mapping), ROUTE, "copy"))
-        self.assertEqual(result["unavailable_or_album"], 2, "album item and missing copy")
+        self.assertEqual((result["album"], result["copy_deleted"]), (1, 1), "album item and missing copy")
+        self.assertNotIn("source_deleted", result)
         self.assertEqual((result["checked"], result["match"], result["mismatch"]), (2, 1, 1))
         self.assertEqual(result["field:engine_skip:mention_or_link"], 1)
         self.assertEqual(

@@ -56,9 +56,17 @@ class Client:
 
 class Harness:
     def __init__(
-        self, posts, routes=(ROUTE,), results=None, stale_after=None, pending=None, start=0, max_attempts=120
+        self,
+        posts,
+        routes=(ROUTE,),
+        results=None,
+        stale_after=None,
+        pending=None,
+        start=0,
+        give_up_after=3600,
     ):
         self.client = Client(posts)
+        self.now = [NOW.timestamp()]
         self.db = sqlite3.connect(":memory:", isolation_level=None)
         self.checkpoints = intake.Checkpoints(self.db, clock=lambda: NOW.timestamp())
         self.delivered = []
@@ -91,8 +99,9 @@ class Harness:
             first,
             pending=pending,
             stale_after=stale_after,
-            max_attempts=max_attempts,
-            clock=lambda: NOW.timestamp(),
+            give_up_after=give_up_after,
+            album_gather=0.02,
+            clock=lambda: self.now[0],
             sleep=no_sleep,
         )
 
@@ -221,15 +230,14 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(checkpoint, 10)
 
     def test_post_failing_for_good_is_given_up_and_reported(self):
-        h = Harness(
-            [post(10), post(11)], results={("VIP RELAY Topic2 To VIP1364", 10): [False] * 5}, max_attempts=3
-        )
+        h = Harness([post(10), post(11)], results={("VIP RELAY Topic2 To VIP1364", 10): [False] * 5})
 
         async def go():
             await h.ready()
             with self.assertLogs("engine-intake", "ERROR") as logs:
                 for _ in range(4):
                     await h.tick()
+                    h.now[0] += 1800  # time-based: after an hour, however often it was retried
             return logs.output, h.checkpoints.get(SOURCE)
 
         output, checkpoint = h.run(go())
@@ -513,7 +521,9 @@ class StartTests(unittest.TestCase):
             return tasks
 
         h.run(go())
-        self.assertEqual(sorted(kind for _, kind in h.client.handlers), ["Album", "NewMessage"])
+        self.assertEqual(
+            [kind for _, kind in h.client.handlers], ["NewMessage"], "albums are gathered from NewMessage"
+        )
         self.assertEqual(h.checkpoints.get(SOURCE), 10, "first checkpoint stored, then the gap delivered")
         self.assertEqual(h.delivered, [("VIP RELAY Topic2 To VIP1364", [10], "deployment_gap")])
 
@@ -527,15 +537,15 @@ class StartTests(unittest.TestCase):
             other_topic = post(22)
             other_topic.reply_to_top_id = 106
             await h.intake.on_message(SimpleNamespace(chat_id=RELAY, message=other_topic))
-            await h.intake.on_album(
-                SimpleNamespace(chat_id=RELAY, messages=[post(24, grouped_id=4), post(23, grouped_id=4)])
-            )
-            await h.intake.on_album(SimpleNamespace(chat_id=RELAY, messages=[]))
+            await h.intake.on_message(SimpleNamespace(chat_id=RELAY, message=post(24, grouped_id=4)))
+            await h.intake.on_message(SimpleNamespace(chat_id=RELAY, message=post(23, grouped_id=4)))
+            await asyncio.sleep(0.1)
             await h.drain()
 
         h.run(go())
         self.assertEqual(
-            [(d[1], d[2]) for d in h.delivered], [([20], "telegram_push"), ([23, 24], "telegram_album")]
+            [(d[1], d[2]) for d in h.delivered],
+            [([20], "telegram_push"), ([21], "telegram_album"), ([23, 24], "telegram_album")],
         )
 
     def test_handler_errors_are_logged_not_raised(self):
@@ -556,6 +566,117 @@ class StartTests(unittest.TestCase):
                 (RELAY, None): ["whole"],
             },
         )
+
+
+class AlbumGatherTests(unittest.TestCase):
+    """Albums are gathered from NewMessage pushes; a newer post never overtakes one."""
+
+    def push(self, h, *messages):
+        async def go():
+            for message in messages:
+                await h.intake.on_message(SimpleNamespace(chat_id=RELAY, message=message))
+
+        return go()
+
+    def test_a_post_right_after_an_album_waits_for_the_album(self):
+        h = Harness([])
+
+        async def go():
+            await h.ready()
+            worker = asyncio.create_task(h.intake.worker(SOURCE))
+            await self.push(h, post(10, grouped_id=7), post(11, grouped_id=7))
+            await self.push(h, post(13))  # the writer is idle and takes it at once
+            await asyncio.sleep(0.005)
+            await self.push(h, post(12, grouped_id=7))  # Telegram is still adding album items
+            await asyncio.sleep(0.15)
+            await h.intake.sources[SOURCE].queue.join()
+            worker.cancel()
+
+        h.run(go())
+        self.assertEqual(
+            [(d[1], d[2]) for d in h.delivered],
+            [([10, 11, 12], "telegram_album"), ([13], "telegram_push")],
+            "album first, as one post, in id order",
+        )
+        self.assertEqual(h.intake.sources[SOURCE].albums, {}, "nothing kept once the album is queued")
+        self.assertEqual(h.intake.album_tasks, set(), "gather tasks are referenced until done")
+
+    def test_an_older_post_is_not_held_by_a_newer_album(self):
+        h = Harness([])
+
+        async def go():
+            await h.ready()
+            worker = asyncio.create_task(h.intake.worker(SOURCE))
+            await self.push(h, post(20, grouped_id=8), post(19))
+            await asyncio.sleep(0.005)
+            self.assertEqual(h.delivered[0][1], [19])
+            await asyncio.sleep(0.1)
+            await h.intake.sources[SOURCE].queue.join()
+            worker.cancel()
+
+        h.run(go())
+        self.assertEqual([d[1] for d in h.delivered], [[19], [20]])
+
+    def test_album_items_are_not_gathered_before_start_or_while_closing(self):
+        h = Harness([])
+
+        async def go():
+            await self.push(h, post(30, grouped_id=9))  # source not started: the first sweep reads it
+            await h.ready()
+            h.intake.closing = True
+            await self.push(h, post(31, grouped_id=9))
+            return dict(h.intake.sources[SOURCE].albums)
+
+        self.assertEqual(h.run(go()), {})
+
+    def test_a_failing_album_submit_is_logged_and_releases_the_writer(self):
+        h = Harness([])
+
+        async def broken_submit(source, unit, reason):
+            raise RuntimeError("queue gone")
+
+        async def go():
+            await h.ready()
+            h.intake.submit = broken_submit
+            with self.assertLogs("engine-intake", "WARNING") as logs:
+                await self.push(h, post(40, grouped_id=10))
+                await asyncio.sleep(0.1)
+            state = h.intake.sources[SOURCE]
+            return logs.output, state.albums, state.album_queued.is_set()
+
+        output, albums, released = h.run(go())
+        self.assertIn("[INTAKE ALBUM GATHER FAILED]", output[0])
+        self.assertEqual((albums, released), ({}, True))
+
+    def test_waiting_for_an_album_is_bounded(self):
+        h = Harness([])
+        h.intake.album_gather = 0.0
+
+        async def go():
+            await h.ready()
+            state = h.intake.sources[SOURCE]
+            state.albums[5] = intake._Album(items={1: post(1)}, due=float("inf"))  # never completes
+            started = asyncio.get_running_loop().time()
+            held = await h.intake._older_album_gathering(state, 2)
+            return held, asyncio.get_running_loop().time() - started
+
+        held, waited = h.run(go())
+        self.assertTrue(held)
+        self.assertLess(waited, 1.5)
+
+    def test_failure_counters_are_dropped_once_the_checkpoint_passes_them(self):
+        h = Harness([post(50), post(51)], results={("VIP RELAY Topic2 To VIP1364", 50): [False]})
+
+        async def go():
+            await h.ready()
+            await h.tick()
+            h.client.posts = [post(51), post(52)]  # 50 was deleted before it succeeded
+            await h.tick()
+            await h.tick()
+            state = h.intake.sources[SOURCE]
+            return state.attempts, state.first_failure, h.checkpoints.get(SOURCE)
+
+        self.assertEqual(h.run(go()), ({}, {}, 52))
 
 
 if __name__ == "__main__":

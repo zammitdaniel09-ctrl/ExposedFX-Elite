@@ -1,9 +1,6 @@
 """Owner route regression tests: order, exact topics, restart resume and stop policy."""
 
 import asyncio
-import importlib.util
-import json
-import logging
 import sys
 import tempfile
 import types
@@ -219,7 +216,6 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stopped_first_route_allows_other_jobs_without_sending_there(self):
         self.worker.client.fail_first = True
-        original = owner.live_cycle
         reached = []
 
         async def end_live(worker, route, entry, state, path):

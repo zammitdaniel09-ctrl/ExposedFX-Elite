@@ -82,7 +82,9 @@ replay audit apply automatically. **Remove a route:** delete its line.
 
 Formatters: `library_signal_format.py` (EXTRA PARTNER [ 5 ]),
 `samgtrades_house_formatter.py` (Exposed | VIP), `imperium_vip_*` (VIP 7).
-Custom emoji ids come from the owner's Saved Messages (`community_emoji_registry.py`).
+Custom emoji ids come from the owner's Saved Messages (`community_emoji_registry.py`):
+each start re-reads the newest 500; an alias whose assignment has scrolled further
+back keeps its saved value (only `Alias = DELETE` removes one).
 
 ## Delivery engine (`telegram_worker/engine/`)
 
@@ -94,8 +96,7 @@ through `engine/intake.py` on both workers (below). On MAIN the intake calls
 the owner routes call `DeliveryEngine.copy_unit`.
 One planner decides Send or Skip (rules, reply target, formatter), one
 deliverer sends, verifies, retries and writes the message map. Edits and
-deletes still go through the worker's mapped edit/delete handlers, which read
-the same map.
+deletes go through `engine/mirror.py` (below), which reads the same map.
 
 How it replaced the legacy copy pipeline (4 Nov 2026): shadow mode compared
 every live post with the legacy output, a replay audit matched 156/156
@@ -121,28 +122,39 @@ the cutover commit. State files are shared and need no changes.
 4. CI: `forwarding-safety.yml` compiles both workers, checks route contracts,
    black, pyflakes, strict mypy on the engine and state store, every unit
    test (MAIN and ALT) and a 95% branch-coverage floor on the engine, state
-   store, liveness and monitoring, on each push.
+   store, liveness and monitoring, on each push. It also checks that every
+   module ALT imports matches ALT's Railway watch paths (`ALT_WATCH_PATHS` in
+   `scripts/check_forwarding_contracts.py`; keep both lists identical), so ALT
+   never keeps running old code. `.python-version` pins Railway and CI to 3.13.
 5. Replay audit: after every deploy each worker re-plans its most recent
    delivered posts on every route and compares them with the copies already sent;
    any difference is a Saved Messages notice (🔍).
 
 **Intake (`engine/intake.py`, MAIN and ALT).** Telegram pushes are the fast
-path; each source (chat + topic) has one writer and an oldest-first queue. A
+path; each source (chat + topic) has one writer and an oldest-first queue.
+Album items are gathered by the intake itself (queued 0.6 s after the last
+item), and the writer holds a newer post until an older album is queued, so a
+post sent right after an album never overtakes it. A
 watchdog per source reads only the posts after its checkpoint every 30 s and
 queues anything not handled: a missed push, a failed delivery, or posts that
 arrived during a restart. The checkpoint ("everything up to here is handled")
 is stored in `message_map.sqlite3` and moved only by the watchdog over posts it
 has seen, so a later success can never skip an earlier failure. On MAIN a post
 older than 10 minutes is not sent (stale signals mislead) and you get a Saved
-Messages notice; ALT has no age limit. A post that still fails after 120
-attempts (about an hour) is skipped with a notice. Owner routes and the 8323
-formatter keep their own checkpoints.
+Messages notice; ALT has no age limit. A post that still fails an hour after
+its first failure is skipped with a notice. Owner routes, the 8323 formatter
+and the SamGtrades relay keep their own checkpoints, with the same one-hour
+give-up; the SamGtrades relay also catches up posts made while the worker was
+down (deploys) and applies the 10-minute rule.
 
 **State store (`state_store.py`).** The message map lives in SQLite
 (`message_map.sqlite3`, one row per copy) instead of a JSON file rewritten on
 every delivery. `message_map.json` is still written every 5 minutes and when
 Railway stops the worker, so rolling back to older code starts from the
 current map; entries only the JSON has are merged back on the next start.
+On SIGTERM, sends already in flight (intake, owner routes, 8323 formatter,
+SamGtrades relay) get up to 2 s to record their copy and no new send starts,
+so a deploy never sends a post twice.
 
 **Edits and deletions (`engine/mirror.py`, MAIN and ALT).** An edited source
 post updates each mapped copy in place, rendered like a new post (restyled for
@@ -167,7 +179,11 @@ and `@logger:imperium-worker` style filters work.
 without crashing: if Telegram drops the connection for good, or the event loop
 stalls for 120 s, the process exits non-zero so Railway starts a fresh one,
 and the next start sends "♻️ … restarted itself" with the reason to that
-account's Saved Messages. A redeploy no longer waits for the old run's lock:
+account's Saved Messages. On MAIN, a background job that crashes (owner
+routes, 8323 formatter, SamGtrades relay, edit reconciler, weekly stats) is
+logged, alerted (🚨) and started again after 30 s instead of staying dead.
+A flood wait while loading the chat list at start is retried after the wait,
+and until then "chat not found" is not counted towards stopping a route. A redeploy no longer waits for the old run's lock:
 Railway never runs two copies of a volume-backed service, so the lock left by
 an earlier deployment is taken over at once (`runtime_guard.py`).
 

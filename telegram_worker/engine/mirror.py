@@ -32,6 +32,8 @@ log = logging.getLogger("engine-mirror")
 Route = Dict[str, Any]
 Render = Callable[[Route, Any], Awaitable[Tuple[str, Optional[List[Any]]]]]
 VisitKey = Tuple[int, int, int, int]
+EDIT_FLOOD_RETRY_MAX_SECONDS = 900.0
+RECONCILE_KEEP = 500  # fingerprints kept by EditReconciler (it reads the newest `limit` posts)
 
 
 def mapped_ids(value: Any) -> List[int]:
@@ -95,17 +97,36 @@ class Mirror:
         if self.blocked(int(chat_id), message):
             return
         for route in routes:
-            try:
-                await self.edit(route, message)
-            except Exception as exc:
-                wait = getattr(exc, "seconds", None)
-                if wait is not None:
-                    log.warning("[EDIT FLOODWAIT] %s route=%s wait=%ss", self.name, route.get("name"), wait)
-                    await self.sleep(min(float(wait) + 1.0, 60.0))
-                else:
-                    log.exception(
-                        "[EDIT FAILED] %s route=%s msg=%s %s", self.name, route.get("name"), message.id, exc
+            for attempt in (1, 2):
+                try:
+                    await self.edit(route, message)
+                except Exception as exc:
+                    wait = getattr(exc, "seconds", None)
+                    if wait is None:
+                        log.exception(
+                            "[EDIT FAILED] %s route=%s msg=%s %s",
+                            self.name,
+                            route.get("name"),
+                            message.id,
+                            exc,
+                        )
+                        break
+                    # Telethon already slept through waits up to 60 s; a longer one is
+                    # waited out once (bounded) and the edit tried again, not dropped.
+                    retry = attempt == 1 and float(wait) <= EDIT_FLOOD_RETRY_MAX_SECONDS
+                    log.warning(
+                        "[EDIT FLOODWAIT] %s route=%s msg=%s wait=%ss retry=%s",
+                        self.name,
+                        route.get("name"),
+                        message.id,
+                        wait,
+                        retry,
                     )
+                    if not retry:
+                        break
+                    await self.sleep(float(wait) + 1.0)
+                else:
+                    break
 
     async def edit(
         self, route: Route, message: Any, depth: int = 0, visited: Optional[Set[VisitKey]] = None
@@ -317,6 +338,9 @@ class EditReconciler:
 
     def _remember(self, message: Any, fingerprint: str) -> None:
         self.state[str(int(message.id))] = fingerprint
+        if len(self.state) > RECONCILE_KEEP * 2:  # only the newest posts are ever re-checked
+            newest = sorted(self.state, key=int)[-RECONCILE_KEEP:]
+            self.state = {key: self.state[key] for key in newest}
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.state, separators=(",", ":")), encoding="utf-8")
         tmp.replace(self.state_path)

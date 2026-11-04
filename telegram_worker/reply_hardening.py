@@ -6,6 +6,8 @@ import unicodedata
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from telegram_worker.engine.replies import keys_starting
+
 log = logging.getLogger("telegram-reply-hardening")
 
 IMPERIUM_SOURCE_CHAT = -1004367822325
@@ -115,7 +117,8 @@ def mapped_destination_ids(main_module, route: Dict[str, Any], source_msg_id: in
     if ids:
         return ids
 
-    # Compatibility with old maps whose keys were serialised manually.
+    # Compatibility with old maps whose keys were serialised manually. Only keys
+    # with this source post's prefix are read (the SQLite index; never every row).
     wanted = (
         str(int(route["source_chat"])),
         str(int(source_msg_id)),
@@ -123,12 +126,12 @@ def mapped_destination_ids(main_module, route: Dict[str, Any], source_msg_id: in
         str(int(route["dest_topic"])),
     )
     out: List[int] = []
-    for key, value in list(message_map.items()):
+    for key in keys_starting(message_map, f"{wanted[0]}:{wanted[1]}:"):
         try:
             parts = tuple(str(key).split(":"))
             if len(parts) != 4 or parts != wanted:
                 continue
-            for destination_id in _mapped_ids(main_module, value):
+            for destination_id in _mapped_ids(main_module, message_map.get(key)):
                 _append_unique(out, destination_id)
         except Exception:
             continue

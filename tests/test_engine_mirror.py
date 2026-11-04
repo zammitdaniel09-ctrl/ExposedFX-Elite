@@ -1,6 +1,7 @@
 """Edits and deletions mirrored onto copies (engine/mirror.py, MAIN and ALT)."""
 
 import asyncio
+import json
 import sys
 import tempfile
 import types
@@ -119,6 +120,33 @@ class EditTests(unittest.TestCase):
         with self.assertLogs("engine-mirror", "WARNING"):
             asyncio.run(sync.on_edit(RELAY, post(10), [RELAY2]))
         self.assertEqual(slept, [8.0])
+
+    def test_edit_is_retried_after_a_long_flood_wait_not_dropped(self):
+        class LongFlood(Exception):
+            seconds = 300
+
+        client = Client(fail=LongFlood("wait"))
+        sync, slept = build({f"{RELAY}:10:{VIP}:1364": 900}, client)
+
+        async def clear_after_wait(seconds):
+            slept.append(seconds)
+            client.fail = None
+
+        sync.sleep = clear_after_wait
+        with self.assertLogs("engine-mirror", "WARNING"):
+            asyncio.run(sync.on_edit(RELAY, post(10, "TP2 hit"), [RELAY2]))
+        self.assertEqual(slept, [301.0], "the whole wait, not 60 s")
+        self.assertEqual(client.edits, [(VIP, 900, "TP2 hit")])
+
+    def test_a_flood_wait_beyond_the_bound_is_reported_without_waiting(self):
+        class HugeFlood(Exception):
+            seconds = 5000
+
+        sync, slept = build({f"{RELAY}:10:{VIP}:1364": 900}, Client(fail=HugeFlood("wait")))
+        with self.assertLogs("engine-mirror", "WARNING") as logs:
+            asyncio.run(sync.on_edit(RELAY, post(10), [RELAY2]))
+        self.assertEqual(slept, [])
+        self.assertIn("retry=False", logs.output[-1])
 
     def test_unexpected_handler_error_is_logged_not_raised(self):
         async def broken(route, message):
@@ -270,6 +298,17 @@ class ReconcilerTests(unittest.TestCase):
             return posts
 
         return mirror.EditReconciler(sync, RELAY2, fetch, Path(tmp) / "state.json"), client, slept
+
+    def test_state_keeps_only_the_newest_fingerprints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reconciler, _, _ = self.reconciler(tmp, [], {}, {})
+            for msg_id in range(1, mirror.RECONCILE_KEEP * 2 + 2):
+                reconciler._remember(post(msg_id), f"fp{msg_id}")
+            kept = sorted(map(int, reconciler.state))
+            self.assertEqual(kept[0], mirror.RECONCILE_KEEP * 2 + 2 - mirror.RECONCILE_KEEP)
+            self.assertEqual(len(kept), mirror.RECONCILE_KEEP)
+            saved = json.loads((Path(tmp) / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved, reconciler.state)
 
     def test_only_copies_that_differ_are_edited_and_each_version_once(self):
         with tempfile.TemporaryDirectory() as tmp:

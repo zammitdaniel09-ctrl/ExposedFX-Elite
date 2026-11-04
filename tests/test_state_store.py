@@ -181,6 +181,79 @@ class StoreTests(unittest.TestCase):
         self.stores.append(store)
         self.assertEqual(store.path, self.dir / "message_map.sqlite3")
 
+    def test_snapshot_temp_files_a_kill_left_behind_are_removed_at_start(self):
+        orphan = self.dir / "message_map.json.1234.snapshot.tmp"
+        other = self.dir / "route_state.json.tmp"
+        orphan.write_text("{", encoding="utf-8")
+        other.write_text("{}", encoding="utf-8")
+        self.open()
+        self.assertFalse(orphan.exists())
+        self.assertTrue(other.exists(), "only this map's snapshot temp files")
+
+    def test_shutdown_waits_only_briefly_for_a_background_snapshot(self):
+        store = self.open()
+        handlers, waits = [], []
+        with patch.object(
+            state_store.signal, "signal", lambda sig, handler: handlers.append(handler)
+        ), patch.object(state_store.signal, "getsignal", lambda sig: None), patch.object(
+            state_store.os, "kill", lambda pid, sig: None
+        ), patch.object(
+            store, "wait_snapshot", lambda timeout=30.0: waits.append(timeout)
+        ):
+            store.snapshot_on_exit()
+            handlers[0](state_store.signal.SIGTERM, None)
+        self.assertEqual(waits, [state_store.EXIT_SNAPSHOT_WAIT_SECONDS])
+        self.assertLess(state_store.DRAIN_SECONDS + state_store.EXIT_SNAPSHOT_WAIT_SECONDS, 3.0)
+
+
+class SendGuardTests(unittest.TestCase):
+    """Sends outside the intake (owner routes, 8323 formatter, SamGtrades) finish before exit."""
+
+    def test_shutdown_waits_for_a_send_in_flight_and_starts_no_new_one(self):
+        import asyncio
+
+        guard = state_store.SendGuard(timeout=2.0)
+        events = []
+
+        async def send(name, release):
+            async with guard.sending():
+                events.append(f"{name} started")
+                await release.wait()
+                events.append(f"{name} recorded")
+
+        async def scenario():
+            first = asyncio.Event()
+            sending = asyncio.create_task(send("first", first))
+            await asyncio.sleep(0.01)
+            draining = asyncio.create_task(guard.drain())
+            await asyncio.sleep(0.01)
+            late = asyncio.create_task(send("late", asyncio.Event()))
+            await asyncio.sleep(0.01)
+            first.set()
+            await draining
+            await sending
+            late_started = late.done()
+            late.cancel()
+            return late_started
+
+        with patch.object(state_store, "SHUTDOWN_HOOKS", []):
+            with self.assertLogs("state-store", "WARNING") as logs:
+                late_started = asyncio.run(scenario())
+            self.assertEqual(state_store.SHUTDOWN_HOOKS, [guard.drain], "registered on first use")
+        self.assertEqual(events, ["first started", "first recorded"])
+        self.assertFalse(late_started, "a send after SIGTERM waits for the exit")
+        self.assertIn("[SENDS DRAINED] in_flight=0", logs.output[0])
+        self.assertEqual(guard.inflight, 0)
+
+    def test_drain_is_bounded(self):
+        import asyncio
+
+        guard = state_store.SendGuard(timeout=0.05)
+        guard.inflight = 1  # a send that never returns
+        with self.assertLogs("state-store", "WARNING") as logs:
+            asyncio.run(guard.drain())
+        self.assertIn("in_flight=1", logs.output[0])
+
 
 if __name__ == "__main__":
     unittest.main()

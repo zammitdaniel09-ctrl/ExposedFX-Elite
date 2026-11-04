@@ -68,5 +68,47 @@ class AltBackendFixTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(ns["wait_dialogs_ready"](), 1)
 
 
+class AltStartupTests(unittest.IsolatedAsyncioTestCase):
+    """A flood wait or a passing glitch at start-up never crash-loops ALT or stops a route for good."""
+
+    async def test_startup_reads_wait_out_flood_waits(self):
+        from telethon.errors import FloodWaitError
+
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        calls = []
+
+        async def dialogs():
+            calls.append(1)
+            if len(calls) == 1:
+                raise FloodWaitError(request=None, capture=90)
+            return ["ok"]
+
+        ns = load_functions(
+            "startup_call", FloodWaitError=FloodWaitError, asyncio=SimpleNamespace(sleep=fake_sleep)
+        )
+        with self.assertLogs("alt-test", "WARNING"):
+            self.assertEqual(await ns["startup_call"](dialogs, "dialogs"), ["ok"])
+        self.assertEqual((len(calls), slept), (2, [91]))
+
+    def test_only_a_private_channel_stops_a_route_at_once(self):
+        from telethon.errors import ChannelPrivateError
+
+        from telegram_worker import owner_forwarding_policy as policy
+
+        ns = load_functions("access_stop_reason", ChannelPrivateError=ChannelPrivateError)
+        reason = ns["access_stop_reason"]
+        self.assertEqual(reason(ChannelPrivateError(request=None)), "ChannelPrivateError")
+        not_found = reason(ValueError("Could not find the input entity for PeerChannel(1)"))
+        missing_topic = reason(RuntimeError("Relay topic does not exist: -1004367822325_7250"))
+        self.assertEqual((not_found, missing_topic), ("EntityUnavailable", "TopicUnavailable"))
+        self.assertTrue({not_found, missing_topic} <= policy.CONFIRM_REASONS, "confirmed over 10 min first")
+        self.assertIsNone(reason(ValueError("something else")))
+        self.assertIsNone(reason(RuntimeError("boom")))
+
+
 if __name__ == "__main__":
     unittest.main()

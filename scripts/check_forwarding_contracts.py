@@ -5,12 +5,37 @@ Never imports Telegram worker modules, opens credentials, or contacts services.
 Run in CI before changing production routes or deploying new worker code.
 """
 
+import ast
+import fnmatch
 import importlib.util
 import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "telegram_worker"
+
+# Railway -> imperium-telegram-worker-alt -> Settings -> Watch Paths. ALT redeploys only
+# when a matching file changes, so every module ALT imports must match one of these.
+# Keep this list and Railway's identical (MAIN watches everything except tests/docs).
+ALT_WATCH_PATHS = (
+    "/telegram_worker/alt_*.py",
+    "/telegram_worker/engine/**",
+    "/telegram_worker/state_store.py",
+    "/telegram_worker/route_table.py",
+    "/telegram_worker/reply_hardening.py",
+    "/telegram_worker/permanent_delivery_errors.py",
+    "/telegram_worker/owner_forwarding_policy.py",
+    "/telegram_worker/health_monitor.py",
+    "/telegram_worker/liveness.py",
+    "/telegram_worker/log_setup.py",
+    "/telegram_worker/__init__.py",
+    "/telegram_worker/runtime_guard.py",
+    "/telegram_worker/community_emoji_registry.py",
+    "/telegram_worker/imperium_vip_*.py",
+    "/telegram_worker/topic1_kill_switch.py",
+    "/requirements.txt",
+    "/.python-version",
+)
 
 
 def require(condition, reason):
@@ -64,6 +89,50 @@ def check_routes():
     print(f"PASS: checked {len(specs)} live routes (MAIN and ALT) and the retired-topic guard")
 
 
+def module_path(name):
+    path = ROOT / (name.replace(".", "/") + ".py")
+    if path.exists():
+        return path
+    path = ROOT / name.replace(".", "/") / "__init__.py"
+    return path if path.exists() else None
+
+
+def imported_modules(start):
+    """Every telegram_worker module `start` imports, directly or not (read with ast, never run)."""
+    seen, todo = set(), [start]
+    while todo:
+        name = todo.pop()
+        path = module_path(name)
+        if name in seen or path is None:
+            continue
+        seen.add(name)
+        package = name if path.name == "__init__.py" else name.rsplit(".", 1)[0]
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+            if isinstance(node, ast.Import):
+                todo += [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    parts = package.split(".")
+                    base = ".".join(parts[: len(parts) - node.level + 1] + ([base] if base else []))
+                todo += [base] + [f"{base}.{alias.name}" for alias in node.names]
+        todo = [t for t in todo if t.startswith("telegram_worker")]
+    return seen
+
+
+def check_alt_watch_paths():
+    modules = imported_modules("telegram_worker.alt_worker")
+    require("telegram_worker.engine.intake" in modules, "ALT import scan found no engine")
+    for name in sorted(modules):
+        path = "/" + module_path(name).relative_to(ROOT).as_posix()
+        require(
+            any(fnmatch.fnmatchcase(path, pattern) for pattern in ALT_WATCH_PATHS),
+            f"ALT imports {path}, which no ALT watch path covers: add it to ALT_WATCH_PATHS and to "
+            "Railway (ALT service, Settings, Watch Paths), or ALT keeps running the old code",
+        )
+    print(f"PASS: ALT redeploys on changes to all {len(modules)} modules it imports")
+
+
 def check_worker_invariants():
     worker = (PACKAGE / "worker_fixed.py").read_text(encoding="utf-8-sig")
     for marker in ("message_map = open_message_map(", "liveness.exit_disconnected("):
@@ -89,6 +158,7 @@ if __name__ == "__main__":
         check_syntax()
         check_routes()
         check_worker_invariants()
+        check_alt_watch_paths()
     except (AssertionError, SyntaxError, ValueError, OSError) as exc:
         print(f"FAIL: {type(exc).__name__}: {exc}", file=sys.stderr)
         raise SystemExit(1)

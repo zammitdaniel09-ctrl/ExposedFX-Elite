@@ -320,14 +320,12 @@ class AltReplayAuditTests(AltHarness):
                 "checked": 2,
                 "match": 1,
                 "mismatch": 1,
-                "unavailable_or_album": 2,
+                "album": 1,
+                "copy_deleted": 1,
                 "examples": [{"source": 11, "dest": 9011, "fields": ["text"]}],
             },
         )
-        self.assertEqual(
-            report[ARABIC["name"]],
-            {"checked": 1, "match": 1, "mismatch": 0, "unavailable_or_album": 0, "examples": []},
-        )
+        self.assertEqual(report[ARABIC["name"]], {"checked": 1, "match": 1, "mismatch": 0, "examples": []})
         self.assertEqual(self.translated, [20], "the T4T copy is compared with the translation")
         self.assertEqual(report[BROKEN["name"]]["error"], "ConnectionError: chat unavailable")
         self.assertEqual(report[BROKEN["name"]]["checked"], 0)
@@ -353,7 +351,7 @@ class AltReplayAuditTests(AltHarness):
         self.assertEqual(
             reads[ARABIC["source_chat"]], list(range(32, 42)), "translation calls are capped at 10"
         )
-        self.assertEqual(report[ARABIC["name"]]["unavailable_or_album"], 10)
+        self.assertEqual(report[ARABIC["name"]]["source_deleted"], 10)
 
     def test_audit_runs_again_when_its_state_cannot_be_saved(self):
         self.legacy.DATA_DIR = str(Path(self.tmp.name) / "missing" / "dir")

@@ -1,8 +1,10 @@
 """Engine intake: how new source posts reach delivery, shared by MAIN and ALT.
 
-- Telegram pushes (NewMessage for single posts, Album for whole albums) are
-  the fast path. Each source (chat + topic) has one writer and an oldest-first
-  queue, so a source's posts are delivered in order and never twice at once.
+- Telegram pushes (NewMessage) are the fast path. Album items are gathered
+  here until no new item has arrived for `album_gather` seconds, then queued as
+  one post. Each source (chat + topic) has one writer and an oldest-first
+  queue, so a source's posts are delivered in order and never twice at once;
+  the writer holds a newer post while an older album is still being gathered.
 - A watchdog per source reads only the posts after its checkpoint, oldest
   first, every `watchdog_seconds`. It queues anything not handled yet: a
   missed push, a failed delivery, or posts that arrived during a restart.
@@ -11,7 +13,7 @@
   earlier failure. Checkpoints live in the SQLite state store.
 - MAIN sets `stale_after`: a post older than that is not sent (a late signal
   misleads members) but reported as "[GAP STALE NOT SENT]". A post that keeps
-  failing is given up after `max_attempts` and reported as "[INTAKE GAVE UP]".
+  failing for `give_up_after` seconds is skipped and reported as "[INTAKE GAVE UP]".
   The health monitor turns both into a Saved Messages notice.
 """
 
@@ -25,6 +27,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
+from .replies import keys_starting
+
 SourceKey = Tuple[int, Optional[int]]
 Routes = List[Dict[str, Any]]
 Deliver = Callable[[Dict[str, Any], List[Any], str], Awaitable[bool]]
@@ -32,6 +36,8 @@ log = logging.getLogger("engine-intake")
 PAGE = 50
 MAX_PAGES = 10
 ALBUM_SETTLE_SECONDS = 2.0
+ALBUM_GATHER_SECONDS = 0.6  # Telethon's own Album event waits 0.5 s for more items
+GIVE_UP_SECONDS = 3600.0
 
 
 class Checkpoints:
@@ -63,11 +69,20 @@ class Checkpoints:
 
 
 @dataclass
+class _Album:
+    items: Dict[int, Any]
+    due: float  # loop time after which no more items are expected
+
+
+@dataclass
 class _Source:
     checkpoint: int
     handled: Set[int] = field(default_factory=set)  # message ids above the checkpoint
     queued: Set[int] = field(default_factory=set)
     attempts: Dict[int, int] = field(default_factory=dict)
+    first_failure: Dict[int, float] = field(default_factory=dict)
+    albums: Dict[int, _Album] = field(default_factory=dict)  # grouped_id -> items being gathered
+    album_queued: asyncio.Event = field(default_factory=asyncio.Event)
     queue: "asyncio.PriorityQueue[Tuple[int, int, List[Any], str, float]]" = field(
         default_factory=asyncio.PriorityQueue
     )
@@ -110,7 +125,8 @@ class Intake:
         pending: Optional[Callable[[Dict[str, Any], List[Any]], bool]] = None,
         watchdog_seconds: float = 30.0,
         stale_after: Optional[float] = None,
-        max_attempts: int = 120,
+        give_up_after: float = GIVE_UP_SECONDS,
+        album_gather: float = ALBUM_GATHER_SECONDS,
         fetch_concurrency: int = 3,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
@@ -125,13 +141,15 @@ class Intake:
         self.pending = pending
         self.watchdog_seconds = watchdog_seconds
         self.stale_after = stale_after
-        self.max_attempts = max(1, max_attempts)
+        self.give_up_after = give_up_after
+        self.album_gather = album_gather
         self.fetch_limit = asyncio.Semaphore(max(1, fetch_concurrency))
         self.clock = clock
         self.sleep = sleep
         self.sources: Dict[SourceKey, _Source] = {}
         self.order = itertools.count()
         self.tasks: List["asyncio.Task[None]"] = []
+        self.album_tasks: Set["asyncio.Task[None]"] = set()
         self.closing = False  # set on shutdown: no new deliveries start
         self.inflight = 0
 
@@ -179,24 +197,69 @@ class Intake:
 
     async def on_message(self, event: Any) -> None:
         message = event.message
-        if getattr(message, "grouped_id", None):
-            return  # albums arrive whole through on_album
         for source in self.sources_for(event.chat_id, message):
-            await self.submit(source, [message], "telegram_push")
+            if getattr(message, "grouped_id", None):
+                self.gather(source, message)
+            else:
+                await self.submit(source, [message], "telegram_push")
 
-    async def on_album(self, event: Any) -> None:
-        unit = sorted(event.messages or [], key=lambda m: int(m.id))
-        if unit:
-            for source in self.sources_for(event.chat_id, unit[0]):
-                await self.submit(source, unit, "telegram_album")
+    # -- albums ------------------------------------------------------------------
+    def gather(self, source: SourceKey, message: Any) -> None:
+        """Collect an album item; the album is queued once no item came for `album_gather` s.
+
+        Telethon's Album event is not used: it hands albums over late enough for a
+        newer single post to overtake them, and it keeps every album it ever saw."""
+        state = self.sources.get(source)
+        if state is None or self.closing:
+            return  # the next sweep reads it from the checkpoint
+        loop = asyncio.get_running_loop()
+        grouped = int(message.grouped_id)
+        album = state.albums.get(grouped)
+        if album is None:
+            album = state.albums[grouped] = _Album(items={}, due=0.0)
+            task = loop.create_task(self._queue_album(source, grouped, album))
+            self.album_tasks.add(task)  # the loop holds tasks weakly
+            task.add_done_callback(self.album_tasks.discard)
+        album.items[int(message.id)] = message
+        album.due = loop.time() + self.album_gather
+
+    async def _queue_album(self, source: SourceKey, grouped: int, album: _Album) -> None:
+        state = self.sources[source]
+        loop = asyncio.get_running_loop()
+        try:
+            while album.due > loop.time():
+                await asyncio.sleep(album.due - loop.time())
+            state.albums.pop(grouped, None)
+            await self.submit(source, list(album.items.values()), "telegram_album")
+        except Exception as exc:
+            log.warning("[INTAKE ALBUM GATHER FAILED] %s source=%s %s", self.name, source, exc)
+        finally:
+            state.albums.pop(grouped, None)
+            state.album_queued.set()
+
+    async def _older_album_gathering(self, state: _Source, first: int) -> bool:
+        """An album older than `first` is still being gathered: wait for it (bounded)."""
+        if not any(album.items and min(album.items) < first for album in state.albums.values()):
+            return False
+        state.album_queued.clear()
+        try:
+            await asyncio.wait_for(state.album_queued.wait(), self.album_gather * 4 + 1.0)
+        except asyncio.TimeoutError:
+            pass
+        return True
 
     async def worker(self, source: SourceKey) -> None:
         state = self.sources[source]
         while True:
-            first, _, unit, reason, queued_at = await state.queue.get()
+            first, order, unit, reason, queued_at = await state.queue.get()
+            requeued = False
             try:
                 if self.closing:
                     continue  # left for the next start's first sweep
+                if await self._older_album_gathering(state, first):
+                    await state.queue.put((first, order, unit, reason, queued_at))  # after the album
+                    requeued = True
+                    continue
                 if self._stale(source, unit, _age(unit, self.clock())):
                     state.handled.update(_ids(unit))  # waited too long in the queue (flood wait, outage)
                     state.attempts.pop(first, None)
@@ -222,7 +285,8 @@ class Intake:
             except Exception as exc:  # never let one post stop the source
                 log.exception("[INTAKE ERROR] %s source=%s ids=%s %s", self.name, source, _ids(unit), exc)
             finally:
-                state.queued.discard(first)
+                if not requeued:
+                    state.queued.discard(first)
                 state.queue.task_done()
 
     async def deliver_unit(self, source: SourceKey, unit: List[Any], reason: str) -> bool:
@@ -247,16 +311,21 @@ class Intake:
         first = int(unit[0].id)
         if ok:
             state.attempts.pop(first, None)
+            state.first_failure.pop(first, None)
             state.handled.update(_ids(unit))
             return
+        # Time-based: independent of the watchdog interval, and of flood waits
+        # that fail every retry at once.
         state.attempts[first] = state.attempts.get(first, 0) + 1
-        if state.attempts[first] >= self.max_attempts:
+        since = state.first_failure.setdefault(first, self.clock())
+        if self.clock() - since >= self.give_up_after:
             log.error(
                 "[INTAKE GAVE UP] route=%s ids=%s attempts=%s",
                 self._names(source),
                 _ids(unit),
                 state.attempts.pop(first),
             )
+            state.first_failure.pop(first, None)
             state.handled.update(_ids(unit))
 
     # -- watchdog ----------------------------------------------------------------
@@ -306,6 +375,9 @@ class Intake:
         if advance > state.checkpoint:
             state.checkpoint = advance
             state.handled = {i for i in state.handled if i > advance}
+            for failures in (state.attempts, state.first_failure):  # e.g. deleted before success
+                for old in [i for i in failures if i <= advance]:
+                    del failures[old]
             self.checkpoints.set(source, advance)
         return queued
 
@@ -395,7 +467,6 @@ class Intake:
 
         chats = sorted({source[0] for source in self.groups})
         self.client.add_event_handler(self._safe(self.on_message), events.NewMessage(chats=chats))
-        self.client.add_event_handler(self._safe(self.on_album), events.Album(chats=chats))
 
     def _safe(self, handler: Callable[[Any], Awaitable[None]]) -> Callable[[Any], Awaitable[None]]:
         async def run(event: Any) -> None:
@@ -432,8 +503,8 @@ def last_delivered(message_map: Any, route: Dict[str, Any]) -> int:
     prefix = f"{int(route['source_chat'])}:"
     suffix = f":{int(route['dest_chat'])}:{int(route['dest_topic'])}"
     newest = 0
-    for key in message_map:
-        if key.startswith(prefix) and key.endswith(suffix):
+    for key in keys_starting(message_map, prefix):
+        if key.endswith(suffix):
             try:
                 newest = max(newest, int(key.split(":")[1]))
             except (IndexError, ValueError):

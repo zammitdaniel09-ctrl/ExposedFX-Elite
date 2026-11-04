@@ -164,3 +164,26 @@ ALT `/data-alt`: session, message map, route checkpoints, last-N import state,
   `python -m unittest discover -s tests` and
   `black --check --skip-magic-trailing-comma -l 110 telegram_worker scripts tests`
   must pass (CI runs all three plus pyflakes on the live workers and engine).
+
+## Obsolete MAIN variables (safe to delete in Railway)
+
+No code reads these any more (checked 4 Nov 2026); they belong to retired
+one-time jobs, the removed legacy copy path or the shadow-mode switch.
+Deleting them changes nothing; Railway restarts MAIN once.
+
+`ALLOW_EMPTY_TOPIC_LAST50_V1`, `ALLOW_MARKET_SLAYERS_LAST50_V1`,
+`ALLOW_MARKET_SLAYERS_LAST50_V2`, `ALLOW_ONE_TIME_BACKFILL_3838973021_TO_6813`,
+`ALLOW_ONE_TIME_BACKFILL_3893360328_TO_361`, `ALLOW_RELAY2_TO_VIP1364_LAST50_V1`,
+`ALLOW_RELAY2_TO_VIP1364_LAST50_V2`, `ALLOW_RELAY2_TO_VIP1364_LAST50_V3`,
+`ALLOW_SAFE_PROBE_3229476368_TO_5947`, `AUTO_SYNC_TOPIC_TITLES`, `AUTO_TOKEN`,
+`BLOCKED_SENDER_CLEANUP_ENABLED`, `BLOCKED_SENDER_CLEANUP_LIMIT`,
+`DEDUP_WINDOW_SECONDS`, `ENABLE_ALBUM_HANDLER`, `ENABLE_ALBUM_REUPLOAD_FALLBACK`,
+`ENGINE_ROUTES`, `FAST_TOPIC11_POLL_SECONDS`, `FAST_VIP_POLL_SECONDS`,
+`MIRROR_STRUCTURE_REPAIR`, `NEW_MIRROR_BACKFILL_ALL_ON_START`,
+`NEW_MIRROR_BACKFILL_LIMIT`, `NEW_MIRROR_BACKFILL_ON_START`,
+`NEW_MIRROR_POLLING_ENABLED`, `NEW_MIRROR_POLL_LIMIT`, `NEW_MIRROR_POLL_SECONDS`,
+`NEW_MIRROR_STARTUP_PROBE`, `NIXPACKS_START_CMD`,
+`PROCESS_GROUPED_MESSAGES_IN_NEW_HANDLER`, `RELAY115_VIP1375_LAST50_ONCE`,
+`ROUTE_TITLE_CHECK_INTERVAL_SECONDS`, `SERVER_URL` (MAIN's copy; the server
+keeps its own), `VERIFY_DEST_TOPICS_ON_START`, `VERIFY_ROUTE_TITLES`,
+`VIP7_REBUILD_FETCH_LIMIT`.

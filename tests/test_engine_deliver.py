@@ -234,6 +234,18 @@ class DelivererTests(unittest.TestCase):
         )
         self.assertEqual(len(self.client.calls), 1, "7250 -> VIP12161 is the one allowed path")
 
+    def test_reply_to_a_deleted_parent_falls_back_to_the_topic(self):
+        self.worker.message_map[f"{RELAY}:90:{VIP}:1364"] = 7777
+        reply = message(91, "TP1 hit")
+        reply.reply_to = SimpleNamespace(reply_to_msg_id=90, reply_to_top_id=2, top_msg_id=None)
+        reply.reply_to_msg_id = 90
+        self.client.fail = [RuntimeError("REPLY_MESSAGE_ID_INVALID (caused by SendMessageRequest)")]
+        with self.assertLogs("imperium-worker", "WARNING") as logs:
+            self.assertTrue(self.deliver([reply]))
+        self.assertEqual([c[3]["reply_to"] for c in self.client.calls], [7777, 1364])
+        self.assertTrue(any("REPLY TARGET GONE" in line for line in logs.output))
+        self.assertEqual(self.worker.message_map[f"{RELAY}:91:{VIP}:1364"], 9001)
+
     def test_unsupported_post_is_handled_without_sending(self):
         self.assertTrue(self.deliver([message(70, "")]))
         self.assertEqual(self.client.calls, [])

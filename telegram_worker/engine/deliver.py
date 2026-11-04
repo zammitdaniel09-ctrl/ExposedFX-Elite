@@ -56,6 +56,12 @@ def is_transient(exc: Exception) -> bool:
     return any(p in text for p in TRANSIENT)
 
 
+def reply_target_gone(exc: Exception) -> bool:
+    """Telegram refused the reply parent (deleted or invalid), not the post."""
+    text = str(exc).upper()
+    return "REPLY" in text or "MSG_ID_INVALID" in text or "MESSAGE_ID_INVALID" in text
+
+
 def _as_list(sent) -> List:
     if sent is None:
         return []
@@ -256,7 +262,9 @@ class Deliverer:
 
     async def send(self, legacy_route, route: Route, unit, plan: Send):
         last_exc = None
-        for attempt in range(1, self.attempts + 1):
+        attempt = 0
+        while attempt < self.attempts:
+            attempt += 1
             try:
                 return await self._send_once(legacy_route, route, unit, plan)
             except FloodWaitError as exc:
@@ -277,6 +285,18 @@ class Deliverer:
                 if reason:
                     policy.stop_route(legacy_route, reason, log)
                     raise
+                if plan.reply_to != route.dest_topic and reply_target_gone(exc):
+                    # The mapped parent was deleted in the destination: post in
+                    # the topic instead of failing this post forever (as ALT does).
+                    log.warning(
+                        "[REPLY TARGET GONE] route=%s source_msg=%s parent=%s fallback=topic_root engine=True",
+                        route.name,
+                        unit[0].id,
+                        plan.reply_to,
+                    )
+                    plan = Send(**{**plan.__dict__, "reply_to": route.dest_topic})
+                    attempt -= 1  # the fallback is not a retry
+                    continue
                 if attempt < self.attempts and is_transient(exc):
                     wait = min(2 * attempt, self.sleep_cap)
                     log.warning(

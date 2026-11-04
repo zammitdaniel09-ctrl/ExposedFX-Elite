@@ -187,6 +187,72 @@ class DelivererTests(unittest.TestCase):
         status, _ = asyncio.run(self.deliverer.copy_unit(owner_routes, route, engine_route, [message(9, "t.me/x")]))
         self.assertEqual(status, "filtered")
 
+    def test_vip7_reply_recovers_a_missed_signal_parent_first(self):
+        from datetime import timedelta
+        from telegram_worker import reply_hardening
+        from telegram_worker.community_emoji_registry import CommunityEmojiRegistry
+
+        registry = CommunityEmojiRegistry(Path(self.tmp.name))
+        registry.entries = {a: {"type": "custom", "document_id": 5000 + i, "fallback": "✅"}
+                            for i, a in enumerate(("Boom", "GreenTick", "RedCross", "Warning"))}
+        self.worker.EMOJI_REGISTRY = registry
+        vip7 = {"name": "Relay508 To VIP7", "source_chat": RELAY, "source_topic": 508, "dest_chat": VIP,
+                "dest_topic": 7}
+        route = Route.from_legacy(vip7, formatter="imperium_vip")
+        parent = message(40, "Buy xauusd now\n\nTp 4324\nTp 4337\n\nSl 4308")
+        parent.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        reply = message(41, "Tp1 hit ✅")
+        reply.reply_to = SimpleNamespace(reply_to_msg_id=40, reply_to_top_id=508, top_msg_id=None)
+        reply.reply_to_msg_id = 40
+
+        async def get_messages(chat, ids):
+            return parent if ids == 40 else None
+
+        async def no_mapping(*args, **kwargs):
+            return None
+
+        self.client.get_messages = get_messages
+        original = reply_hardening.ensure_reply_mapping
+        reply_hardening.ensure_reply_mapping = no_mapping
+        try:
+            self.assertTrue(asyncio.run(self.deliverer.deliver(vip7, route, [reply])))
+        finally:
+            reply_hardening.ensure_reply_mapping = original
+        self.assertEqual(len(self.client.calls), 2, "parent signal first, then the reply")
+        parent_id = self.worker.message_map[f"{RELAY}:40:{VIP}:7"]
+        self.assertEqual(self.client.calls[1][3]["reply_to"], parent_id)
+        self.assertNotEqual(self.client.calls[0][2], parent.message, "the parent is restyled for VIP 7")
+
+    def test_vip7_does_not_import_an_old_or_non_signal_parent(self):
+        from datetime import timedelta
+        from telegram_worker import reply_hardening
+
+        vip7 = {"name": "Relay508 To VIP7", "source_chat": RELAY, "source_topic": 508, "dest_chat": VIP,
+                "dest_topic": 7}
+        route = Route.from_legacy(vip7, formatter="imperium_vip")
+        old_parent = message(50, "Buy xauusd now\n\nTp 4324\n\nSl 4308")
+        old_parent.date = datetime.now(timezone.utc) - timedelta(days=2)
+        reply = message(51, "Tp1 hit")
+        reply.reply_to = SimpleNamespace(reply_to_msg_id=50, reply_to_top_id=508, top_msg_id=None)
+        reply.reply_to_msg_id = 50
+
+        async def get_messages(chat, ids):
+            return old_parent
+
+        async def no_mapping(*args, **kwargs):
+            return None
+
+        self.client.get_messages = get_messages
+        original = reply_hardening.ensure_reply_mapping
+        reply_hardening.ensure_reply_mapping = no_mapping
+        try:
+            with self.assertLogs("imperium-worker", "WARNING"):
+                self.assertTrue(asyncio.run(self.deliverer.deliver(vip7, route, [reply])))
+        finally:
+            reply_hardening.ensure_reply_mapping = original
+        self.assertEqual(len(self.client.calls), 1)
+        self.assertEqual(self.client.calls[0][3]["reply_to"], 7, "falls back to the topic")
+
     def test_structure_check(self):
         source = message(1, "a  b", media=True)
         self.assertIsNone(structure_problem(source, SimpleNamespace(message="a b", raw_text="a b", text="a b",

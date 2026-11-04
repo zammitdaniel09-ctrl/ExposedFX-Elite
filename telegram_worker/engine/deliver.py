@@ -139,10 +139,55 @@ class Deliverer:
         # destination (exact text/media match), then resolve the target again.
         from telegram_worker.reply_hardening import ensure_reply_mapping
 
-        await ensure_reply_mapping(self.worker, unit[0], legacy_route,
-                                   registry=self.planner.context.get("emoji_registry"), logger=log)
+        resolved = await ensure_reply_mapping(self.worker, unit[0], legacy_route,
+                                              registry=self.planner.context.get("emoji_registry"), logger=log)
+        if not resolved and route.formatter == "imperium_vip":
+            await self._recover_signal_parent(legacy_route, route, unit[0])
         target = reply_target(unit[0], route, self.planner.maps)
         return plan if target == plan.reply_to else Send(**{**plan.__dict__, "reply_to": target})
+
+    async def _recover_signal_parent(self, legacy_route, route: Route, message):
+        """VIP topic 7: copy the one XAU signal a reply points at when it was missed.
+
+        Only an explicitly replied-to parent that parses as a signal and is at
+        most 24 h older than the reply; never other history.
+        """
+        from telegram_worker.imperium_vip_formatter import parse_xauusd_signal
+        from telegram_worker.imperium_vip_inline_hook import (
+            MAX_REPLY_PARENT_RECOVERY_AGE_SECONDS, format_imperium_vip_text,
+        )
+
+        parents = reply_parent_ids(message, route)
+        if not parents:
+            return None
+        try:
+            parent = await self.client.get_messages(route.source_chat, ids=parents[0])
+        except Exception as exc:
+            log.warning("[IMPERIUM VIP REPLY PARENT FETCH FAILED] parent=%s %s: %s engine=True",
+                        parents[0], type(exc).__name__, exc)
+            return None
+        text = (getattr(parent, "message", None) or getattr(parent, "raw_text", None) or "") if parent else ""
+        if not text or not parse_xauusd_signal(text):
+            return None
+        try:
+            age = max(0.0, message.date.timestamp() - parent.date.timestamp())
+        except Exception:
+            age = None
+        if age is None or age > MAX_REPLY_PARENT_RECOVERY_AGE_SECONDS:
+            log.warning("[IMPERIUM VIP REPLY PARENT TOO OLD] parent=%s age=%s max=%s engine=True",
+                        parents[0], age, MAX_REPLY_PARENT_RECOVERY_AGE_SECONDS)
+            return None
+        registry = self.planner.context.get("emoji_registry")
+        if format_imperium_vip_text(text, getattr(parent, "entities", None), registry)[2] != "signal":
+            return None
+        parent_plan = self.planner.plan(route, [parent], legacy_route)
+        if not isinstance(parent_plan, Send):
+            return None
+        sent = await self.send(legacy_route, route, [parent], parent_plan)
+        dest_id = getattr(_as_list(sent)[0], "id", None) if _as_list(sent) else None
+        log.warning("[IMPERIUM VIP REPLY PARENT RECOVERED BY COPY] source_parent=%s dest_parent=%s age=%.1fs "
+                    "signal_only=True engine=True", parents[0], dest_id, age)
+        return dest_id
 
     async def send(self, legacy_route, route: Route, unit, plan: Send):
         last_exc = None

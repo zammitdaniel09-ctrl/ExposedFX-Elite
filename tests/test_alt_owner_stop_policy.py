@@ -66,11 +66,6 @@ class AltStopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await ns["send_single"](route,None))
         self.assertIsNone(await ns["send_album"](route,[]))
 
-    async def test_pair_startup_is_skipped_when_owner_stopped_both_routes(self):
-        ns=load_functions("initialise_alt_pair106_no_history",ROUTES=[],alt_pair106_route=lambda r:False)
-        await ns["initialise_alt_pair106_no_history"]()
-        # The original pair initializer would raise with zero routes.
-
 
 if __name__=="__main__":
     unittest.main()

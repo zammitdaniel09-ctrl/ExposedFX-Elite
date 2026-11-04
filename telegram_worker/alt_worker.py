@@ -37,11 +37,6 @@ SELECT_DEST_TOPIC = 8323
 SELECT_LAST_COUNT = 30
 SELECT_LAST_STATE_FILE = "alt_select7194_to_relay8323_last30_v1.json"
 
-SPLIT_PAIR_SOURCE_A = -1004347858259
-SPLIT_PAIR_SOURCE_B = -1003252087470
-SPLIT_PAIR_DEST_CHAT = -1004367822325
-SPLIT_PAIR_DEST_A = 2583
-SPLIT_PAIR_DEST_B = 2585
 
 
 def _swap_replaced_source_in_env() -> int:
@@ -79,64 +74,8 @@ def _swap_replaced_source_in_env() -> int:
 _SOURCE_ROUTE_SWAPS = _swap_replaced_source_in_env()
 
 
-def _ensure_split_routes_alongside_pair106_in_env():
-    """Keep the existing paired topic106 forwarding AND add split routes.
-
-    Required simultaneous behavior:
-      -1004347858259 -> relay106 (paired/deduped) AND relay2583
-      -1003252087470 -> relay106 (paired/deduped) AND relay2585
-
-    No existing pair106 route is removed. Unrelated ALT routes are untouched.
-    """
-    raw = os.environ.get("ALT_ROUTES_JSON", "").strip()
-    if not raw:
-        raise RuntimeError("ALT_ROUTES_JSON is empty")
-
-    parsed = json.loads(raw)
-    items = parsed if isinstance(parsed, list) else [parsed]
-    if not isinstance(items, list):
-        raise RuntimeError("ALT_ROUTES_JSON must be a route list/object")
-
-    wanted = [
-        {
-            "name": "Split Source4347858259 To Relay2583",
-            "source_chat": SPLIT_PAIR_SOURCE_A,
-            "source_topic": None,
-            "dest_chat": SPLIT_PAIR_DEST_CHAT,
-            "dest_topic": SPLIT_PAIR_DEST_A,
-        },
-        {
-            "name": "Split Source3252087470 To Relay2585",
-            "source_chat": SPLIT_PAIR_SOURCE_B,
-            "source_topic": None,
-            "dest_chat": SPLIT_PAIR_DEST_CHAT,
-            "dest_topic": SPLIT_PAIR_DEST_B,
-        },
-    ]
-
-    added = 0
-    for route in wanted:
-        exists = any(
-            isinstance(item, dict)
-            and int(item.get("source_chat", 0)) == int(route["source_chat"])
-            and (
-                int(item["source_topic"])
-                if item.get("source_topic") not in (None, "")
-                else None
-            ) == route["source_topic"]
-            and int(item.get("dest_chat", 0)) == int(route["dest_chat"])
-            and int(item.get("dest_topic", 0)) == int(route["dest_topic"])
-            for item in items
-        )
-        if not exists:
-            items.append(route)
-            added += 1
-
-    os.environ["ALT_ROUTES_JSON"] = json.dumps(items, separators=(",", ":"))
-    return added
 
 
-_SPLIT_PAIR_ROUTES_ADDED = _ensure_split_routes_alongside_pair106_in_env()
 
 def _hard_stop_2530_in_env() -> int:
     """Force-retire relay topic 2530 in both directions before legacy import.
@@ -266,20 +205,7 @@ from telegram_worker.alt_reply_hardening import install_alt_reply_hardening
 from telegram_worker.alt_new_topics7248_7250_last20 import (
     run_alt_new_topics_last20_once,
 )
-from telegram_worker.alt_split_pair_last100 import run_alt_split_pair_last100_once
 
-
-# Preserve the original paired-provider dedupe/baseline engine while replacing
-# the retired old source id with the current source id. The same two providers
-# therefore continue feeding relay topic106, first-copy-wins, while ALSO
-# feeding their new independent relay2583/relay2585 routes.
-if hasattr(_legacy, "ALT_PAIR106_SOURCE_CHATS"):
-    _legacy.ALT_PAIR106_SOURCE_CHATS = {
-        NEW_PAIR106_SOURCE_CHAT
-        if int(chat_id) == OLD_PAIR106_SOURCE_CHAT
-        else int(chat_id)
-        for chat_id in _legacy.ALT_PAIR106_SOURCE_CHATS
-    }
 
 # Fail closed if a configured route somehow still points at the retired source.
 _retired_routes = [
@@ -292,17 +218,6 @@ if _retired_routes:
         "Retired Telegram source still present after migration: "
         f"{_retired_routes}"
     )
-
-_legacy.log.warning(
-    "[ALT PAIR106 + SPLIT ROUTES READY] "
-    f"pair106_sources={sorted(getattr(_legacy, 'ALT_PAIR106_SOURCE_CHATS', []))} "
-    f"pair106_dest={SPLIT_PAIR_DEST_CHAT}_106 "
-    f"source_a={SPLIT_PAIR_SOURCE_A} split_dest_a={SPLIT_PAIR_DEST_CHAT}_{SPLIT_PAIR_DEST_A} "
-    f"source_b={SPLIT_PAIR_SOURCE_B} split_dest_b={SPLIT_PAIR_DEST_CHAT}_{SPLIT_PAIR_DEST_B} "
-    f"split_routes_added={_SPLIT_PAIR_ROUTES_ADDED} "
-    "PAIR106_KEPT=False FIRST_COPY_WINS=True SPLIT_FORWARDING=False OWNER_STOPPED=True"
-)
-
 
 install_alt_reply_hardening(_legacy, logger=_legacy.log)
 
@@ -348,9 +263,6 @@ ROUTES = _legacy.ROUTES
 SOURCE_CHATS = _legacy.SOURCE_CHATS
 
 
-async def _run_split_pair_last100_guarded():
-    _legacy.log.warning("[OWNER ALT SPLIT STOPPED] ACCESS_UNAVAILABLE=True RETRY=False")
-    return
 
 
 async def _run_new_topics_last20_guarded():
@@ -403,9 +315,6 @@ async def main():
     _legacy.log.warning("[ALT RUNTIME] telethon=%s python=%s liveness=True json_logs=True",
                         __import__("telethon").__version__, __import__("sys").version.split()[0])
     install_health_monitor("ExposedFX ALT", _legacy.client, _legacy.DATA_DIR)
-    split_history_task = asyncio.create_task(
-        _run_split_pair_last100_guarded()
-    )
     new_topics_last20_task = asyncio.create_task(
         _run_new_topics_last20_guarded()
     )
@@ -417,7 +326,6 @@ async def main():
         liveness.exit_disconnected("ExposedFX ALT", _legacy.DATA_DIR, _legacy.log)
     finally:
         for task in (
-            split_history_task,
             new_topics_last20_task,
             select_last30_task,
         ):

@@ -2205,6 +2205,20 @@ async def warm_entity_cache_once():
 # start before trusting it.
 
 
+async def recover_deployment_gaps(worker):
+    """Deliver FASTVIP2 posts that arrived while MAIN was restarting (engine/gaps.py)."""
+    from telegram_worker.engine.gaps import recover_gaps
+
+    for _ in range(60):  # VIP7 restyling needs the emoji registry; it is ready within a second or two
+        if EMOJI_REGISTRY is not None:
+            break
+        await asyncio.sleep(0.25)
+    try:
+        await asyncio.wait_for(recover_gaps(worker, DELIVERY_ENGINE, fast_vip_routes()), timeout=120)
+    except Exception as exc:
+        log.warning(f"[GAP CHECK FAILED SAFE] {type(exc).__name__}: {exc} LIVE_FORWARDING_CONTINUES=True")
+
+
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     liveness.LoopWatchdog("ExposedFX MAIN", DATA_DIR, log).start()
@@ -2253,6 +2267,7 @@ async def main():
         f"telethon={telethon_version} python={sys.version.split()[0]}"
     )
     asyncio.create_task(relay508_mapped_edit_reconcile_loop())
+    await recover_deployment_gaps(owner_module)
     asyncio.create_task(fast_vip_event_router_v2())
     asyncio.create_task(stats.loop(client))
     log.info("Weekly stats reporter running for Sunday 00:00 Europe/Malta")

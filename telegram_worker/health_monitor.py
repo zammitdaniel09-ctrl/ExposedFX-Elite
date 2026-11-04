@@ -60,6 +60,9 @@ FLOOD = (
     re.compile(r"\[ALT FLOODWAIT\] route=(?P<route>.+?) seconds=(?P<seconds>\d+)"),
     re.compile(r"FLOODWAIT\] label=(?P<route>\S+) attempt=\S+ wait=(?P<seconds>\d+)s"),
 )
+GAP_STALE = re.compile(
+    r"\[GAP STALE NOT SENT\] route=(?P<route>.+?) ids=(?P<ids>\[[^\]]*\]) age=(?P<age>\w+)s"
+)
 
 
 class HealthMonitor:
@@ -154,6 +157,16 @@ class HealthMonitor:
                         ("flood", route), f"⏳ {self.service}: Telegram flood wait {seconds}s ({route})"
                     )
                 return
+        match = GAP_STALE.search(text)
+        if match:
+            route = match.group("route").strip()
+            self._alert(
+                ("gap", route, match.group("ids")),
+                f"⏭️ {self.service}: {route}\nPost(s) {match.group('ids')} arrived during a restart and are "
+                f"{match.group('age')}s old, so they were not sent (stale signals can mislead). "
+                "Forward manually if still relevant.",
+            )
+            return
         if level >= logging.ERROR and has_exc:
             first = text.splitlines()[0][:200] if text else "error"
             self._alert(("error", first[:60]), f"\U0001f6a8 {self.service}: unexpected error\n{first}")

@@ -52,6 +52,44 @@ class AltBackendFixTests(unittest.IsolatedAsyncioTestCase):
         source = " ".join((ROOT / "telegram_worker/alt_worker_legacy.py").read_text(encoding="utf-8").split())
         self.assertIn("fetch_route_messages(route, WATCHDOG_LIMIT, min_id=last_id)", source)
 
+    async def test_send_single_preserves_replies_and_survives_a_deleted_parent(self):
+        """send_single is the reply-hardened version (moved from alt_reply_hardening)."""
+        from telegram_worker import owner_forwarding_policy as policy
+        from telegram_worker.alt_reply_hardening import _reply_target_invalid, _reupload_cannot_help
+
+        calls = []
+
+        class Client:
+            async def send_message(self, chat, text, **kwargs):
+                calls.append(kwargs["reply_to"])
+                if kwargs["reply_to"] == 555:
+                    raise RuntimeError("REPLY_MESSAGE_ID_INVALID")
+                return SimpleNamespace(id=900)
+
+        async def translated_payload(route, message):
+            return message.message, []
+
+        async def resolve_reply_target(worker, route, message, logger=None):
+            return 555
+
+        ns = load_functions(
+            "send_single",
+            owner_policy=policy,
+            alt_vip5_block=lambda route: False,
+            client=Client(),
+            has_username_mention=lambda m: False,
+            translated_payload=translated_payload,
+            real_media=lambda m: False,
+            resolve_reply_target=resolve_reply_target,
+            _reply_target_invalid=_reply_target_invalid,
+            _reupload_cannot_help=_reupload_cannot_help,
+            _WORKER=None,
+        )
+        route = dict(name="ALT RELAY 1", source_chat=-1003364661276, dest_chat=-1004367822325, dest_topic=2)
+        sent = await ns["send_single"](route, SimpleNamespace(id=5, message="TP1 hit"))
+        self.assertEqual(sent.id, 900)
+        self.assertEqual(calls, [555, 2], "mapped parent first, topic root after the parent was deleted")
+
     async def test_copies_wait_for_dialogs_then_proceed(self):
         ready = asyncio.Event()
         ns = load_functions("wait_dialogs_ready", DIALOGS_READY=ready, DIALOGS_READY_WAIT_SECONDS=5)

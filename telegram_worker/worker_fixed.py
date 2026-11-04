@@ -339,9 +339,7 @@ USERNAME_HANDLE_RE = re.compile(
 )
 
 
-def has_username_mention(
-    message,
-):
+def has_username_mention(message):
     """
     Block an actual Telegram-style @username.
 
@@ -356,91 +354,23 @@ def has_username_mention(
     by an email/local-part character, so addresses such as
     test@example.com remain allowed.
     """
-
     if not FILTER_USERNAME_MENTIONS:
         return False
-
-
-    entities = (
-        getattr(
-            message,
-            "entities",
-            None,
-        )
-        or []
-    )
-
-
+    entities = getattr(message, 'entities', None) or []
     for entity in entities:
-
-        if (
-            type(entity).__name__
-            == "MessageEntityMention"
-        ):
-
+        if type(entity).__name__ == 'MessageEntityMention':
             return True
-
-
-    text = text_of(
-        message
-    )
-
-
+    text = text_of(message)
     if not text:
         return False
+    return bool(USERNAME_HANDLE_RE.search(text))
 
 
-    return bool(
-        USERNAME_HANDLE_RE.search(
-            text
-        )
-    )
-
-
-def log_username_filter_main(
-    messages,
-    context,
-    route=None,
-    source_chat=None,
-    source_topic=None,
-):
-
-    messages = list(
-        messages
-        or []
-    )
-
-
-    ids = [
-        int(
-            getattr(
-                message,
-                "id",
-                0,
-            )
-            or 0
-        )
-        for message in messages
-    ]
-
-
-    route_name = (
-        route.get("name")
-        if isinstance(route, dict)
-        else None
-    )
-
-
-    log.warning(
-        "[USERNAME MENTION FILTERED] "
-        "account=MAIN "
-        f"context={context} "
-        f"source={source_chat}_{source_topic} "
-        f"ids={ids} "
-        f"route={route_name} "
-        "SENT=False "
-        "FILTER=EntityOrStandaloneUsername"
-    )
+def log_username_filter_main(messages, context, route=None, source_chat=None, source_topic=None):
+    messages = list(messages or [])
+    ids = [int(getattr(message, 'id', 0) or 0) for message in messages]
+    route_name = route.get('name') if isinstance(route, dict) else None
+    log.warning(f'[USERNAME MENTION FILTERED] account=MAIN context={context} source={source_chat}_{source_topic} ids={ids} route={route_name} SENT=False FILTER=EntityOrStandaloneUsername')
 
 
 # END USERNAME_MENTION_FILTER_V2
@@ -545,52 +475,29 @@ def _marked_peer_id(peer):
     Convert Telethon PeerChannel / PeerChat IDs into the same
     marked format used by ROUTES, e.g. -1003252087470.
     """
-
     if peer is None:
         return None
-
     if isinstance(peer, int):
         return int(peer)
-
-    channel_id = getattr(
-        peer,
-        "channel_id",
-        None,
-    )
-
+    channel_id = getattr(peer, 'channel_id', None)
     if channel_id:
         try:
-            return int(
-                "-100" + str(abs(int(channel_id)))
-            )
+            return int('-100' + str(abs(int(channel_id))))
         except Exception:
             pass
-
-    chat_id = getattr(
-        peer,
-        "chat_id",
-        None,
-    )
-
+    chat_id = getattr(peer, 'chat_id', None)
     if chat_id:
         try:
             value = int(chat_id)
             return -abs(value)
         except Exception:
             pass
-
-    user_id = getattr(
-        peer,
-        "user_id",
-        None,
-    )
-
+    user_id = getattr(peer, 'user_id', None)
     if user_id:
         try:
             return int(user_id)
         except Exception:
             pass
-
     return None
 
 
@@ -604,34 +511,15 @@ def forward_origin_chat_ids(message):
 
     without relying only on matching message text.
     """
-
     out = set()
-
-    fwd = getattr(
-        message,
-        "fwd_from",
-        None,
-    )
-
+    fwd = getattr(message, 'fwd_from', None)
     if not fwd:
         return out
-
-    for attr in (
-        "from_id",
-        "saved_from_peer",
-    ):
-
-        peer = getattr(
-            fwd,
-            attr,
-            None,
-        )
-
+    for attr in ('from_id', 'saved_from_peer'):
+        peer = getattr(fwd, attr, None)
         marked = _marked_peer_id(peer)
-
         if marked is not None:
             out.add(marked)
-
     return out
 
 
@@ -649,26 +537,14 @@ def forward_origin_chat_ids(message):
 
 
 
-def should_hard_block_sender(message, context="", route=None):
+def should_hard_block_sender(message, context='', route=None):
     ids = sender_ids_for_message(message)
     matched = sorted(ids & BLOCKED_SENDER_IDS)
-
     if not matched:
         return False
-
-    route_name = route.get("name") if isinstance(route, dict) else None
-    route_dest = (
-        f"{route.get('dest_chat')}_{route.get('dest_topic')}"
-        if isinstance(route, dict)
-        else None
-    )
-
-    log.warning(
-        f"[blocked sender hard stop] blocked_ids={matched} "
-        f"all_sender_ids={sorted(ids)} msg={getattr(message, 'id', None)} "
-        f"context={context} route={route_name} dest={route_dest}"
-    )
-
+    route_name = route.get('name') if isinstance(route, dict) else None
+    route_dest = f"{route.get('dest_chat')}_{route.get('dest_topic')}" if isinstance(route, dict) else None
+    log.warning(f"[blocked sender hard stop] blocked_ids={matched} all_sender_ids={sorted(ids)} msg={getattr(message, 'id', None)} context={context} route={route_name} dest={route_dest}")
     return True
 
 
@@ -910,58 +786,44 @@ async def delete_mapped_destination_for_source(source_chat, source_msg_id):
     """
     if not MIRROR_DELETED_MESSAGES:
         return False
-
     source_chat = str(source_chat)
     source_msg_id = str(source_msg_id)
-
     targets = {}
     keys_to_remove = []
-
     for key, value in list(message_map.items()):
         try:
-            parts = str(key).split(":")
+            parts = str(key).split(':')
             if len(parts) != 4:
                 continue
-
             mapped_source_chat, mapped_source_msg_id, dest_chat, dest_topic = parts
-
             if mapped_source_chat != source_chat or mapped_source_msg_id != source_msg_id:
                 continue
-
             ids = mapped_ids_from_value(value)
             if not ids:
                 continue
-
             dest_chat_int = int(dest_chat)
             targets.setdefault(dest_chat_int, [])
             for mid in ids:
                 if mid not in targets[dest_chat_int]:
                     targets[dest_chat_int].append(mid)
-
             keys_to_remove.append(key)
-
         except Exception as exc:
-            log.warning(f"[delete mirror scan failed] key={key}: {exc}")
-
+            log.warning(f'[delete mirror scan failed] key={key}: {exc}')
     if not targets:
-        log.info(f"[delete mirror] no mapped destination for source={source_chat}:{source_msg_id}")
+        log.info(f'[delete mirror] no mapped destination for source={source_chat}:{source_msg_id}')
         return False
-
     deleted_any = False
-
     for dest_chat, ids in targets.items():
         try:
             await client.delete_messages(dest_chat, ids)
-            log.info(f"[delete mirror] deleted dest={dest_chat} msgs={ids} for source={source_chat}:{source_msg_id}")
+            log.info(f'[delete mirror] deleted dest={dest_chat} msgs={ids} for source={source_chat}:{source_msg_id}')
             deleted_any = True
         except Exception as exc:
-            log.warning(f"[delete mirror failed] dest={dest_chat} ids={ids} source={source_chat}:{source_msg_id}: {exc}")
-
+            log.warning(f'[delete mirror failed] dest={dest_chat} ids={ids} source={source_chat}:{source_msg_id}: {exc}')
     if deleted_any:
         for key in keys_to_remove:
             message_map.pop(key, None)
         save_map()
-
     return deleted_any
 
 
@@ -1207,25 +1069,9 @@ async def edit_existing_destination_in_place(
 
 
 def relay508_to_vip7_edit_route():
-    matches = [
-        route
-        for route in ROUTES
-        if (
-            int(route.get("source_chat", 0)) == -1004367822325
-            and int(route.get("source_topic", 0) or 0) == 508
-            and int(route.get("dest_chat", 0)) == -1003726286301
-            and int(route.get("dest_topic", 0)) == 7
-            and bool(route.get("live_only"))
-            and bool(route.get("strict_source_topic"))
-        )
-    ]
-
+    matches = [route for route in ROUTES if int(route.get('source_chat', 0)) == -1004367822325 and int(route.get('source_topic', 0) or 0) == 508 and (int(route.get('dest_chat', 0)) == -1003726286301) and (int(route.get('dest_topic', 0)) == 7) and bool(route.get('live_only')) and bool(route.get('strict_source_topic'))]
     if len(matches) != 1:
-        raise RuntimeError(
-            "Expected exactly one strict live Relay508 To VIP7 route; "
-            f"found={len(matches)}"
-        )
-
+        raise RuntimeError(f'Expected exactly one strict live Relay508 To VIP7 route; found={len(matches)}')
     return matches[0]
 
 
@@ -1342,45 +1188,20 @@ async def relay508_mapped_edit_reconcile_loop():
     try:
         route = relay508_to_vip7_edit_route()
     except Exception as exc:
-        log.exception(
-            "[MAPPED EDIT RECONCILER CONFIG FAILED] "
-            f"{type(exc).__name__}: {exc}"
-        )
+        log.exception(f'[MAPPED EDIT RECONCILER CONFIG FAILED] {type(exc).__name__}: {exc}')
         return
-
-    log.warning(
-        "[MAPPED EDIT RECONCILER READY] "
-        "route=Relay508 To VIP7 mapped_only=True cascade=True "
-        f"interval={MAPPED_EDIT_RECONCILE_INTERVAL_SECONDS}s "
-        f"fetch_limit={MAPPED_EDIT_RECONCILE_FETCH_LIMIT}"
-    )
-
+    log.warning(f'[MAPPED EDIT RECONCILER READY] route=Relay508 To VIP7 mapped_only=True cascade=True interval={MAPPED_EDIT_RECONCILE_INTERVAL_SECONDS}s fetch_limit={MAPPED_EDIT_RECONCILE_FETCH_LIMIT}')
     while True:
         try:
             count = await reconcile_relay508_mapped_edits_once(route)
-
             if count:
-                log.warning(
-                    "[MAPPED EDIT RECONCILE PASS] "
-                    f"updated={count}"
-                )
-
+                log.warning(f'[MAPPED EDIT RECONCILE PASS] updated={count}')
         except FloodWaitError as exc:
             wait_for = max(1, int(exc.seconds) + 1)
-
-            log.warning(
-                "[MAPPED EDIT RECONCILER FLOODWAIT] "
-                f"wait={wait_for}s"
-            )
-
+            log.warning(f'[MAPPED EDIT RECONCILER FLOODWAIT] wait={wait_for}s')
             await asyncio.sleep(wait_for)
-
         except Exception as exc:
-            log.exception(
-                "[MAPPED EDIT RECONCILER FAILED SAFE] "
-                f"{type(exc).__name__}: {exc}"
-            )
-
+            log.exception(f'[MAPPED EDIT RECONCILER FAILED SAFE] {type(exc).__name__}: {exc}')
         await asyncio.sleep(MAPPED_EDIT_RECONCILE_INTERVAL_SECONDS)
 
 # END MAIN_MAPPED_IN_PLACE_EDITS_V1
@@ -1401,10 +1222,9 @@ async def relay508_mapped_edit_reconcile_loop():
 async def get_route_poll_messages(route, limit):
     if owner_policy.is_stopped(route):
         return []
-    chat_id = int(route["source_chat"])
-    source_topic = route.get("source_topic")
+    chat_id = int(route['source_chat'])
+    source_topic = route.get('source_topic')
     limit = max(1, int(limit))
-
     if source_topic:
         try:
             msgs = await client.get_messages(chat_id, limit=limit, reply_to=int(source_topic))
@@ -1412,33 +1232,18 @@ async def get_route_poll_messages(route, limit):
                 try:
                     count = len(msgs)
                 except Exception:
-                    count = "unknown"
-                log.debug(
-                    "[new mirror topic poll fetch] route=%s source=%s_%s "
-                    "limit=%s count=%s",
-                    route["name"], chat_id, source_topic, limit, count,
-                )
+                    count = 'unknown'
+                log.debug('[new mirror topic poll fetch] route=%s source=%s_%s limit=%s count=%s', route['name'], chat_id, source_topic, limit, count)
                 return msgs
         except Exception as exc:
             reason = owner_policy.permanent_access_error(exc)
             if reason:
                 owner_policy.stop_route(route, reason, log)
                 return []
-            if route.get("strict_source_topic"):
-                log.exception(
-                    f"[STRICT SOURCE TOPIC FETCH FAILED] "
-                    f"route={route.get('name')} "
-                    f"source={chat_id}_{source_topic}. "
-                    f"NO WHOLE-CHAT FALLBACK ALLOWED: "
-                    f"{type(exc).__name__}: {exc}"
-                )
+            if route.get('strict_source_topic'):
+                log.exception(f"[STRICT SOURCE TOPIC FETCH FAILED] route={route.get('name')} source={chat_id}_{source_topic}. NO WHOLE-CHAT FALLBACK ALLOWED: {type(exc).__name__}: {exc}")
                 raise
-
-            log.warning(
-                f"[new mirror topic poll fetch failed] route={route.get('name')} "
-                f"source={chat_id}_{source_topic}: {type(exc).__name__}: {exc}. Falling back to chat latest."
-            )
-
+            log.warning(f"[new mirror topic poll fetch failed] route={route.get('name')} source={chat_id}_{source_topic}: {type(exc).__name__}: {exc}. Falling back to chat latest.")
     try:
         return await client.get_messages(chat_id, limit=limit)
     except Exception as exc:
@@ -1476,31 +1281,19 @@ def is_fast_vip_route(route):
     Every live-only route whose source OR destination is
     the VIP belongs to the dedicated priority router.
     """
-
     if not isinstance(route, dict):
         return False
-
-    if not route.get("live_only") or route.get("owner_managed"):
+    if not route.get('live_only') or route.get('owner_managed'):
         return False
-
     try:
-        source_chat = int(
-            route.get("source_chat", 0)
-        )
+        source_chat = int(route.get('source_chat', 0))
     except Exception:
         source_chat = 0
-
     try:
-        dest_chat = int(
-            route.get("dest_chat", 0)
-        )
+        dest_chat = int(route.get('dest_chat', 0))
     except Exception:
         dest_chat = 0
-
-    return (
-        source_chat == FAST_VIP_CHAT
-        or dest_chat == FAST_VIP_CHAT
-    )
+    return source_chat == FAST_VIP_CHAT or dest_chat == FAST_VIP_CHAT
 
 
 def fast_vip_routes():
@@ -1538,22 +1331,10 @@ def fast_vip_route_groups():
     Topic 11 is fetched ONCE, then copied concurrently
     to both destinations.
     """
-
     groups = {}
-
     for route in fast_vip_routes():
-
-        key = fast_vip_source_key(
-            route
-        )
-
-        groups.setdefault(
-            key,
-            [],
-        ).append(
-            route
-        )
-
+        key = fast_vip_source_key(route)
+        groups.setdefault(key, []).append(route)
     return groups
 
 
@@ -1587,21 +1368,9 @@ FAST_VIP_PAIR_LOCK = asyncio.Lock()
 
 
 def is_fast_vip_pair_route(route):
-
     try:
-
-        return (
-            int(route.get("source_chat", 0))
-            in FAST_VIP_PAIR_SOURCES
-            and route.get("source_topic") is None
-            and int(route.get("dest_chat", 0))
-            == FAST_VIP_CHAT
-            and int(route.get("dest_topic", 0))
-            == FAST_VIP_PAIR_DEST_TOPIC
-        )
-
+        return int(route.get('source_chat', 0)) in FAST_VIP_PAIR_SOURCES and route.get('source_topic') is None and (int(route.get('dest_chat', 0)) == FAST_VIP_CHAT) and (int(route.get('dest_topic', 0)) == FAST_VIP_PAIR_DEST_TOPIC)
     except Exception:
-
         return False
 
 
@@ -1747,89 +1516,22 @@ async def fast_vip_pair_release(
 
 # BEGIN FAST_VIP_ROUTER_V1
 
-async def fast_vip_build_units(
-    newer,
-):
-
+async def fast_vip_build_units(newer):
     units = []
     used_ids = set()
-
-
     for message in newer:
-
-        mid = int(
-            getattr(
-                message,
-                "id",
-                0,
-            )
-            or 0
-        )
-
-
+        mid = int(getattr(message, 'id', 0) or 0)
         if mid in used_ids:
             continue
-
-
-        grouped_id = getattr(
-            message,
-            "grouped_id",
-            None,
-        )
-
-
+        grouped_id = getattr(message, 'grouped_id', None)
         if grouped_id:
-
-            unit = [
-                candidate
-                for candidate in newer
-                if getattr(
-                    candidate,
-                    "grouped_id",
-                    None,
-                )
-                == grouped_id
-            ]
-
-
-            unit.sort(
-                key=lambda candidate: int(
-                    getattr(
-                        candidate,
-                        "id",
-                        0,
-                    )
-                    or 0
-                )
-            )
-
-
+            unit = [candidate for candidate in newer if getattr(candidate, 'grouped_id', None) == grouped_id]
+            unit.sort(key=lambda candidate: int(getattr(candidate, 'id', 0) or 0))
         else:
-
-            unit = [
-                message
-            ]
-
-
+            unit = [message]
         for item in unit:
-
-            used_ids.add(
-                int(
-                    getattr(
-                        item,
-                        "id",
-                        0,
-                    )
-                    or 0
-                )
-            )
-
-
-        units.append(
-            unit
-        )
-
-
+            used_ids.add(int(getattr(item, 'id', 0) or 0))
+        units.append(unit)
     return units
 
 
@@ -1929,40 +1631,16 @@ FASTVIP2_WATCHDOG_SEMAPHORE = asyncio.Semaphore(
 )
 
 
-def fastvip2_queue_for(
-    source_key,
-):
-
-    queue = FASTVIP2_QUEUES.get(
-        source_key
-    )
-
+def fastvip2_queue_for(source_key):
+    queue = FASTVIP2_QUEUES.get(source_key)
     if queue is None:
-
         queue = asyncio.Queue()
-
-        FASTVIP2_QUEUES[
-            source_key
-        ] = queue
-
+        FASTVIP2_QUEUES[source_key] = queue
     return queue
 
 
-def fastvip2_unit_ids(
-    unit,
-):
-
-    return tuple(
-        int(
-            getattr(
-                item,
-                "id",
-                0,
-            )
-            or 0
-        )
-        for item in unit
-    )
+def fastvip2_unit_ids(unit):
+    return tuple((int(getattr(item, 'id', 0) or 0) for item in unit))
 
 
 def fastvip2_token(
@@ -1979,43 +1657,17 @@ def fastvip2_token(
 
 
 def fastvip2_prune_handled():
-
     now = time.time()
-
-    expired = [
-        token
-        for token, timestamp
-        in FASTVIP2_HANDLED.items()
-        if (
-            now
-            - float(timestamp)
-        ) > 7200
-    ]
-
+    expired = [token for token, timestamp in FASTVIP2_HANDLED.items() if now - float(timestamp) > 7200]
     for token in expired:
-
-        FASTVIP2_HANDLED.pop(
-            token,
-            None,
-        )
+        FASTVIP2_HANDLED.pop(token, None)
 
 
-def fastvip2_routes_fully_mapped(
-    routes,
-    unit,
-):
-
+def fastvip2_routes_fully_mapped(routes, unit):
     for route in routes:
-
         for message in unit:
-
-            if not existing_destination_ids(
-                message,
-                route,
-            ):
-
+            if not existing_destination_ids(message, route):
                 return False
-
     return True
 
 
@@ -2820,65 +2472,19 @@ async def fastvip2_new_message_handler(
         )
 
 
-@client.on(
-    events.Album(
-        chats=FASTVIP2_SOURCE_CHATS
-    )
-)
-async def fastvip2_album_handler(
-    event,
-):
-
+@client.on(events.Album(chats=FASTVIP2_SOURCE_CHATS))
+async def fastvip2_album_handler(event):
     try:
-
-        unit = list(
-            event.messages
-            or []
-        )
-
-
+        unit = list(event.messages or [])
         if not unit:
             return
-
-
-        unit.sort(
-            key=lambda message: int(
-                getattr(
-                    message,
-                    "id",
-                    0,
-                )
-                or 0
-            )
-        )
-
-
+        unit.sort(key=lambda message: int(getattr(message, 'id', 0) or 0))
         first = unit[0]
-
-
-        matches = fastvip2_matching_groups(
-            event.chat_id,
-            first,
-        )
-
-
+        matches = fastvip2_matching_groups(event.chat_id, first)
         for source_key, routes in matches:
-
-            await fastvip2_enqueue(
-                source_key,
-                routes,
-                unit,
-                "telegram_album",
-            )
-
-
+            await fastvip2_enqueue(source_key, routes, unit, 'telegram_album')
     except Exception as exc:
-
-        log.exception(
-            "[FASTVIP2 ALBUM HANDLER ERROR] "
-            f"chat={getattr(event, 'chat_id', None)} "
-            f"{type(exc).__name__}: {exc}"
-        )
+        log.exception(f"[FASTVIP2 ALBUM HANDLER ERROR] chat={getattr(event, 'chat_id', None)} {type(exc).__name__}: {exc}")
 
 
 async def fast_vip_event_router_v2():
@@ -3037,43 +2643,30 @@ def title_from_entity(entity):
 
 async def get_forum_topic_title(chat_id, topic_id):
     try:
-        req_cls = channel_function("GetForumTopicsByIDRequest")
-
+        req_cls = channel_function('GetForumTopicsByIDRequest')
         if req_cls:
-            res = await client(
-                req_cls(
-                    channel=int(chat_id),
-                    topics=[int(topic_id)],
-                )
-            )
-
-            topics = getattr(res, "topics", None) or []
+            res = await client(req_cls(channel=int(chat_id), topics=[int(topic_id)]))
+            topics = getattr(res, 'topics', None) or []
             if topics:
-                title = getattr(topics[0], "title", None)
+                title = getattr(topics[0], 'title', None)
                 if title:
                     return str(title).strip()
-
     except Exception as exc:
-        log.info(f"[topic title api fallback] chat={chat_id} topic={topic_id}: {type(exc).__name__}: {exc}")
-
+        log.info(f'[topic title api fallback] chat={chat_id} topic={topic_id}: {type(exc).__name__}: {exc}')
     try:
         msg = await client.get_messages(int(chat_id), ids=int(topic_id))
         if msg:
-            action = getattr(msg, "action", None)
-
-            for attr in ("title", "new_title"):
+            action = getattr(msg, 'action', None)
+            for attr in ('title', 'new_title'):
                 value = getattr(action, attr, None)
                 if value:
                     return str(value).strip()
-
             raw = text_of(msg)
             if raw:
                 return raw.splitlines()[0].strip()
-
     except Exception as exc:
-        log.warning(f"[topic title fetch failed] chat={chat_id} topic={topic_id}: {exc}")
-
-    return ""
+        log.warning(f'[topic title fetch failed] chat={chat_id} topic={topic_id}: {exc}')
+    return ''
 
 
 # BEGIN VIP7_REBUILD_FROM_RELAY508_V1
@@ -3210,52 +2803,36 @@ async def warm_entity_cache_once():
     dead routes can be identified with confidence.
     """
     if not WARM_ENTITY_CACHE_ON_START:
-        log.warning("[ENTITY CACHE WARMUP] disabled")
+        log.warning('[ENTITY CACHE WARMUP] disabled')
         return
-
     wanted = set()
     for route in ROUTES:
-        for key in ("source_chat", "dest_chat"):
+        for key in ('source_chat', 'dest_chat'):
             try:
                 wanted.add(int(route[key]))
             except Exception:
                 continue
-
     dialogs = 0
-
     try:
         async for _dialog in client.iter_dialogs():
             dialogs += 1
     except FloodWaitError as exc:
-        log.warning(
-            "[ENTITY CACHE WARMUP FLOODWAIT] "
-            f"wait={exc.seconds}s; continuing without a full warmup"
-        )
+        log.warning(f'[ENTITY CACHE WARMUP FLOODWAIT] wait={exc.seconds}s; continuing without a full warmup')
         return
     except Exception as exc:
-        log.warning(
-            f"[ENTITY CACHE WARMUP FAILED SAFE] {type(exc).__name__}: {exc}"
-        )
+        log.warning(f'[ENTITY CACHE WARMUP FAILED SAFE] {type(exc).__name__}: {exc}')
         return
-
     resolved = 0
     unresolved = []
-
     for chat_id in sorted(wanted):
         try:
             await client.get_input_entity(chat_id)
             resolved += 1
         except Exception as exc:
             unresolved.append((chat_id, type(exc).__name__))
-
-    log.warning(
-        "[ENTITY CACHE WARMUP DONE] "
-        f"dialogs={dialogs} route_peers={len(wanted)} "
-        f"resolved={resolved} unresolved={len(unresolved)}"
-    )
-
+    log.warning(f'[ENTITY CACHE WARMUP DONE] dialogs={dialogs} route_peers={len(wanted)} resolved={resolved} unresolved={len(unresolved)}')
     for chat_id, error_name in unresolved:
-        log.warning(f"[ENTITY STILL UNRESOLVED] chat={chat_id} {error_name}")
+        log.warning(f'[ENTITY STILL UNRESOLVED] chat={chat_id} {error_name}')
 
 
 # OFF BY DEFAULT — DO NOT ENABLE ON THIS TELETHON BUILD.

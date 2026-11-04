@@ -117,60 +117,24 @@ WATCHDOG_LIMIT = max(
 # ==============================================================
 
 def load_routes():
-    raw = os.environ.get(
-        "ALT_ROUTES_JSON",
-        "",
-    ).strip()
-
+    raw = os.environ.get('ALT_ROUTES_JSON', '').strip()
     if not raw:
-        raise RuntimeError(
-            "ALT_ROUTES_JSON is empty"
-        )
-
+        raise RuntimeError('ALT_ROUTES_JSON is empty')
     parsed = json.loads(raw)
-
     if isinstance(parsed, dict):
         parsed = [parsed]
-
     if not isinstance(parsed, list):
-        raise RuntimeError(
-            "ALT_ROUTES_JSON must be a JSON list"
-        )
-
+        raise RuntimeError('ALT_ROUTES_JSON must be a JSON list')
     routes = []
-
-    for index, item in enumerate(
-        parsed,
-        start=1,
-    ):
-        source_topic = item.get(
-            "source_topic"
-        )
-
-        if source_topic not in (None, ""):
+    for index, item in enumerate(parsed, start=1):
+        source_topic = item.get('source_topic')
+        if source_topic not in (None, ''):
             source_topic = int(source_topic)
         else:
             source_topic = None
-
-        routes.append({
-            "name": str(item.get("name") or f"ALT RELAY {index}"),
-            "source_chat": int(
-                item["source_chat"]
-            ),
-            "source_topic": source_topic,
-            "dest_chat": int(
-                item["dest_chat"]
-            ),
-            "dest_topic": int(
-                item["dest_topic"]
-            ),
-        })
-
+        routes.append({'name': str(item.get('name') or f'ALT RELAY {index}'), 'source_chat': int(item['source_chat']), 'source_topic': source_topic, 'dest_chat': int(item['dest_chat']), 'dest_topic': int(item['dest_topic'])})
     if not routes:
-        raise RuntimeError(
-            "No ALT routes configured"
-        )
-
+        raise RuntimeError('No ALT routes configured')
     return routes
 
 
@@ -224,24 +188,12 @@ client = TelegramClient(
 def load_json(path):
     if not path.exists():
         return {}
-
     try:
-        value = json.loads(
-            path.read_text(
-                encoding="utf-8"
-            )
-        )
-
+        value = json.loads(path.read_text(encoding='utf-8'))
         if isinstance(value, dict):
             return value
-
     except Exception as exc:
-        log.warning(
-            f"[ALT STORAGE LOAD FAILED] "
-            f"path={path} "
-            f"{type(exc).__name__}: {exc}"
-        )
-
+        log.warning(f'[ALT STORAGE LOAD FAILED] path={path} {type(exc).__name__}: {exc}')
     return {}
 
 
@@ -295,36 +247,20 @@ def map_key(
     )
 
 
-def mapped_ids(
-    route,
-    source_message_id,
-):
-    value = message_map.get(
-        map_key(
-            route,
-            source_message_id,
-        )
-    )
-
+def mapped_ids(route, source_message_id):
+    value = message_map.get(map_key(route, source_message_id))
     if value is None:
         return []
-
     if isinstance(value, list):
         result = []
-
         for item in value:
             try:
-                result.append(
-                    int(item)
-                )
+                result.append(int(item))
             except Exception:
                 pass
-
         return result
-
     try:
         return [int(value)]
-
     except Exception:
         return []
 
@@ -343,93 +279,31 @@ def checkpoint(route):
         return 0
 
 
-def update_checkpoint(
-    route,
-    source_message_id,
-):
+def update_checkpoint(route, source_message_id):
     current = checkpoint(route)
-    new_value = max(
-        current,
-        int(source_message_id),
-    )
-
+    new_value = max(current, int(source_message_id))
     if new_value == current:
         return
-
-    route_state[
-        route_key(route)
-    ] = new_value
-
-    save_json(
-        STATE_FILE,
-        route_state,
-    )
+    route_state[route_key(route)] = new_value
+    save_json(STATE_FILE, route_state)
 
 
-def remember(
-    route,
-    source_message,
-    destination_message,
-):
-    if (
-        source_message is None
-        or destination_message is None
-    ):
+def remember(route, source_message, destination_message):
+    if source_message is None or destination_message is None:
         return
-
-    if isinstance(
-        destination_message,
-        list,
-    ):
-        ids = [
-            int(item.id)
-            for item in destination_message
-            if getattr(
-                item,
-                "id",
-                None,
-            )
-        ]
-
+    if isinstance(destination_message, list):
+        ids = [int(item.id) for item in destination_message if getattr(item, 'id', None)]
         if not ids:
             return
-
-        value = (
-            ids[0]
-            if len(ids) == 1
-            else ids
-        )
-
+        value = ids[0] if len(ids) == 1 else ids
     else:
-        destination_id = getattr(
-            destination_message,
-            "id",
-            None,
-        )
-
+        destination_id = getattr(destination_message, 'id', None)
         if not destination_id:
             return
-
-        value = int(
-            destination_id
-        )
-
-    message_map[
-        map_key(
-            route,
-            source_message.id,
-        )
-    ] = value
-
-    save_json(
-        MAP_FILE,
-        message_map,
-    )
-
-    update_checkpoint(
-        route,
-        source_message.id,
-    )
+        value = int(destination_id)
+    message_map[map_key(route, source_message.id)] = value
+    save_json(MAP_FILE, message_map)
+    update_checkpoint(route, source_message.id)
 
 
 # ==============================================================
@@ -473,9 +347,7 @@ USERNAME_HANDLE_RE = re.compile(
 )
 
 
-def has_username_mention(
-    message,
-):
+def has_username_mention(message):
     """
     Block an actual Telegram-style @username.
 
@@ -490,90 +362,25 @@ def has_username_mention(
     by an email/local-part character, so addresses such as
     test@example.com remain allowed.
     """
-
     if not FILTER_USERNAME_MENTIONS:
         return False
-
-
-    entities = (
-        getattr(
-            message,
-            "entities",
-            None,
-        )
-        or []
-    )
-
-
+    entities = getattr(message, 'entities', None) or []
     for entity in entities:
-
-        if (
-            type(entity).__name__
-            == "MessageEntityMention"
-        ):
-
+        if type(entity).__name__ == 'MessageEntityMention':
             return True
-
-
-    text = text_of(
-        message
-    )
-
-
+    text = text_of(message)
     if not text:
         return False
-
-
-    return bool(
-        USERNAME_HANDLE_RE.search(
-            text
-        )
-    )
+    return bool(USERNAME_HANDLE_RE.search(text))
 
 
 
 
-def log_username_filter_alt(
-    messages,
-    context,
-    route=None,
-):
-
-    messages = list(
-        messages
-        or []
-    )
-
-
-    ids = [
-        int(
-            getattr(
-                message,
-                "id",
-                0,
-            )
-            or 0
-        )
-        for message in messages
-    ]
-
-
-    route_name = (
-        route.get("name")
-        if isinstance(route, dict)
-        else None
-    )
-
-
-    log.warning(
-        "[USERNAME MENTION FILTERED] "
-        "account=ALT "
-        f"context={context} "
-        f"ids={ids} "
-        f"route={route_name} "
-        "SENT=False "
-        "FILTER=EntityOrStandaloneUsername"
-    )
+def log_username_filter_alt(messages, context, route=None):
+    messages = list(messages or [])
+    ids = [int(getattr(message, 'id', 0) or 0) for message in messages]
+    route_name = route.get('name') if isinstance(route, dict) else None
+    log.warning(f'[USERNAME MENTION FILTERED] account=ALT context={context} ids={ids} route={route_name} SENT=False FILTER=EntityOrStandaloneUsername')
 
 
 # END USERNAME_MENTION_FILTER_V2
@@ -684,25 +491,10 @@ ALT_ARABIC_CHAR_RE = re.compile(
 )
 
 
-def alt_arabic115_route(
-    route,
-):
-
+def alt_arabic115_route(route):
     try:
-
-        return (
-            int(route["source_chat"])
-            == ALT_ARABIC115_SOURCE_CHAT
-            and route["source_topic"]
-            is ALT_ARABIC115_SOURCE_TOPIC
-            and int(route["dest_chat"])
-            == ALT_ARABIC115_DEST_CHAT
-            and int(route["dest_topic"])
-            == ALT_ARABIC115_DEST_TOPIC
-        )
-
+        return int(route['source_chat']) == ALT_ARABIC115_SOURCE_CHAT and route['source_topic'] is ALT_ARABIC115_SOURCE_TOPIC and (int(route['dest_chat']) == ALT_ARABIC115_DEST_CHAT) and (int(route['dest_topic']) == ALT_ARABIC115_DEST_TOPIC)
     except Exception:
-
         return False
 
 
@@ -718,10 +510,7 @@ def contains_arabic(
     )
 
 
-async def translated_payload(
-    route,
-    message,
-):
+async def translated_payload(route, message):
     """
     The ONLY translation path used by both:
       - live Telegram pushes
@@ -738,151 +527,31 @@ async def translated_payload(
       nothing is sent untranslated.
       The normal retry/watchdog path may retry later.
     """
-
-    original_text = text_of(
-        message
-    )
-
-    original_entities = entities_of(
-        message
-    )
-
-
-    if not alt_arabic115_route(
-        route
-    ):
-
-        return (
-            original_text,
-            original_entities,
-        )
-
-
+    original_text = text_of(message)
+    original_entities = entities_of(message)
+    if not alt_arabic115_route(route):
+        return (original_text, original_entities)
     if not original_text:
-
-        return (
-            original_text,
-            original_entities,
-        )
-
-
-    if not contains_arabic(
-        original_text
-    ):
-
-        return (
-            original_text,
-            original_entities,
-        )
-
-
+        return (original_text, original_entities)
+    if not contains_arabic(original_text):
+        return (original_text, original_entities)
     try:
-
-        source_peer = await client.get_input_entity(
-            ALT_ARABIC115_SOURCE_CHAT
-        )
-
-
-        request = (
-            functions.messages.TranslateTextRequest(
-                peer=source_peer,
-                id=[
-                    int(message.id)
-                ],
-                text=None,
-                to_lang=(
-                    ALT_ARABIC115_TARGET_LANGUAGE
-                ),
-            )
-        )
-
-
+        source_peer = await client.get_input_entity(ALT_ARABIC115_SOURCE_CHAT)
+        request = functions.messages.TranslateTextRequest(peer=source_peer, id=[int(message.id)], text=None, to_lang=ALT_ARABIC115_TARGET_LANGUAGE)
         async with ALT_ARABIC115_TRANSLATION_SEM:
-
-            response = await asyncio.wait_for(
-                client(
-                    request
-                ),
-                timeout=(
-                    ALT_ARABIC115_TRANSLATION_TIMEOUT_SECONDS
-                ),
-            )
-
-
-        results = list(
-            getattr(
-                response,
-                "result",
-                None,
-            )
-            or []
-        )
-
-
+            response = await asyncio.wait_for(client(request), timeout=ALT_ARABIC115_TRANSLATION_TIMEOUT_SECONDS)
+        results = list(getattr(response, 'result', None) or [])
         if len(results) != 1:
-
-            raise RuntimeError(
-                "Telegram translation returned "
-                f"{len(results)} results"
-            )
-
-
+            raise RuntimeError(f'Telegram translation returned {len(results)} results')
         translated = results[0]
-
-
-        translated_text = (
-            getattr(
-                translated,
-                "text",
-                None,
-            )
-            or ""
-        )
-
-
-        translated_entities = (
-            getattr(
-                translated,
-                "entities",
-                None,
-            )
-            or []
-        )
-
-
+        translated_text = getattr(translated, 'text', None) or ''
+        translated_entities = getattr(translated, 'entities', None) or []
         if not translated_text:
-
-            raise RuntimeError(
-                "Telegram translation returned empty text"
-            )
-
-
-        log.warning(
-            "[ALT TRANSLATED TO EN] "
-            f"route={route['name']} "
-            f"source_msg={int(message.id)} "
-            f"before_chars={len(original_text)} "
-            f"after_chars={len(translated_text)} "
-            "ARABIC_TO_ENGLISH=True"
-        )
-
-
-        return (
-            translated_text,
-            translated_entities,
-        )
-
-
+            raise RuntimeError('Telegram translation returned empty text')
+        log.warning(f"[ALT TRANSLATED TO EN] route={route['name']} source_msg={int(message.id)} before_chars={len(original_text)} after_chars={len(translated_text)} ARABIC_TO_ENGLISH=True")
+        return (translated_text, translated_entities)
     except Exception as exc:
-
-        log.warning(
-            "[ALT TRANSLATION FAILED CLOSED] "
-            f"route={route.get('name')} "
-            f"source_msg={int(message.id)} "
-            f"{type(exc).__name__}: {exc} "
-            "ORIGINAL_ARABIC_SENT=False"
-        )
-
+        log.warning(f"[ALT TRANSLATION FAILED CLOSED] route={route.get('name')} source_msg={int(message.id)} {type(exc).__name__}: {exc} ORIGINAL_ARABIC_SENT=False")
         raise
 
 
@@ -896,86 +565,17 @@ async def preflight_arabic115_translation():
     This protects all existing ALT routes from an untested
     translation integration.
     """
-
-    source = await client.get_entity(
-        ALT_ARABIC115_SOURCE_CHAT
-    )
-
+    source = await client.get_entity(ALT_ARABIC115_SOURCE_CHAT)
     me = await client.get_me()
-
-
-    recent = list(
-        await client.get_messages(
-            ALT_ARABIC115_SOURCE_CHAT,
-            limit=50,
-        )
-        or []
-    )
-
-
-    sample = next(
-        (
-            message
-            for message in recent
-            if contains_arabic(
-                text_of(
-                    message
-                )
-            )
-        ),
-        None,
-    )
-
-
+    recent = list(await client.get_messages(ALT_ARABIC115_SOURCE_CHAT, limit=50) or [])
+    sample = next((message for message in recent if contains_arabic(text_of(message))), None)
     if sample is None:
-
-        raise RuntimeError(
-            "No recent Arabic text message found "
-            "for translation preflight"
-        )
-
-
-    probe_route = {
-        "name": "ARABIC115 PREFLIGHT",
-        "source_chat": (
-            ALT_ARABIC115_SOURCE_CHAT
-        ),
-        "source_topic": None,
-        "dest_chat": (
-            ALT_ARABIC115_DEST_CHAT
-        ),
-        "dest_topic": (
-            ALT_ARABIC115_DEST_TOPIC
-        ),
-    }
-
-
-    translated_text, _ = await translated_payload(
-        probe_route,
-        sample,
-    )
-
-
+        raise RuntimeError('No recent Arabic text message found for translation preflight')
+    probe_route = {'name': 'ARABIC115 PREFLIGHT', 'source_chat': ALT_ARABIC115_SOURCE_CHAT, 'source_topic': None, 'dest_chat': ALT_ARABIC115_DEST_CHAT, 'dest_topic': ALT_ARABIC115_DEST_TOPIC}
+    translated_text, _ = await translated_payload(probe_route, sample)
     if not translated_text:
-
-        raise RuntimeError(
-            "Translation preflight returned empty text"
-        )
-
-
-    log.warning(
-        "[ALT ARABIC115 TRANSLATION PREFLIGHT OK] "
-        f"source={ALT_ARABIC115_SOURCE_CHAT} "
-        f"source_title="
-        f"{getattr(source, 'title', None)!r} "
-        f"sample_id={int(sample.id)} "
-        f"premium="
-        f"{bool(getattr(me, 'premium', False))} "
-        "SEND_TEST=False "
-        "TARGET_LANGUAGE=en"
-    )
-
-
+        raise RuntimeError('Translation preflight returned empty text')
+    log.warning(f"[ALT ARABIC115 TRANSLATION PREFLIGHT OK] source={ALT_ARABIC115_SOURCE_CHAT} source_title={getattr(source, 'title', None)!r} sample_id={int(sample.id)} premium={bool(getattr(me, 'premium', False))} SEND_TEST=False TARGET_LANGUAGE=en")
     return True
 
 
@@ -1012,110 +612,46 @@ def known_topics(chat_id):
     }
 
 
-def topic_of(
-    message,
-    chat_id,
-):
-    topics = known_topics(
-        chat_id
-    )
-
-    for attr in (
-        "reply_to_top_id",
-        "top_msg_id",
-    ):
-        value = getattr(
-            message,
-            attr,
-            None,
-        )
-
+def topic_of(message, chat_id):
+    topics = known_topics(chat_id)
+    for attr in ('reply_to_top_id', 'top_msg_id'):
+        value = getattr(message, attr, None)
         if value:
             try:
                 return int(value)
             except Exception:
                 pass
-
-    reply = getattr(
-        message,
-        "reply_to",
-        None,
-    )
-
+    reply = getattr(message, 'reply_to', None)
     if reply:
-        for attr in (
-            "reply_to_top_id",
-            "top_msg_id",
-        ):
-            value = getattr(
-                reply,
-                attr,
-                None,
-            )
-
+        for attr in ('reply_to_top_id', 'top_msg_id'):
+            value = getattr(reply, attr, None)
             if value:
                 try:
                     return int(value)
                 except Exception:
                     pass
-
-    direct_reply = getattr(
-        message,
-        "reply_to_msg_id",
-        None,
-    )
-
+    direct_reply = getattr(message, 'reply_to_msg_id', None)
     if direct_reply:
         try:
-            direct_reply = int(
-                direct_reply
-            )
-
-            if (
-                not topics
-                or direct_reply in topics
-            ):
+            direct_reply = int(direct_reply)
+            if not topics or direct_reply in topics:
                 return direct_reply
-
         except Exception:
             pass
-
     return None
 
 
-def matching_routes(
-    chat_id,
-    message,
-):
+def matching_routes(chat_id, message):
     chat_id = int(chat_id)
-
-    source_topic = topic_of(
-        message,
-        chat_id,
-    )
-
+    source_topic = topic_of(message, chat_id)
     result = []
-
     for route in ROUTES:
-        if (
-            route["source_chat"]
-            != chat_id
-        ):
+        if route['source_chat'] != chat_id:
             continue
-
-        wanted_topic = route[
-            "source_topic"
-        ]
-
-        if (
-            wanted_topic is not None
-            and wanted_topic
-            != source_topic
-        ):
+        wanted_topic = route['source_topic']
+        if wanted_topic is not None and wanted_topic != source_topic:
             continue
-
         result.append(route)
-
     return result
 
 
@@ -1127,38 +663,18 @@ COPY_LOCKS = {}
 EDIT_LOCKS = {}
 
 
-def copy_lock(
-    route,
-    messages,
-):
+def copy_lock(route, messages):
     first = messages[0]
-
-    grouped_id = getattr(
-        first,
-        "grouped_id",
-        None,
-    )
-
+    grouped_id = getattr(first, 'grouped_id', None)
     if grouped_id:
-        message_token = (
-            f"album:{grouped_id}"
-        )
+        message_token = f'album:{grouped_id}'
     else:
-        message_token = (
-            f"msg:{int(first.id)}"
-        )
-
-    key = (
-        f"{route_key(route)}:"
-        f"{message_token}"
-    )
-
+        message_token = f'msg:{int(first.id)}'
+    key = f'{route_key(route)}:{message_token}'
     lock = COPY_LOCKS.get(key)
-
     if lock is None:
         lock = asyncio.Lock()
         COPY_LOCKS[key] = lock
-
     return lock
 
 
@@ -1296,144 +812,48 @@ async def send_single(
             pass
 
 
-async def send_album(
-    route,
-    messages,
-):
+async def send_album(route, messages):
     if owner_policy.is_stopped(route):
         return None
     if alt_vip5_block(route):
-        log.warning("[ALT VIP5 DESTINATION PERMANENT BLOCK] writer=send_album")
+        log.warning('[ALT VIP5 DESTINATION PERMANENT BLOCK] writer=send_album')
         return None
-
-    if unit_has_username_mention(
-        messages
-    ):
-
-        log_username_filter_alt(
-            messages,
-            "send_album_hard_guard",
-            route=route,
-        )
-
+    if unit_has_username_mention(messages):
+        log_username_filter_alt(messages, 'send_album_hard_guard', route=route)
         return None
-
-    caption = ""
+    caption = ''
     caption_entities = None
     caption_message = None
-
     for message in messages:
         candidate = text_of(message)
-
         if candidate:
             caption_message = message
             break
-
     if caption_message is not None:
-
-        caption, caption_entities = (
-            await translated_payload(
-                route,
-                caption_message,
-            )
-        )
-
-    media_objects = [
-        message.media
-        for message in messages
-        if real_media(message)
-    ]
-
+        caption, caption_entities = await translated_payload(route, caption_message)
+    media_objects = [message.media for message in messages if real_media(message)]
     if not media_objects:
         return None
-
     try:
-        sent = await client.send_file(
-            route["dest_chat"],
-            media_objects,
-            caption=(
-                caption
-                if caption
-                else None
-            ),
-            formatting_entities=(
-                caption_entities
-                if caption
-                else None
-            ),
-            parse_mode=None,
-            reply_to=route[
-                "dest_topic"
-            ],
-        )
-
-        return (
-            sent
-            if isinstance(sent, list)
-            else [sent]
-        )
-
+        sent = await client.send_file(route['dest_chat'], media_objects, caption=caption if caption else None, formatting_entities=caption_entities if caption else None, parse_mode=None, reply_to=route['dest_topic'])
+        return sent if isinstance(sent, list) else [sent]
     except Exception as exc:
-        log.warning(
-            "[ALT DIRECT ALBUM FAILED - "
-            "USING REUPLOAD] "
-            f"{type(exc).__name__}: {exc}"
-        )
-
+        log.warning(f'[ALT DIRECT ALBUM FAILED - USING REUPLOAD] {type(exc).__name__}: {exc}')
     downloaded_files = []
-
     try:
         for message in messages:
             if not real_media(message):
                 continue
-
-            downloaded = await message.download_media(
-                file=str(
-                    MEDIA_DIR
-                    / f"album_{message.id}"
-                )
-            )
-
+            downloaded = await message.download_media(file=str(MEDIA_DIR / f'album_{message.id}'))
             if not downloaded:
-                raise RuntimeError(
-                    "Album download returned nothing"
-                )
-
-            downloaded_files.append(
-                downloaded
-            )
-
-        sent = await client.send_file(
-            route["dest_chat"],
-            downloaded_files,
-            caption=(
-                caption
-                if caption
-                else None
-            ),
-            formatting_entities=(
-                caption_entities
-                if caption
-                else None
-            ),
-            parse_mode=None,
-            reply_to=route[
-                "dest_topic"
-            ],
-        )
-
-        return (
-            sent
-            if isinstance(sent, list)
-            else [sent]
-        )
-
+                raise RuntimeError('Album download returned nothing')
+            downloaded_files.append(downloaded)
+        sent = await client.send_file(route['dest_chat'], downloaded_files, caption=caption if caption else None, formatting_entities=caption_entities if caption else None, parse_mode=None, reply_to=route['dest_topic'])
+        return sent if isinstance(sent, list) else [sent]
     finally:
         for filename in downloaded_files:
             try:
-                Path(filename).unlink(
-                    missing_ok=True
-                )
+                Path(filename).unlink(missing_ok=True)
             except Exception:
                 pass
 
@@ -1856,24 +1276,10 @@ ALT_PAIR106_LOCK = asyncio.Lock()
 ALT_PAIR106_READY_ROUTE_KEYS = set()
 
 
-def alt_pair106_route(
-    route,
-):
-
+def alt_pair106_route(route):
     try:
-
-        return (
-            int(route["source_chat"])
-            in ALT_PAIR106_SOURCE_CHATS
-            and route["source_topic"] is None
-            and int(route["dest_chat"])
-            == ALT_PAIR106_DEST_CHAT
-            and int(route["dest_topic"])
-            == ALT_PAIR106_DEST_TOPIC
-        )
-
+        return int(route['source_chat']) in ALT_PAIR106_SOURCE_CHATS and route['source_topic'] is None and (int(route['dest_chat']) == ALT_PAIR106_DEST_CHAT) and (int(route['dest_topic']) == ALT_PAIR106_DEST_TOPIC)
     except Exception:
-
         return False
 
 
@@ -1949,82 +1355,29 @@ async def new_message_handler(event):
         )
 
 
-@client.on(
-    events.Album(
-        chats=SOURCE_CHATS
-    )
-)
+@client.on(events.Album(chats=SOURCE_CHATS))
 async def album_handler(event):
     try:
-        messages = sorted(
-            list(
-                event.messages
-                or []
-            ),
-            key=lambda message: int(
-                message.id
-            ),
-        )
-
+        messages = sorted(list(event.messages or []), key=lambda message: int(message.id))
         if not messages:
             return
-
-        routes = matching_routes(
-            event.chat_id,
-            messages[0],
-        )
-
+        routes = matching_routes(event.chat_id, messages[0])
         if not routes:
             return
-
-        await asyncio.gather(
-            *[
-                copy_unit(
-                    route,
-                    messages,
-                    "telegram_album",
-                )
-                for route in routes
-            ]
-        )
-
+        await asyncio.gather(*[copy_unit(route, messages, 'telegram_album') for route in routes])
     except Exception as exc:
-        log.exception(
-            "[ALT ALBUM HANDLER ERROR] "
-            f"{type(exc).__name__}: {exc}"
-        )
+        log.exception(f'[ALT ALBUM HANDLER ERROR] {type(exc).__name__}: {exc}')
 
 
-@client.on(
-    events.MessageEdited(
-        chats=SOURCE_CHATS
-    )
-)
+@client.on(events.MessageEdited(chats=SOURCE_CHATS))
 async def edited_handler(event):
     try:
-        routes = matching_routes(
-            event.chat_id,
-            event.message,
-        )
-
+        routes = matching_routes(event.chat_id, event.message)
         if not routes:
             return
-
-        await asyncio.gather(
-            *[
-                edit_existing(
-                    route,
-                    event.message,
-                )
-                for route in routes
-            ]
-        )
-
+        await asyncio.gather(*[edit_existing(route, event.message) for route in routes])
     except Exception as exc:
-        log.exception(
-            "[ALT EDIT HANDLER ERROR] "
-            f"{type(exc).__name__}: {exc}"
-        )
+        log.exception(f'[ALT EDIT HANDLER ERROR] {type(exc).__name__}: {exc}')
 
 
 # ==============================================================
@@ -2074,58 +1427,22 @@ async def fetch_route_messages(*args, **kwargs):
 
 
 def build_units(messages):
-    messages = sorted(
-        list(messages),
-        key=lambda message: int(
-            message.id
-        ),
-    )
-
+    messages = sorted(list(messages), key=lambda message: int(message.id))
     units = []
     used_ids = set()
-
     for message in messages:
-        message_id = int(
-            message.id
-        )
-
+        message_id = int(message.id)
         if message_id in used_ids:
             continue
-
-        grouped_id = getattr(
-            message,
-            "grouped_id",
-            None,
-        )
-
+        grouped_id = getattr(message, 'grouped_id', None)
         if grouped_id:
-            unit = [
-                candidate
-                for candidate in messages
-                if getattr(
-                    candidate,
-                    "grouped_id",
-                    None,
-                )
-                == grouped_id
-            ]
+            unit = [candidate for candidate in messages if getattr(candidate, 'grouped_id', None) == grouped_id]
         else:
             unit = [message]
-
-        unit = sorted(
-            unit,
-            key=lambda item: int(
-                item.id
-            ),
-        )
-
+        unit = sorted(unit, key=lambda item: int(item.id))
         for item in unit:
-            used_ids.add(
-                int(item.id)
-            )
-
+            used_ids.add(int(item.id))
         units.append(unit)
-
     return units
 
 

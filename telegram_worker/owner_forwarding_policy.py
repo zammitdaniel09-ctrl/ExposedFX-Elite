@@ -6,6 +6,7 @@ maps/checkpoints are never changed here. New runtime stops have their own file.
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 STOPPED_SOURCE_CHATS = frozenset({
@@ -57,11 +58,35 @@ def is_stopped(route):
     return known_stopped(route) or identity(route) in (_RUNTIME or {})
 
 
+# A cold entity cache or a brief Telegram hiccup looks the same as lost
+# access. These reasons must repeat over CONFIRM_SECONDS before the stop is
+# written; real access losses (private, banned, paid, forbidden) stop at once.
+CONFIRM_REASONS = frozenset({"EntityUnavailable", "TopicUnavailable"})
+CONFIRM_STRIKES = 3
+CONFIRM_SECONDS = 600
+_STRIKES = {}
+
+
+def _confirmed(key, reason, logger, route):
+    if str(reason) not in CONFIRM_REASONS:
+        return True
+    strikes = _STRIKES.setdefault(key, [])
+    strikes.append(time.time())
+    if len(strikes) >= CONFIRM_STRIKES and strikes[-1] - strikes[0] >= CONFIRM_SECONDS:
+        return True
+    if logger:
+        logger.warning("[OWNER ROUTE STOP PENDING] route=%s contract=%s reason=%s strike=%s RETRY=True",
+                       route.get("name"), key, reason, len(strikes))
+    return False
+
+
 def stop_route(route, reason, logger=None):
     if _RUNTIME is None:
         configure(os.environ.get("DATA_DIR") or "./data")
     key = identity(route)
     if key in _RUNTIME:
+        return
+    if not _confirmed(key, reason, logger, route):
         return
     _RUNTIME[key] = {"reason": str(reason)}
     _PATH.parent.mkdir(parents=True, exist_ok=True)

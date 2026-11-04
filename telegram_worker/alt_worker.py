@@ -324,7 +324,7 @@ if _retired2530_runtime:
         f"{_retired2530_runtime}"
     )
 
-_legacy.log.error(
+_legacy.log.warning(
     "[ALT TOPIC2530 FORCE STOP ACTIVE] "
     f"chat={RETIRED2530_CHAT} topic={RETIRED2530_TOPIC} "
     f"routes_removed={_RETIRED2530_ROUTES_REMOVED} "
@@ -396,6 +396,9 @@ async def _run_select_last30_guarded():
 
 
 async def main():
+    from telegram_worker.health_monitor import install_health_monitor
+
+    install_health_monitor("ExposedFX ALT", _legacy.client, _legacy.DATA_DIR)
     split_history_task = asyncio.create_task(
         _run_split_pair_last100_guarded()
     )

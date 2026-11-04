@@ -1,0 +1,26 @@
+name: ALT worker tests
+
+on:
+  pull_request:
+    branches: [alt-worker]
+  push:
+    branches: [alt-worker]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile live ALT modules
+        run: python -m py_compile telegram_worker/alt_worker.py telegram_worker/alt_worker_legacy.py telegram_worker/alt_reply_hardening.py telegram_worker/alt_new_topics7248_7250_last20.py telegram_worker/owner_forwarding_policy.py telegram_worker/health_monitor.py
+      - name: Install Telethon
+        run: pip install "telethon>=1.41,<2"
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v

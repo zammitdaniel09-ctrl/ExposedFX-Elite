@@ -134,7 +134,7 @@ class AltEngineTests(unittest.TestCase):
 
         self._resolve = alt_engine.resolve_reply_target
         alt_engine.resolve_reply_target = resolve
-        self.engine = alt_engine.AltDeliverer(legacy)
+        self.engine = alt_engine.AltEngine(legacy)
 
     def tearDown(self):
         alt_engine.resolve_reply_target = self._resolve
@@ -256,7 +256,7 @@ class AltDifferentialTests(unittest.TestCase):
                         asyncio.run(legacy_single(route, case))
                         harness.client = engine_client
                         harness.legacy.client = engine_client
-                        harness.engine = alt_engine.AltDeliverer(harness.legacy)
+                        harness.engine = alt_engine.AltEngine(harness.legacy)
                         asyncio.run(harness.engine.deliver(route, [case], "diff"))
                     finally:
                         harness.tearDown()

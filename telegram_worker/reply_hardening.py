@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import MutableMapping
 import logging
 import re
 import unicodedata
@@ -265,7 +266,7 @@ async def _destination_topic_messages(main_module, route: Dict[str, Any], limit:
 
 def _cache_mapping(main_module, route: Dict[str, Any], source_msg_id: int, dest_msg_id: int) -> None:
     message_map = getattr(main_module, "message_map", None)
-    if not isinstance(message_map, dict):
+    if not isinstance(message_map, MutableMapping):
         return
 
     key = _exact_map_key(main_module, route, int(source_msg_id))
@@ -278,7 +279,7 @@ def _cache_mapping(main_module, route: Dict[str, Any], source_msg_id: int, dest_
 
 def _drop_exact_mapping(main_module, route: Dict[str, Any], source_msg_id: int) -> None:
     message_map = getattr(main_module, "message_map", None)
-    if not isinstance(message_map, dict):
+    if not isinstance(message_map, MutableMapping):
         return
     key = _exact_map_key(main_module, route, int(source_msg_id))
     if key in message_map:
@@ -508,7 +509,7 @@ def install_reply_hardening(main_module, logger=None):
     if existing:
         return existing
 
-    if not isinstance(getattr(main_module, "message_map", None), dict):
+    if not isinstance(getattr(main_module, "message_map", None), MutableMapping):
         raise RuntimeError("worker message_map unavailable")
 
     # Startup regression tests for the Telegram metadata forms that caused the

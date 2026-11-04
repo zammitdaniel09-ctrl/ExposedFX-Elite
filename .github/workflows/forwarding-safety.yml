@@ -32,10 +32,21 @@ jobs:
       - name: Check worker syntax and forwarding safety
         run: python scripts/check_forwarding_contracts.py
       - name: Install test dependencies
-        run: pip install "telethon==1.45.0" "black==26.10.1" "pyflakes==4.1.0"
+        run: pip install "telethon==1.45.0" "black==26.10.1" "pyflakes==4.1.0" "mypy==2.4.1" "coverage==7.17.1"
       - name: Formatting (black, same flags as local)
         run: black --check --skip-magic-trailing-comma -l 110 telegram_worker scripts tests
       - name: Undefined names and unused imports in the live workers and engine
-        run: python -m pyflakes telegram_worker/engine telegram_worker/worker_fixed.py telegram_worker/liveness.py telegram_worker/log_setup.py telegram_worker/health_monitor.py
-      - name: Run worker regression tests (offline, no credentials)
-        run: python -m unittest discover -s tests -v
+        run: >-
+          python -m pyflakes telegram_worker/engine telegram_worker/worker_fixed.py
+          telegram_worker/alt_worker.py telegram_worker/alt_worker_legacy.py telegram_worker/state_store.py
+          telegram_worker/liveness.py telegram_worker/log_setup.py telegram_worker/health_monitor.py
+      - name: Strict types (engine and state store)
+        run: >-
+          python -m mypy telegram_worker/engine telegram_worker/state_store.py --ignore-missing-imports
+          --check-untyped-defs --follow-imports=silent --disallow-untyped-defs
+      - name: Run worker regression tests (offline, no credentials) with branch coverage
+        run: python -m coverage run --branch -m unittest discover -s tests -v
+      - name: Coverage gate (engine, state store, liveness, monitoring)
+        run: >-
+          python -m coverage report --fail-under=95
+          --include="telegram_worker/engine/*,telegram_worker/state_store.py,telegram_worker/liveness.py,telegram_worker/log_setup.py,telegram_worker/health_monitor.py"

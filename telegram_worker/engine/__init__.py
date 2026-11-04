@@ -7,8 +7,9 @@
     render.py   formatter plugins: "copy", "imperium_vip" (VIP topic 7), "translate" (ALT T4T)
     plan.py     Planner: one post on one route -> Send or Skip
     deliver.py  Deliverer: send, verify, retry, record the mapping
-    runtime.py  DeliveryEngine wired into FASTVIP2 and the owner routes
-    gaps.py     deployment-gap recovery for FASTVIP2 (posts missed in a restart)
+    runtime.py  DeliveryEngine wired into the live VIP routes and the owner routes
+    intake.py   how new posts reach delivery on MAIN and ALT: pushes, a
+                checkpointed watchdog, restart gaps in order, stale posts reported
     alt.py      the ALT worker on the engine: translation, ALT reply recovery,
                 checkpoints and ALT log markers; ALT's replay audit
     audit.py    replay audit: re-plans recent posts and compares them with

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .rules import entities_of, is_real_media, text_of
 
@@ -23,11 +23,11 @@ class Rendered:
     kind: str  # "text" | "media" | "album"
 
 
-def _copy(message, context):
+def _copy(message: Any, context: Dict[str, Any]) -> Any:
     return message
 
 
-def _imperium_vip(message, context):
+def _imperium_vip(message: Any, context: Dict[str, Any]) -> Any:
     from telegram_worker.imperium_vip_inline_hook import format_imperium_vip_text
 
     text = getattr(message, "message", None) or getattr(message, "raw_text", None) or ""
@@ -47,17 +47,17 @@ def _imperium_vip(message, context):
 class Restyled:
     """A message seen with different text and entities; everything else is the original's."""
 
-    def __init__(self, original, text, entities):
+    def __init__(self, original: Any, text: Optional[str], entities: Any) -> None:
         self._original = original
         self.message = self.raw_text = self.text = text or ""
         self.entities = entities
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         return getattr(self._original, name)
 
 
-def _translated(message, context):
-    """ALT's T4T route: text and entities pre-translated by Telegram (alt.AltDeliverer)."""
+def _translated(message: Any, context: Dict[str, Any]) -> Any:
+    """ALT's T4T route: text and entities pre-translated by Telegram (alt.AltEngine)."""
     translated = context.get("translations", {}).get(message.id)
     return Restyled(message, *translated) if translated is not None else message
 

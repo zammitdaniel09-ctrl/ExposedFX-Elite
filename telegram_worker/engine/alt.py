@@ -7,17 +7,18 @@ map writes with MAIN and keeps what is ALT's own:
 - the T4T route is translated by Telegram (translated_payload, fail-closed:
   nothing untranslated is sent) before rendering;
 - reply targets come from ALT reply recovery (alt_reply_hardening);
-- every handled post advances the route checkpoint that ALT's watchdog uses
-  to recover deployment gaps;
-- one attempt per call: the watchdog retries a failed post 30 s later, as
-  before; log markers stay "[ALT COPIED]" / "[ALT COPY FAILED]" / "[ALT FLOODWAIT]".
+- every handled post still advances the old per-route checkpoint
+  (route_state.json), so a rollback to older code resumes where this left off;
+- one attempt per call: the intake's watchdog (engine/intake.py) retries a
+  failed post 30 s later; log markers stay "[ALT COPIED]" / "[ALT COPY FAILED]"
+  / "[ALT FLOODWAIT]".
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from telethon.errors import FloodWaitError
 
@@ -25,8 +26,8 @@ from telegram_worker import owner_forwarding_policy as policy
 from telegram_worker.alt_reply_hardening import real_reply_source_ids, resolve_reply_target
 
 from .deliver import Deliverer
-from .model import Route, Send, Skip
-from .plan import Planner
+from .model import Plan, Route, Send, Skip
+from .plan import Facts, Planner
 from .replies import MessageMap
 from .rules import Rules, text_of
 
@@ -38,39 +39,42 @@ class AltWorker:
 
     EMOJI_REGISTRY = None
 
-    def __init__(self, legacy):
+    def __init__(self, legacy: Any) -> None:
         self.legacy = legacy
 
     @property
-    def client(self):
+    def client(self) -> Any:
         return self.legacy.client
 
     @property
-    def DATA_DIR(self):  # noqa: N802 (matches the worker attribute)
+    def DATA_DIR(self) -> Any:  # noqa: N802 (matches the worker attribute)
         return self.legacy.DATA_DIR
 
     @property
-    def message_map(self):
+    def message_map(self) -> Dict[str, Any]:
         return self.legacy.message_map
 
-    def remember_message(self, source, destination, route, save=True):
+    def remember_message(self, source: Any, destination: Any, route: Dict, save: bool = True) -> None:
         self.legacy.remember(route, source, destination)  # writes the map and advances the checkpoint
 
-    def save_map(self):
+    def save_map(self) -> None:
         pass  # remember() already saved
 
 
-def alt_route(legacy, legacy_route: Dict) -> Route:
+def alt_route(legacy: Any, legacy_route: Dict) -> Route:
     parsed = Route.from_legacy(legacy_route)
     formatter = "translate" if legacy.alt_arabic115_route(legacy_route) else "copy"
     # ALT has no forward-loop guard, whatever the route JSON carries.
     return Route(**{**parsed.__dict__, "formatter": formatter, "loop_guard_peers": frozenset()})
 
 
-class AltDeliverer(Deliverer):
-    def __init__(self, legacy, clock=time.time):
+class AltEngine:
+    """ALT's delivery: the shared planner and Deliverer, with ALT's own contract."""
+
+    def __init__(self, legacy: Any, clock: Callable[[], float] = time.time) -> None:
         self.legacy = legacy
-        planner = Planner(
+        self.clock = clock
+        self.planner = Planner(
             rules=Rules(
                 blocked_senders=frozenset(),
                 filter_mentions=bool(legacy.FILTER_USERNAME_MENTIONS),
@@ -79,17 +83,20 @@ class AltDeliverer(Deliverer):
             ),
             maps=MessageMap(lambda: legacy.message_map),
         )
-        super().__init__(AltWorker(legacy), planner, attempts=1, clock=clock)
+        # One attempt per call: ALT's watchdog retries a failed post 30 s later.
+        self.deliverer = Deliverer(AltWorker(legacy), self.planner, attempts=1, clock=clock)
 
-    async def translations(self, legacy_route: Dict, unit: Sequence) -> Dict:
+    async def translations(self, legacy_route: Dict, unit: Sequence) -> Dict[int, Tuple[str, Any]]:
         """Translate exactly what legacy translated: the single post, or an album's caption."""
         targets = [m for m in unit if text_of(m)][:1]
-        out = {}
+        out: Dict[int, Tuple[str, Any]] = {}
         for message in targets:
             out[message.id] = await self.legacy.translated_payload(legacy_route, message)
         return out
 
-    async def plan_unit(self, legacy_route: Dict, unit: Sequence, facts=None):
+    async def plan_unit(
+        self, legacy_route: Dict, unit: Sequence, facts: Optional[Facts] = None
+    ) -> Tuple[Route, Plan]:
         route = alt_route(self.legacy, legacy_route)
         plan = self.planner.plan(
             Route(**{**route.__dict__, "formatter": "copy"}), unit, legacy_route, facts=facts
@@ -114,7 +121,7 @@ class AltDeliverer(Deliverer):
         target = await resolve_reply_target(self.legacy, legacy_route, probe, logger=log)
         plan = Send(**{**plan.__dict__, "reply_to": int(target)})
         try:
-            sent = await self.send(legacy_route, route, unit, plan)
+            sent = await self.deliverer.send(legacy_route, route, unit, plan)
         except FloodWaitError as exc:
             log.warning("[ALT FLOODWAIT] route=%s seconds=%s engine=True", name, int(exc.seconds))
             return False
@@ -157,7 +164,9 @@ AUDIT_STATE_FILE = "engine_alt_replay_audit_v1.json"
 AUDIT_VERSION = 1
 
 
-async def run_alt_replay_audit(legacy, engine, delay_seconds: float = 60.0, per_route: int = 25):
+async def run_alt_replay_audit(
+    legacy: Any, engine: AltEngine, delay_seconds: float = 60.0, per_route: int = 25
+) -> Optional[Dict[str, Dict[str, Any]]]:
     """Read-only: re-plan recent ALT posts and compare them with the relay copies.
 
     Two get_messages calls per route; the translated route re-translates at
@@ -167,12 +176,12 @@ async def run_alt_replay_audit(legacy, engine, delay_seconds: float = 60.0, per_
     import json
     from pathlib import Path
 
-    from .audit import compare, newest_mapped
+    from .audit import audit_key, compare, newest_mapped
     from .plan import Facts
 
     path = Path(legacy.DATA_DIR) / AUDIT_STATE_FILE
     try:
-        if json.loads(path.read_text(encoding="utf-8")).get("version") == AUDIT_VERSION:
+        if json.loads(path.read_text(encoding="utf-8")).get("version") == audit_key(AUDIT_VERSION):
             return None
     except Exception:
         pass
@@ -180,7 +189,13 @@ async def run_alt_replay_audit(legacy, engine, delay_seconds: float = 60.0, per_
     report = {}
     for legacy_route in list(legacy.ROUTES):
         route = alt_route(legacy, legacy_route)
-        outcome = {"checked": 0, "match": 0, "mismatch": 0, "unavailable_or_album": 0, "examples": []}
+        outcome: Dict[str, Any] = {
+            "checked": 0,
+            "match": 0,
+            "mismatch": 0,
+            "unavailable_or_album": 0,
+            "examples": [],
+        }
         report[route.name] = outcome
         try:
             limit = 10 if route.formatter == "translate" else per_route
@@ -216,7 +231,8 @@ async def run_alt_replay_audit(legacy, engine, delay_seconds: float = 60.0, per_
         await asyncio.sleep(1.0)
     try:
         path.write_text(
-            json.dumps({"version": AUDIT_VERSION, "report": report}, ensure_ascii=False), encoding="utf-8"
+            json.dumps({"version": audit_key(AUDIT_VERSION), "report": report}, ensure_ascii=False),
+            encoding="utf-8",
         )
     except Exception:
         pass
@@ -229,8 +245,8 @@ async def run_alt_replay_audit(legacy, engine, delay_seconds: float = 60.0, per_
     return report
 
 
-def install_alt_engine(legacy) -> AltDeliverer:
-    engine = AltDeliverer(legacy)
+def install_alt_engine(legacy: Any) -> AltEngine:
+    engine = AltEngine(legacy)
     legacy.DELIVERY_ENGINE = engine
     log.warning(
         "[ALT DELIVERY ENGINE READY] routes=%s formatters=%s",

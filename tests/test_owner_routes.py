@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 package = sys.modules.setdefault("telegram_worker", types.ModuleType("telegram_worker"))
 package.__path__ = [str(ROOT / "telegram_worker")]
 from telegram_worker import owner_forwarding_policy as policy
-from telegram_worker import owner_requested_routes_20261102 as owner
+from telegram_worker import owner_routes as owner
 from telethon.errors import ChannelPrivateError, FloodWaitError
 
 MessageActionTopicCreate = type("MessageActionTopicCreate", (), {})

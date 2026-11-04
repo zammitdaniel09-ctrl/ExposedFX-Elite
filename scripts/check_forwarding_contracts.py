@@ -116,7 +116,7 @@ def check_routes():
 
 def check_worker_invariants():
     worker = (PACKAGE / "worker_fixed.py").read_text(encoding="utf-8-sig")
-    for marker in ("message_map = load_map()", "liveness.exit_disconnected("):
+    for marker in ("message_map = open_message_map(", "liveness.exit_disconnected("):
         require(marker in worker, f"Expected live-worker guard missing: {marker}")
     policy = (PACKAGE / "owner_forwarding_policy.py").read_text(encoding="utf-8-sig")
     for paused in ("-1003216105903", "-1003918958200", "-1004442967052"):

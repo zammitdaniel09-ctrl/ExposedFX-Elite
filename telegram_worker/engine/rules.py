@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from typing import FrozenSet, Iterable, Optional, Sequence
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Sequence, Set
 
 from telethon.tl.types import MessageMediaWebPage
 
@@ -30,20 +30,20 @@ BARE_DOMAIN_RE = re.compile(
 )
 
 
-def text_of(message) -> str:
+def text_of(message: Any) -> str:
     return message.message or message.raw_text or message.text or ""
 
 
-def entities_of(message):
+def entities_of(message: Any) -> List[Any]:
     return getattr(message, "entities", None) or []
 
 
-def is_real_media(message) -> bool:
+def is_real_media(message: Any) -> bool:
     media = getattr(message, "media", None)
     return bool(media) and not isinstance(media, MessageMediaWebPage)
 
 
-def marked_peer_id(peer) -> Optional[int]:
+def marked_peer_id(peer: Any) -> Optional[int]:
     """PeerChannel/PeerChat -> the marked id used by routes (-100...)."""
     if peer is None:
         return None
@@ -59,7 +59,7 @@ def marked_peer_id(peer) -> Optional[int]:
     return int(user_id) if user_id else None
 
 
-def forward_origins(message) -> set:
+def forward_origins(message: Any) -> set:
     fwd = getattr(message, "fwd_from", None)
     if not fwd:
         return set()
@@ -70,7 +70,7 @@ def forward_origins(message) -> set:
     }
 
 
-def _peer_ids(obj) -> Iterable[int]:
+def _peer_ids(obj: Any) -> Iterable[int]:
     if isinstance(obj, int):
         yield obj
         return
@@ -80,8 +80,8 @@ def _peer_ids(obj) -> Iterable[int]:
             yield int(value)
 
 
-def sender_ids(message) -> set:
-    ids = set()
+def sender_ids(message: Any) -> Set[int]:
+    ids: Set[int] = set()
     for attr in ("sender_id", "from_id"):
         ids.update(_peer_ids(getattr(message, attr, None)))
     fwd = getattr(message, "fwd_from", None)
@@ -98,10 +98,10 @@ class Rules:
     filter_links: bool = True
     vip_chat: int = -1003726286301
     vip_blocked_source: int = -1002521699926
-    stopped: object = field(default=None, compare=False)  # callable(route_dict) -> bool
+    stopped: Optional[Callable[[Dict[str, Any]], bool]] = field(default=None, compare=False)
 
     @classmethod
-    def from_env(cls, stopped=None) -> "Rules":
+    def from_env(cls, stopped: Optional[Callable[[Dict[str, Any]], bool]] = None) -> "Rules":
         raw = os.environ.get("BLOCKED_SENDER_IDS", "7556281143").strip()
         return cls(
             blocked_senders=frozenset(int(x) for x in re.split(r"[,\s]+", raw) if x.strip()),
@@ -111,7 +111,7 @@ class Rules:
         )
 
     # -- content ---------------------------------------------------------
-    def has_mention(self, message) -> bool:
+    def has_mention(self, message: Any) -> bool:
         if not self.filter_mentions:
             return False
         if any(type(e).__name__ == "MessageEntityMention" for e in entities_of(message)):
@@ -119,7 +119,7 @@ class Rules:
         text = text_of(message)
         return bool(text and USERNAME_RE.search(text))
 
-    def has_link(self, message) -> bool:
+    def has_link(self, message: Any) -> bool:
         if not self.filter_links:
             return False
         for entity in entities_of(message):
@@ -133,21 +133,21 @@ class Rules:
         text = text_of(message)
         return bool(text and (URL_SCHEME_RE.search(text) or BARE_DOMAIN_RE.search(text)))
 
-    def blocked_content(self, message) -> bool:
+    def blocked_content(self, message: Any) -> bool:
         return self.has_mention(message) or self.has_link(message)
 
     # -- origin ----------------------------------------------------------
-    def blocked_sender(self, message) -> bool:
+    def blocked_sender(self, message: Any) -> bool:
         return bool(sender_ids(message) & self.blocked_senders)
 
-    def vip_hard_block(self, message, route: Route) -> bool:
+    def vip_hard_block(self, message: Any, route: Route) -> bool:
         if route.dest_chat != self.vip_chat:
             return False
         return route.source_chat == self.vip_blocked_source or self.vip_blocked_source in forward_origins(
             message
         )
 
-    def loop(self, message, route: Route) -> bool:
+    def loop(self, message: Any, route: Route) -> bool:
         return bool(route.loop_guard_peers and forward_origins(message) & route.loop_guard_peers)
 
     # -- retired paths (hard stops kept from the legacy copy path) --------
@@ -162,7 +162,9 @@ class Rules:
         return None
 
     # -- whole unit ------------------------------------------------------
-    def skip_reason(self, unit: Sequence, route: Route, legacy_route=None) -> Optional[str]:
+    def skip_reason(
+        self, unit: Sequence, route: Route, legacy_route: Optional[Dict[str, Any]] = None
+    ) -> Optional[str]:
         """First rule that stops this post on this route, or None to deliver."""
         if self.stopped is not None and legacy_route is not None and self.stopped(legacy_route):
             return "owner_stopped"

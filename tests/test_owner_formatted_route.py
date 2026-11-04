@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 package = sys.modules.setdefault("telegram_worker", types.ModuleType("telegram_worker"))
 package.__path__ = [str(ROOT / "telegram_worker")]
 from telegram_worker import library_signal_format as fmt
-from telegram_worker import owner_formatted_route_20261103 as route_module
+from telegram_worker import owner_formatted_route as route_module
 from telegram_worker import owner_forwarding_policy as policy
 from telethon.tl.types import MessageEntityCustomEmoji
 

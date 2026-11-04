@@ -72,10 +72,22 @@ class AltStopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, [1])
         self.assertTrue(policy.is_stopped(route))
 
-    async def test_stopped_watchdog_does_not_read_or_modify_checkpoint(self):
-        ns = load_functions("watchdog")
-        await ns["watchdog"](dict(source_chat=-1003252087470, dest_chat=-1004367822325, dest_topic=2585))
-        # No checkpoint helper is provided: touching it would fail the test.
+    async def test_stopped_route_is_handled_without_delivering(self):
+        route = dict(source_chat=-1003252087470, source_topic=None, dest_chat=-1004367822325, dest_topic=2585)
+        policy.stop_route(route, "ChannelPrivateError", logging.getLogger("alt-test"))
+        ns = load_functions("intake_deliver")
+        # No copy_unit or checkpoint helper is provided: touching them would fail the test.
+        self.assertIs(await ns["intake_deliver"](route, [object()], "watchdog"), True)
+
+    async def test_route_stopped_during_delivery_is_not_retried(self):
+        route = dict(source_chat=-1004349952583, source_topic=5247, dest_chat=-1004367822325, dest_topic=7250)
+
+        async def copy_unit(route, unit, reason):
+            policy.stop_route(route, "ChannelPrivateError", logging.getLogger("alt-test"))
+            return False
+
+        ns = load_functions("intake_deliver", copy_unit=copy_unit)
+        self.assertIs(await ns["intake_deliver"](route, [object()], "telegram_push"), True)
 
 
 if __name__ == "__main__":

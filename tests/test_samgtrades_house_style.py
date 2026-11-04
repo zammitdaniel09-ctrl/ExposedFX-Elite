@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 package = sys.modules.setdefault("telegram_worker", types.ModuleType("telegram_worker"))
 package.__path__ = [str(ROOT / "telegram_worker")]
 from telegram_worker import samgtrades_house_formatter as house
-from telegram_worker import wholechat_relay_4281603170_to_3743381585 as relay
+from telegram_worker import samgtrades_relay as relay
 from telethon.tl.types import (
     MessageEntityBold,
     MessageEntityCode,

@@ -53,15 +53,15 @@ Market Slayers VIP (-1003838973021) ──MAIN──▶ IMPERIUM FX VIP topic 9
 ### MAIN routes
 | Path | Source | Destination | Format |
 |---|---|---|---|
-| FASTVIP2 router | Market Slayers VIP | IMPERIUM FX VIP · ᴍᴀʀᴋᴇᴛ ꜱʟᴀʏᴇʀꜱ ᴠɪᴘ (9) | copy |
-| FASTVIP2 router | relay 106 AKX | VIP 11 | copy |
-| FASTVIP2 router | relay 2 | VIP Extra Partner 2 (1364) | copy |
-| FASTVIP2 router | relay 508 XAU Exclusive Room | VIP 7 | Imperium VIP format |
-| FASTVIP2 router | relay 7248 | VIP EXTRA PARTNER 1 (10877) | copy |
-| owner routes (`owner_requested_routes_20261102.py`) | relay 7250 | VIP EXTRA PARTNER [ 4 ] (12161) | copy |
+| engine intake | Market Slayers VIP | IMPERIUM FX VIP · ᴍᴀʀᴋᴇᴛ ꜱʟᴀʏᴇʀꜱ ᴠɪᴘ (9) | copy |
+| engine intake | relay 106 AKX | VIP 11 | copy |
+| engine intake | relay 2 | VIP Extra Partner 2 (1364) | copy |
+| engine intake | relay 508 XAU Exclusive Room | VIP 7 | Imperium VIP format |
+| engine intake | relay 7248 | VIP EXTRA PARTNER 1 (10877) | copy |
+| owner routes (`owner_routes.py`) | relay 7250 | VIP EXTRA PARTNER [ 4 ] (12161) | copy |
 | owner routes | VIP 1364 / 10877 / 12161 | ᴍᴀʀᴋᴇᴛ ᴍᴀᴋᴇʀꜱ 28 / 8 / 24 | copy |
-| `owner_formatted_route_20261103.py` | relay 8323 | VIP EXTRA PARTNER [ 5 ] (12289) | library format (signals, updates, recaps) |
-| `wholechat_relay_4281603170_to_3743381585.py` | Signals \| SamGtrades | Exposed \| VIP | house library format |
+| `owner_formatted_route.py` | relay 8323 | VIP EXTRA PARTNER [ 5 ] (12289) | library format (signals, updates, recaps) |
+| `samgtrades_relay.py` | Signals \| SamGtrades | Exposed \| VIP | house library format |
 
 Formatters: `library_signal_format.py` (EXTRA PARTNER [ 5 ]),
 `samgtrades_house_formatter.py` (Exposed | VIP), `imperium_vip_*` (VIP 7).
@@ -71,8 +71,10 @@ Custom emoji ids come from the owner's Saved Messages (`community_emoji_registry
 
 Every new post on every route, MAIN and ALT, is delivered by the engine (see
 the package docstring). ALT uses `engine/alt.py` (Telegram translation for the
-T4T route, ALT reply recovery, checkpoints, `[ALT COPIED]` markers). On MAIN: FASTVIP2 calls `fast_vip_deliver_route`, which hands the post to
-`DeliveryEngine.deliver`; the owner routes call `DeliveryEngine.copy_unit`.
+T4T route, ALT reply recovery, `[ALT COPIED]` markers). New posts reach it
+through `engine/intake.py` on both workers (below). On MAIN the intake calls
+`fast_vip_deliver_route`, which hands the post to `DeliveryEngine.deliver`;
+the owner routes call `DeliveryEngine.copy_unit`.
 One planner decides Send or Skip (rules, reply target, formatter), one
 deliverer sends, verifies, retries and writes the message map. Edits and
 deletes still go through the worker's mapped edit/delete handlers, which read
@@ -99,18 +101,35 @@ the cutover commit. State files are shared and need no changes.
    written only for real access loss; "entity/topic unavailable" must repeat
    3 times over 10 minutes first.
 3. Paused routes are archived in `docs/paused_routes_20261103.md` (45 routes).
-4. CI: `forwarding-safety.yml` compiles both workers, checks route contracts
-   and runs every unit test (MAIN and ALT) on each push.
+4. CI: `forwarding-safety.yml` compiles both workers, checks route contracts,
+   black, pyflakes, strict mypy on the engine and state store, every unit
+   test (MAIN and ALT) and a 95% branch-coverage floor on the engine, state
+   store, liveness and monitoring, on each push.
+5. Replay audit: after every deploy each worker re-plans its most recent
+   delivered posts on every route and compares them with the copies already sent;
+   any difference is a Saved Messages notice (🔍).
 
-**Restarts do not lose posts.** Before FASTVIP2 starts, `engine/gaps.py`
-checks each route from its last delivered post: missed posts up to 10 minutes
-old are delivered in order; older ones are not sent (stale signals mislead)
-and you get a Saved Messages notice with their ids. Owner routes, the 8323
-formatter and ALT keep their own checkpoints and recover the same way.
+**Intake (`engine/intake.py`, MAIN and ALT).** Telegram pushes are the fast
+path; each source (chat + topic) has one writer and an oldest-first queue. A
+watchdog per source reads only the posts after its checkpoint every 30 s and
+queues anything not handled: a missed push, a failed delivery, or posts that
+arrived during a restart. The checkpoint ("everything up to here is handled")
+is stored in `message_map.sqlite3` and moved only by the watchdog over posts it
+has seen, so a later success can never skip an earlier failure. On MAIN a post
+older than 10 minutes is not sent (stale signals mislead) and you get a Saved
+Messages notice; ALT has no age limit. A post that still fails after 120
+attempts (about an hour) is skipped with a notice. Owner routes and the 8323
+formatter keep their own checkpoints.
+
+**State store (`state_store.py`).** The message map lives in SQLite
+(`message_map.sqlite3`, one row per copy) instead of a JSON file rewritten on
+every delivery. `message_map.json` is still written every 5 minutes and when
+Railway stops the worker, so rolling back to older code starts from the
+current map; entries only the JSON has are merged back on the next start.
 
 **No monkeypatching.** Startup is explicit in `worker_fixed.main()`: engine,
-owner routes, 8323 formatter, SamGtrades relay, health monitor, gap check,
-FASTVIP2. The one interception left is the owner send guard on
+owner routes, 8323 formatter, SamGtrades relay, health monitor, replay audit,
+intake. The one interception left is the owner send guard on
 `client._call`, the last line of defence for stopped chats.
 
 ## Monitoring
@@ -136,19 +155,28 @@ messages that account's Saved Messages only when something needs attention:
 | ⚠️ N failed deliveries in 10 min | Same route failing repeatedly | Railway logs for that route name |
 | ⏳ flood wait ≥ 60s | Telegram rate-limited the account | Usually clears itself; repeated = too many API calls |
 | 🚨 unexpected error | A traceback outside known paths | Railway logs at that time |
-| ⏭️ post(s) not sent after a restart | Missed during a restart and older than 10 min | Forward manually if still relevant |
+| ⏭️ post(s) not sent | MAIN post older than 10 min when it could be sent (restart, long outage) | Forward manually if still relevant |
+| ⚠️ post(s) skipped after N attempts | Delivery kept failing for about an hour | Railway logs for that route; forward manually |
+| 🔍 sent differently after this deploy | Replay audit: new code would format recent posts differently | Check the change; roll back if unintended |
 | ♻️ restarted itself | Lost connection or stalled loop; restarted automatically | Nothing, unless it repeats |
 
 A digest of deliveries, failures and lag per route arrives daily at 08:00 Malta.
 
+Optional dead-man's switch: set `HEARTBEAT_URL` (for example a
+healthchecks.io check) on MAIN and ALT. Each pings it every 60 s while
+connected to Telegram, so the check alerts you if a worker is down, stuck or
+logged out, even when nothing in Railway looks wrong. Also turn on Railway's
+deploy-crash notifications in the account settings.
+
 ## State on the volumes (never delete or overwrite)
 
 MAIN `/app/data`: session (rewritten from `SESSION_B64_*` at start),
-`message_map.json` (source→destination ids for replies/edits; an unreadable
-file is copied to `message_map.corrupt-*.json`), owner route/formatter state,
+`message_map.sqlite3` (source→destination ids for replies/edits, plus the
+intake checkpoints) and its `message_map.json` snapshot (an unreadable file
+is copied to `message_map.corrupt-*.json`), owner route/formatter state,
 wholechat map, stop ledger, `health_monitor_v1.json`, `engine_shadow_v1.json`,
 `liveness_exit_v1.json` (only between a self-restart and the next start).
-ALT `/data-alt`: session, message map, route checkpoints, last-N import state,
+ALT `/data-alt`: session, `message_map.sqlite3` + JSON snapshot, route checkpoints (`route_state.json`, kept for rollbacks), last-N import state,
 `health_monitor_v1.json`, `liveness_exit_v1.json`.
 
 ## Runbook
@@ -165,7 +193,7 @@ ALT `/data-alt`: session, message map, route checkpoints, last-N import state,
 - **Before any change:** `python scripts/check_forwarding_contracts.py`,
   `python -m unittest discover -s tests` and
   `black --check --skip-magic-trailing-comma -l 110 telegram_worker scripts tests`
-  must pass (CI runs all three plus pyflakes on the live workers and engine).
+  must pass (CI also runs pyflakes, mypy and the coverage floor).
 
 ## Obsolete MAIN variables (safe to delete in Railway)
 
@@ -188,4 +216,17 @@ Deleting them changes nothing; Railway restarts MAIN once.
 `PROCESS_GROUPED_MESSAGES_IN_NEW_HANDLER`, `RELAY115_VIP1375_LAST50_ONCE`,
 `ROUTE_TITLE_CHECK_INTERVAL_SECONDS`, `SERVER_URL` (MAIN's copy; the server
 keeps its own), `VERIFY_DEST_TOPICS_ON_START`, `VERIFY_ROUTE_TITLES`,
-`VIP7_REBUILD_FETCH_LIMIT`.
+`VIP7_REBUILD_FETCH_LIMIT`, `ALLOW_VIP_TOPIC_MOVE_LAST50_V1`,
+`VIP7_REBUILD_FROM_RELAY508_ONCE`, `FASTVIP2_WATCHDOG_LIMIT`,
+`FASTVIP2_WATCHDOG_CONCURRENCY`, `FAST_VIP_FETCH_CONCURRENCY`.
+
+## Obsolete ALT variables (safe to delete in Railway)
+
+Retired one-time imports and the old watchdog's page size:
+`ALT_ARABIC115_LAST50_COUNT`, `ALT_ARABIC115_LAST50_FETCH_LIMIT`,
+`ALT_ARABIC115_LAST50_ONCE`, `ALT_ENGINE_ROUTES`, `ALT_FORCE50_COUNT`,
+`ALT_FORCE50_FETCH_LIMIT`, `ALT_FORCE50_ONCE`, `ALT_FORCE50_RUN_ID`,
+`ALT_FORCE_HISTORY_ONCE`, `ALT_HISTORY_COUNT`, `ALT_HISTORY_FETCH_LIMIT`,
+`ALT_HISTORY_ONCE`, `ALT_HISTORY_REQUIRE_PREMIUM`, `ALT_HISTORY_RUN_ID`,
+`ALT_LAST50_COUNT`, `ALT_LAST50_FETCH_LIMIT`, `ALT_LAST50_ONCE`,
+`ALT_ROUTE508_FETCH_LIMIT`, `ALT_ROUTE508_LAST50_ONCE`, `ALT_WATCHDOG_LIMIT`.

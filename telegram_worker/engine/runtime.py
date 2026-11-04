@@ -1,6 +1,6 @@
 """The MAIN worker's delivery engine: one planner, one deliverer, both entry points.
 
-FASTVIP2 (worker_fixed.fast_vip_deliver_route) and the owner routes
+The live VIP routes (engine/intake.py, worker_fixed.fast_vip_deliver_route) and the owner routes
 (owner_requested_routes.copy_unit) both deliver through DeliveryEngine, so
 every live MAIN route shares the same rules, rendering, reply resolution,
 retries and message map.
@@ -9,7 +9,7 @@ retries and message map.
 from __future__ import annotations
 
 import logging
-from typing import Dict, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from telegram_worker import owner_forwarding_policy as policy
 
@@ -23,7 +23,9 @@ from .rules import Rules
 log = logging.getLogger("imperium-worker")
 
 # Routes whose posts are restyled instead of copied as written.
-FORMATTERS = {(-1004367822325, 508, -1003726286301, 7): "imperium_vip"}
+FORMATTERS: Dict[Tuple[int, Optional[int], int, int], str] = {
+    (-1004367822325, 508, -1003726286301, 7): "imperium_vip"
+}
 
 
 def formatter_for(route: Route) -> str:
@@ -36,7 +38,7 @@ def engine_route(legacy_route: Dict) -> Route:
 
 
 class DeliveryEngine:
-    def __init__(self, worker):
+    def __init__(self, worker: Any) -> None:
         self.worker = worker
         self.planner = Planner(
             rules=Rules.from_env(stopped=policy.is_stopped),
@@ -50,20 +52,20 @@ class DeliveryEngine:
             sleep_cap=int(getattr(worker, "COPY_RETRY_SLEEP_CAP_SECONDS", 120) or 120),
         )
 
-    def _permanently_failed(self, legacy_route, ids) -> bool:
+    def _permanently_failed(self, legacy_route: Dict, ids: Sequence[int]) -> bool:
         ledger = getattr(self.worker, "FASTVIP_PERMANENT_FAILURES", None)
         return bool(ledger and ledger.contains_all(legacy_route, ids))
 
     async def deliver(self, legacy_route: Dict, unit: Sequence, live: bool = True) -> bool:
-        """FASTVIP2: True when handled (sent or rightly skipped), False to retry."""
+        """Live VIP routes: True when handled (sent or rightly skipped), False to retry."""
         return await self.deliverer.deliver(legacy_route, engine_route(legacy_route), unit, live=live)
 
-    async def copy_unit(self, owner_routes, legacy_route: Dict, unit: Sequence):
+    async def copy_unit(self, owner_routes: Any, legacy_route: Dict, unit: Sequence) -> Tuple[str, List[int]]:
         """Owner routes: ("existing" | "sent" | "filtered", destination ids)."""
         return await self.deliverer.copy_unit(owner_routes, legacy_route, engine_route(legacy_route), unit)
 
 
-def install_engine(worker) -> DeliveryEngine:
+def install_engine(worker: Any) -> DeliveryEngine:
     engine = DeliveryEngine(worker)
     worker.DELIVERY_ENGINE = engine
     log.warning(
@@ -74,7 +76,7 @@ def install_engine(worker) -> DeliveryEngine:
     return engine
 
 
-def restyle_for_route(message, legacy_route: Dict, registry):
+def restyle_for_route(message: Any, legacy_route: Dict, registry: Any) -> Any:
     """The message as this route publishes it: restyled for VIP 7, unchanged elsewhere.
 
     Used for edits, so an edited VIP7 signal or update keeps the house style.

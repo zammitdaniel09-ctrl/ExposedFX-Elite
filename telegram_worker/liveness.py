@@ -107,3 +107,59 @@ def exit_disconnected(service, data_dir, logger):
     logger.critical("[LIVENESS DISCONNECTED] service=%s action=exit_for_restart", service)
     write_marker(data_dir, service, "Telegram connection was lost and did not come back")
     raise SystemExit(EXIT_DISCONNECTED)
+
+
+class Heartbeat:
+    """Dead-man's switch: ping HEARTBEAT_URL every minute while Telegram is connected.
+
+    An external monitor (for example a free healthchecks.io check) alerts the
+    owner when the pings stop. That covers what no in-process alert can: both
+    workers down at once, a Railway outage, or the account being logged out.
+    """
+
+    def __init__(self, url, healthy, logger, interval=60, fetch=None, sleep=asyncio.sleep):
+        self.url = url
+        self.healthy = healthy
+        self.log = logger
+        self.interval = interval
+        self.fetch = fetch or _get
+        self.sleep = sleep
+        self.failures = 0
+
+    async def beat_once(self):
+        if not self.healthy():
+            return False
+        try:
+            await asyncio.to_thread(self.fetch, self.url)
+        except Exception as exc:
+            self.failures += 1
+            if self.failures in (1, 10) or self.failures % 60 == 0:
+                self.log.warning("[HEARTBEAT PING FAILED] failures=%s %s", self.failures, type(exc).__name__)
+            return False
+        self.failures = 0
+        return True
+
+    async def run(self):
+        while True:
+            await self.beat_once()
+            await self.sleep(self.interval)
+
+
+def _get(url):
+    import urllib.request
+
+    with urllib.request.urlopen(url, timeout=10) as response:
+        response.read()
+
+
+def start_heartbeat(service, client, logger):
+    url = os.environ.get("HEARTBEAT_URL", "").strip()
+    if not url:
+        logger.info(
+            "[HEARTBEAT] service=%s disabled (set HEARTBEAT_URL to a healthchecks.io ping URL)", service
+        )
+        return None
+    heartbeat = Heartbeat(url, healthy=client.is_connected, logger=logger)
+    heartbeat.task = asyncio.get_running_loop().create_task(heartbeat.run())
+    logger.warning("[HEARTBEAT READY] service=%s interval=%ss", service, heartbeat.interval)
+    return heartbeat

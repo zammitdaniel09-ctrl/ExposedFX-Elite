@@ -21,6 +21,7 @@ from telegram_worker.routes import ROUTES
 from telegram_worker import owner_forwarding_policy as owner_policy
 from telegram_worker.stats_reporter import WeeklyStats
 from telegram_worker.engine.model import entity_keys
+from telegram_worker.state_store import open_message_map
 from telegram_worker.engine.runtime import restyle_for_route
 
 from telegram_worker import liveness
@@ -70,29 +71,6 @@ NEW_MIRROR_BACKFILL_ONLY_DEST_TOPICS = (
 
 # A live route is NEVER allowed to process messages until it has
 # successfully snapshotted the current Telegram newest message ID.
-
-
-# BEGIN VIP_TOPIC_MOVE_STATE_V1
-
-VIP_TOPIC_MOVE_ENABLED = os.environ.get("ALLOW_VIP_TOPIC_MOVE_LAST50_V1", "0").strip() == "1"
-
-VIP_TOPIC_MOVE_NEW_CHAT = -1003726286301
-
-VIP_TOPIC_MOVE_MAP = {2786: 5, 5655: 11, 5551: 7, 5947: 13, 6813: 9}
-
-# While a topic is migrating, outbound routes from that new VIP
-# topic are temporarily paused.
-#
-# Inbound provider -> NEW VIP routes continue normally.
-VIP_TOPIC_MOVE_ACTIVE_TOPICS = set(VIP_TOPIC_MOVE_MAP.values()) if VIP_TOPIC_MOVE_ENABLED else set()
-
-# Exact NEW VIP message IDs created by history migration.
-#
-# When outbound routing resumes, these IDs are skipped while
-# genuine new/live messages remain eligible.
-VIP_TOPIC_MOVE_SUPPRESS_IDS = set()
-
-# END VIP_TOPIC_MOVE_STATE_V1
 
 
 STRICT_ROUTE_TITLE_CHECK = os.environ.get("STRICT_ROUTE_TITLE_CHECK", "0").strip() == "1"
@@ -202,9 +180,9 @@ def load_map():
 
 
 def save_map():
-    tmp = MESSAGE_MAP_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(message_map), encoding="utf-8")
-    tmp.replace(MESSAGE_MAP_FILE)
+    # Every write is already durable in SQLite; this refreshes the JSON copy
+    # kept for rollbacks (at most every 5 minutes, off the event loop).
+    message_map.snapshot_to(MESSAGE_MAP_FILE)
 
 
 def load_dedupe():
@@ -256,7 +234,7 @@ def existing_destination_ids(message, route):
 
 
 write_login_file()
-message_map = load_map()
+message_map = open_message_map(DATA_DIR, MESSAGE_MAP_FILE, load_legacy=load_map)
 content_dedupe_map = load_dedupe()
 client = TelegramClient(str(SESSION_BASE), API_ID, API_HASH)
 DELIVERY_ENGINE = None  # telegram_worker.engine.runtime.DeliveryEngine, set in main()
@@ -1137,13 +1115,6 @@ async def get_route_poll_messages(route, limit):
 FAST_VIP_CHAT = -1003726286301
 
 
-# Maximum simultaneous Telegram history fetches used by
-# the VIP priority router.
-FAST_VIP_FETCH_CONCURRENCY = max(1, int(os.environ.get("FAST_VIP_FETCH_CONCURRENCY", "6")))
-
-FAST_VIP_FETCH_SEMAPHORE = asyncio.Semaphore(FAST_VIP_FETCH_CONCURRENCY)
-
-
 def is_fast_vip_route(route):
     """
     Every live-only route whose source OR destination is
@@ -1169,168 +1140,7 @@ def fast_vip_routes():
     return [route for route in ROUTES if is_fast_vip_route(route)]
 
 
-def fast_vip_source_key(route):
-
-    return (
-        int(route["source_chat"]),
-        (int(route["source_topic"]) if route.get("source_topic") is not None else None),
-    )
-
-
-def fast_vip_route_groups():
-    """
-    Group destinations by SOURCE.
-
-    Important for outbound VIP fan-out:
-
-        VIP topic 11
-              |
-              +--> Jamie
-              +--> Market Slayers
-
-    Topic 11 is fetched ONCE, then copied concurrently
-    to both destinations.
-    """
-    groups = {}
-    for route in fast_vip_routes():
-        key = fast_vip_source_key(route)
-        groups.setdefault(key, []).append(route)
-    return groups
-
-
-# ============================================================
-# SPECIAL SAFE DEDUPE FOR THE TWO PROVIDERS FEEDING VIP 11
-#
-# Old behaviour:
-#     A forwards B -> loop guard can discard it immediately.
-#
-# New behaviour:
-#     first exact ORIGINAL Telegram post seen wins.
-#
-# Where Telegram exposes ForwardHeader.channel_post:
-#
-#     direct A message      = (A, original_msg_id)
-#     B forwarding A       = (A, original_msg_id)
-#
-# They therefore become one canonical event regardless of
-# which provider copy arrives first.
-# ============================================================
-
-FAST_VIP_PAIR_SOURCES = {-1002438454194, -1003252087470}
-
-FAST_VIP_PAIR_DEST_TOPIC = 11
-
-FAST_VIP_PAIR_SEEN = {}
-FAST_VIP_PAIR_LOCK = asyncio.Lock()
-
-
-def is_fast_vip_pair_route(route):
-    try:
-        return (
-            int(route.get("source_chat", 0)) in FAST_VIP_PAIR_SOURCES
-            and route.get("source_topic") is None
-            and (int(route.get("dest_chat", 0)) == FAST_VIP_CHAT)
-            and (int(route.get("dest_topic", 0)) == FAST_VIP_PAIR_DEST_TOPIC)
-        )
-    except Exception:
-        return False
-
-
-def fast_vip_pair_canonical_key(message, route):
-
-    if not is_fast_vip_pair_route(route):
-        return None
-
-    source_chat = int(route["source_chat"])
-
-    source_id = int(getattr(message, "id", 0) or 0)
-
-    fwd = getattr(message, "fwd_from", None)
-
-    if fwd:
-
-        try:
-
-            origins = forward_origin_chat_ids(message) & FAST_VIP_PAIR_SOURCES
-
-        except Exception:
-
-            origins = set()
-
-        original_post = getattr(fwd, "channel_post", None)
-
-        if len(origins) == 1 and original_post:
-
-            original_chat = next(iter(origins))
-
-            return ("telegram-original", int(original_chat), int(original_post))
-
-    # Direct source message.
-    return ("telegram-original", source_chat, source_id)
-
-
-async def fast_vip_pair_reserve(key):
-
-    if key is None:
-        return True
-
-    async with FAST_VIP_PAIR_LOCK:
-
-        now = time.time()
-
-        # Keep one hour of exact Telegram-original IDs.
-        expired = [
-            candidate
-            for candidate, timestamp in FAST_VIP_PAIR_SEEN.items()
-            if (now - float(timestamp)) > 3600
-        ]
-
-        for candidate in expired:
-
-            FAST_VIP_PAIR_SEEN.pop(candidate, None)
-
-        if key in FAST_VIP_PAIR_SEEN:
-
-            return False
-
-        FAST_VIP_PAIR_SEEN[key] = now
-
-        return True
-
-
-async def fast_vip_pair_release(key):
-
-    if key is None:
-        return
-
-    async with FAST_VIP_PAIR_LOCK:
-
-        FAST_VIP_PAIR_SEEN.pop(key, None)
-
-
 # END FAST_VIP_ROUTER_CONFIG_V1
-
-
-# BEGIN FAST_VIP_ROUTER_V1
-
-
-async def fast_vip_build_units(newer):
-    units = []
-    used_ids = set()
-    for message in newer:
-        mid = int(getattr(message, "id", 0) or 0)
-        if mid in used_ids:
-            continue
-        grouped_id = getattr(message, "grouped_id", None)
-        if grouped_id:
-            unit = [candidate for candidate in newer if getattr(candidate, "grouped_id", None) == grouped_id]
-            unit.sort(key=lambda candidate: int(getattr(candidate, "id", 0) or 0))
-        else:
-            unit = [message]
-        for item in unit:
-            used_ids.add(int(getattr(item, "id", 0) or 0))
-        units.append(unit)
-    return units
 
 
 # BEGIN FASTVIP PERMANENT DESTINATION ERRORS V1
@@ -1343,7 +1153,7 @@ FASTVIP_IMPAIRED_ALERTS = Throttle(6 * 3600)
 
 
 async def fast_vip_deliver_route(route, unit, skip_permanent_errors=False):
-    """Deliver one FASTVIP2 post on one route through the delivery engine.
+    """Deliver one live VIP post on one route through the delivery engine.
 
     True when handled (sent, already copied or rightly skipped), False to let
     the watchdog retry. skip_permanent_errors marks live delivery: a destination
@@ -1352,605 +1162,70 @@ async def fast_vip_deliver_route(route, unit, skip_permanent_errors=False):
     return await DELIVERY_ENGINE.deliver(route, unit, live=skip_permanent_errors)
 
 
-# END FAST_VIP_ROUTER_V1
-
-
-# BEGIN FAST_VIP_EVENT_ROUTER_V2
-
-# ============================================================
-# FASTVIP EVENT ROUTER V2
-#
-# PRIMARY:
-#   Telegram updates pushed directly to this process.
-#
-# FALLBACK:
-#   Separate polling watchdog.
-#
-# The watchdog NEVER owns the event queue and NEVER blocks
-# NewMessage / Album delivery.
-# ============================================================
-
-FASTVIP2_WATCHDOG_SECONDS = max(2.0, float(os.environ.get("FASTVIP2_WATCHDOG_SECONDS", "5")))
-
-FASTVIP2_WATCHDOG_LIMIT = max(50, int(os.environ.get("FASTVIP2_WATCHDOG_LIMIT", "300")))
-
-FASTVIP2_WATCHDOG_CONCURRENCY = max(1, int(os.environ.get("FASTVIP2_WATCHDOG_CONCURRENCY", "3")))
-
-
-FASTVIP2_GROUPS = fast_vip_route_groups()
-
-FASTVIP2_SOURCE_CHATS = sorted({int(source_chat) for source_chat, source_topic in FASTVIP2_GROUPS.keys()})
-
-
-FASTVIP2_QUEUES = {}
-
-# Units already sitting in an event queue.
-FASTVIP2_QUEUED = set()
-
-# Units successfully handled during this process lifetime.
-FASTVIP2_HANDLED = {}
-
-# Startup baseline for WATCHDOG ONLY.
-# Event updates do not depend on this baseline.
-FASTVIP2_WATCHDOG_BASELINES = {}
-
-FASTVIP2_WATCHDOG_SEMAPHORE = asyncio.Semaphore(FASTVIP2_WATCHDOG_CONCURRENCY)
-
-
-def fastvip2_queue_for(source_key):
-    queue = FASTVIP2_QUEUES.get(source_key)
-    if queue is None:
-        queue = asyncio.Queue()
-        FASTVIP2_QUEUES[source_key] = queue
-    return queue
-
-
-def fastvip2_unit_ids(unit):
-    return tuple((int(getattr(item, "id", 0) or 0) for item in unit))
-
-
-def fastvip2_token(source_key, unit):
-
-    return (source_key, fastvip2_unit_ids(unit))
-
-
-def fastvip2_prune_handled():
-    now = time.time()
-    expired = [token for token, timestamp in FASTVIP2_HANDLED.items() if now - float(timestamp) > 7200]
-    for token in expired:
-        FASTVIP2_HANDLED.pop(token, None)
-
-
-def fastvip2_routes_fully_mapped(routes, unit):
-    for route in routes:
-        for message in unit:
-            if not existing_destination_ids(message, route):
-                return False
-    return True
-
-
-def fastvip2_matching_groups(chat_id, message):
-
-    try:
-
-        chat_id = int(chat_id)
-
-    except Exception:
-
-        return []
-
-    try:
-
-        topic_id = topic_of(message, chat_id)
-
-    except Exception:
-
-        topic_id = None
-
-    matches = []
-
-    for source_key, routes in FASTVIP2_GROUPS.items():
-
-        source_chat, source_topic = source_key
-
-        if int(source_chat) != chat_id:
-            continue
-
-        # Whole-chat source route.
-        if source_topic is None:
-
-            matches.append((source_key, routes))
-
-            continue
-
-        try:
-
-            same_topic = int(source_topic) == int(topic_id)
-
-        except Exception:
-
-            same_topic = False
-
-        if same_topic:
-
-            matches.append((source_key, routes))
-
-    return matches
-
-
-async def fastvip2_enqueue(source_key, routes, unit, reason):
-
-    unit = list(unit or [])
-
-    if not unit:
-        return False
-
-    unit.sort(key=lambda message: int(getattr(message, "id", 0) or 0))
-
-    token = fastvip2_token(source_key, unit)
-
-    if unit_has_username_mention(unit):
-
-        FASTVIP2_HANDLED[token] = time.time()
-
-        log_username_filter_main(unit, "fastvip2", source_chat=source_key[0], source_topic=source_key[1])
-
-        return False
-
-    fastvip2_prune_handled()
-
-    if token in FASTVIP2_HANDLED:
-
-        return False
-
-    if token in FASTVIP2_QUEUED:
-
-        return False
-
-    # Message map is the durable first duplicate barrier.
-    if fastvip2_routes_fully_mapped(routes, unit):
-
-        FASTVIP2_HANDLED[token] = time.time()
-
-        return False
-
-    FASTVIP2_QUEUED.add(token)
-
-    queued_at = time.monotonic()
-
-    await fastvip2_queue_for(source_key).put((routes, unit, reason, token, queued_at))
-
-    log.info(
-        "[FASTVIP2 QUEUED] "
-        f"source={source_key[0]}_"
-        f"{source_key[1]} "
-        f"ids={list(fastvip2_unit_ids(unit))} "
-        f"reason={reason}"
+# BEGIN ENGINE_INTAKE_V1
+# Live VIP routes reach the delivery engine through engine/intake.py: Telegram
+# pushes first, a checkpointed watchdog behind them, posts that arrived during
+# a restart delivered in order, and posts older than FASTVIP_STALE_SECONDS
+# reported to the owner instead of sent.
+FASTVIP_WATCHDOG_SECONDS = max(2.0, float(os.environ.get("FASTVIP2_WATCHDOG_SECONDS", "30")))
+FASTVIP_STALE_SECONDS = 600
+INTAKE = None
+
+
+def intake_pending(route, unit):
+    """Would this route still send the post? (Stale posts are only reported then.)"""
+    from telegram_worker.engine.model import Send
+    from telegram_worker.engine.runtime import engine_route
+
+    DELIVERY_ENGINE.planner.context["emoji_registry"] = EMOJI_REGISTRY
+    plan = DELIVERY_ENGINE.planner.plan(engine_route(route), unit, route, check_ledger=True)
+    return isinstance(plan, Send)
+
+
+async def intake_deliver(route, unit, reason):
+    return await fast_vip_deliver_route(route, unit, skip_permanent_errors=True)
+
+
+async def start_engine_intake():
+    from telegram_worker.engine.intake import (
+        Checkpoints,
+        Intake,
+        first_start_checkpoint,
+        group_by_source,
+        last_delivered,
     )
 
-    return True
+    global INTAKE
+    for _ in range(60):  # VIP7 restyling needs the emoji registry; it is ready within a second or two
+        if EMOJI_REGISTRY is not None:
+            break
+        await asyncio.sleep(0.25)
 
+    async def first_checkpoint(source, routes):
+        return await first_start_checkpoint(client, source, [last_delivered(message_map, r) for r in routes])
 
-async def fastvip2_process_unit(source_key, routes, unit, reason):
-
-    ids = list(fastvip2_unit_ids(unit))
-
-    if not ids:
-        return True
-
-    # BEGIN VIP7_REBUILD_FASTVIP_GATE_V1
-    vip7_rebuild_gate = vip7_rebuild_should_hold_or_suppress(source_key, unit)
-
-    if vip7_rebuild_gate is not None:
-        return bool(vip7_rebuild_gate)
-    # END VIP7_REBUILD_FASTVIP_GATE_V1
-
-    first = unit[0]
-
-    # ========================================================
-    # Preserve old VIP migration suppression semantics.
-    # ========================================================
-
-    if int(source_key[0]) == VIP_TOPIC_MOVE_NEW_CHAT:
-
-        try:
-
-            source_topic = int(source_key[1]) if source_key[1] is not None else None
-
-        except Exception:
-
-            source_topic = None
-
-        if source_topic in VIP_TOPIC_MOVE_ACTIVE_TOPICS:
-
-            log.warning(
-                "[FASTVIP2 MIGRATION PAUSED] " f"source={source_key[0]}_" f"{source_key[1]} " f"ids={ids}"
-            )
-
-            return False
-
-        migration_flags = [message_id in VIP_TOPIC_MOVE_SUPPRESS_IDS for message_id in ids]
-
-        if migration_flags and all(migration_flags):
-
-            log.warning(
-                "[FASTVIP2 MIGRATION HISTORY SUPPRESSED] "
-                f"source={source_key[0]}_"
-                f"{source_key[1]} "
-                f"ids={ids}"
-            )
-
-            return True
-
-        if any(migration_flags):
-
-            log.error(
-                "[FASTVIP2 MIXED MIGRATION UNIT] "
-                f"source={source_key[0]}_"
-                f"{source_key[1]} "
-                f"ids={ids} "
-                f"flags={migration_flags}"
-            )
-
-            return False
-
-    # ========================================================
-    # Special exact first-copy-wins rule for provider pair.
-    # ========================================================
-
-    pair_key = None
-    pair_reserved = False
-
-    if len(routes) == 1 and is_fast_vip_pair_route(routes[0]):
-
-        pair_key = fast_vip_pair_canonical_key(first, routes[0])
-
-        pair_reserved = await fast_vip_pair_reserve(pair_key)
-
-        if not pair_reserved:
-
-            log.warning(
-                "[FASTVIP2 PAIR EXACT DUPLICATE SKIPPED] "
-                f"source={source_key[0]}_"
-                f"{source_key[1]} "
-                f"ids={ids} "
-                f"canonical={pair_key}"
-            )
-
-            return True
-
-    # ========================================================
-    # Fan out all destinations concurrently.
-    # ========================================================
-
-    results = await asyncio.gather(
-        *[fast_vip_deliver_route(route, unit, skip_permanent_errors=True) for route in routes],
-        return_exceptions=False,
+    INTAKE = Intake(
+        "MAIN",
+        client,
+        group_by_source(fast_vip_routes()),
+        intake_deliver,
+        Checkpoints(message_map.db),
+        topic_of,
+        first_checkpoint,
+        pending=intake_pending,
+        watchdog_seconds=FASTVIP_WATCHDOG_SECONDS,
+        stale_after=FASTVIP_STALE_SECONDS,
     )
+    return INTAKE.start()
 
-    success = all(result is True for result in results)
 
-    if not success and pair_reserved:
-
-        await fast_vip_pair_release(pair_key)
-
-    if success:
-
-        log.info(
-            "[FASTVIP2 UNIT SUCCESS] "
-            f"source={source_key[0]}_"
-            f"{source_key[1]} "
-            f"ids={ids} "
-            f"reason={reason}"
-        )
-
-    return success
-
-
-async def fastvip2_source_worker(source_key):
-
-    queue = fastvip2_queue_for(source_key)
-
-    log.warning(
-        "[FASTVIP2 EVENT SOURCE READY] "
-        f"source={source_key[0]}_"
-        f"{source_key[1]} "
-        "PRIMARY=TELEGRAM_PUSH"
-    )
-
-    while True:
-
-        routes, unit, reason, token, queued_at = await queue.get()
-
-        try:
-
-            success = await fastvip2_process_unit(source_key, routes, unit, reason)
-
-            ids = list(fastvip2_unit_ids(unit))
-
-            if success:
-
-                FASTVIP2_HANDLED[token] = time.time()
-
-                queue_ms = (time.monotonic() - queued_at) * 1000.0
-
-                telegram_age_ms = None
-
-                first = unit[0]
-
-                message_date = getattr(first, "date", None)
-
-                if message_date is not None:
-
-                    try:
-
-                        telegram_age_ms = max(0.0, (time.time() - float(message_date.timestamp())) * 1000.0)
-
-                    except Exception:
-
-                        telegram_age_ms = None
-
-                log.warning(
-                    "[FASTVIP2 EVENT COMMITTED] "
-                    f"source={source_key[0]}_"
-                    f"{source_key[1]} "
-                    f"ids={ids} "
-                    f"reason={reason} "
-                    f"queue_ms={queue_ms:.1f} "
-                    f"telegram_age_ms="
-                    f"{telegram_age_ms if telegram_age_ms is not None else 'unknown'}"
-                )
-
-            else:
-
-                # Do NOT hold newer trading messages behind this one.
-                #
-                # Watchdog will retry the failed/missed unit separately.
-                log.error(
-                    "[FASTVIP2 EVENT DELIVERY FAILED - WATCHDOG RECOVERY] "
-                    f"source={source_key[0]}_"
-                    f"{source_key[1]} "
-                    f"ids={ids}"
-                )
-
-        except Exception as exc:
-
-            log.exception(
-                "[FASTVIP2 EVENT WORKER ERROR] "
-                f"source={source_key[0]}_"
-                f"{source_key[1]} "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-        finally:
-
-            FASTVIP2_QUEUED.discard(token)
-
-            queue.task_done()
-
-
-async def fastvip2_watchdog(source_key, routes):
-
-    source_chat, source_topic = source_key
-
-    # Make every exact-topic watchdog fail closed.
-    # Never fall back to whole-chat history.
-    probe_route = dict(routes[0])
-
-    if source_topic is not None:
-
-        probe_route["strict_source_topic"] = True
-
-    baseline = None
-
-    # ========================================================
-    # SAFE WATCHDOG BASELINE.
-    #
-    # The watchdog never forwards anything from this snapshot.
-    # ========================================================
-
-    while baseline is None:
-
-        try:
-
-            async with FASTVIP2_WATCHDOG_SEMAPHORE:
-
-                messages = await get_route_poll_messages(probe_route, 50)
-
-            messages = list(messages or [])
-
-            baseline = max([int(getattr(message, "id", 0) or 0) for message in messages] or [0])
-
-            FASTVIP2_WATCHDOG_BASELINES[source_key] = baseline
-
-            log.warning(
-                "[FASTVIP2 WATCHDOG BASELINE] "
-                f"source={source_chat}_"
-                f"{source_topic} "
-                f"baseline={baseline} "
-                "COPIED_HISTORY=0"
-            )
-
-        except Exception as exc:
-
-            log.warning(
-                "[FASTVIP2 WATCHDOG BASELINE FAILED] "
-                f"source={source_chat}_"
-                f"{source_topic} "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-            await asyncio.sleep(2)
-
-    while True:
-
-        await asyncio.sleep(FASTVIP2_WATCHDOG_SECONDS)
-
-        try:
-
-            async with FASTVIP2_WATCHDOG_SEMAPHORE:
-
-                messages = await get_route_poll_messages(probe_route, FASTVIP2_WATCHDOG_LIMIT)
-
-            messages = list(messages or [])
-
-            newer = [
-                message
-                for message in messages
-                if int(getattr(message, "id", 0) or 0) > baseline and not getattr(message, "action", None)
-            ]
-
-            newer.sort(key=lambda message: int(getattr(message, "id", 0) or 0))
-
-            units = await fast_vip_build_units(newer)
-
-            recovered = 0
-
-            for unit in units:
-
-                token = fastvip2_token(source_key, unit)
-
-                if token in FASTVIP2_HANDLED:
-                    continue
-
-                if token in FASTVIP2_QUEUED:
-                    continue
-
-                if fastvip2_routes_fully_mapped(routes, unit):
-
-                    FASTVIP2_HANDLED[token] = time.time()
-
-                    continue
-
-                queued = await fastvip2_enqueue(source_key, routes, unit, "watchdog_recovery")
-
-                if queued:
-
-                    recovered += 1
-
-            if recovered:
-
-                log.warning(
-                    "[FASTVIP2 WATCHDOG RECOVERY QUEUED] "
-                    f"source={source_chat}_"
-                    f"{source_topic} "
-                    f"units={recovered}"
-                )
-
-        except FloodWaitError as exc:
-
-            log.warning(
-                "[FASTVIP2 WATCHDOG FLOODWAIT] "
-                f"source={source_chat}_"
-                f"{source_topic} "
-                f"wait={int(exc.seconds)}s "
-                "LIVE_EVENTS_UNAFFECTED=True"
-            )
-
-            await asyncio.sleep(max(1, int(exc.seconds)))
-
-        except Exception as exc:
-
-            log.warning(
-                "[FASTVIP2 WATCHDOG ERROR] "
-                f"source={source_chat}_"
-                f"{source_topic} "
-                f"{type(exc).__name__}: {exc} "
-                "LIVE_EVENTS_UNAFFECTED=True"
-            )
-
-
-# ============================================================
-# LIVE TELEGRAM UPDATE HANDLERS
-# ============================================================
-
-
-@client.on(events.NewMessage(chats=FASTVIP2_SOURCE_CHATS))
-async def fastvip2_new_message_handler(event):
-
-    try:
-
-        message = event.message
-
-        # Albums are handled once by events.Album below.
-        if getattr(message, "grouped_id", None):
-
-            return
-
-        matches = fastvip2_matching_groups(event.chat_id, message)
-
-        for source_key, routes in matches:
-
-            await fastvip2_enqueue(source_key, routes, [message], "telegram_newmessage")
-
-    except Exception as exc:
-
-        log.exception(
-            "[FASTVIP2 NEWMESSAGE HANDLER ERROR] "
-            f"chat={getattr(event, 'chat_id', None)} "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-
-@client.on(events.Album(chats=FASTVIP2_SOURCE_CHATS))
-async def fastvip2_album_handler(event):
-    try:
-        unit = list(event.messages or [])
-        if not unit:
-            return
-        unit.sort(key=lambda message: int(getattr(message, "id", 0) or 0))
-        first = unit[0]
-        matches = fastvip2_matching_groups(event.chat_id, first)
-        for source_key, routes in matches:
-            await fastvip2_enqueue(source_key, routes, unit, "telegram_album")
-    except Exception as exc:
-        log.exception(
-            f"[FASTVIP2 ALBUM HANDLER ERROR] chat={getattr(event, 'chat_id', None)} {type(exc).__name__}: {exc}"
-        )
-
-
-async def fast_vip_event_router_v2():
-
-    groups = FASTVIP2_GROUPS
-
-    if not groups:
-
-        log.error("[FASTVIP2 FATAL CONFIG] " "No VIP source groups")
-
-        return
-
-    # Safety assertion:
-    # The legacy V1 router must NOT be started at runtime.
-    log.warning(
-        "[FASTVIP2 EVENT ROUTER READY] "
-        f"vip={FAST_VIP_CHAT} "
-        f"source_groups={len(groups)} "
-        f"source_chats={FASTVIP2_SOURCE_CHATS} "
-        "PRIMARY=TELEGRAM_PUSH "
-        f"WATCHDOG={FASTVIP2_WATCHDOG_SECONDS}s "
-        "WATCHDOG_ISOLATED=True "
-        "NO_HISTORY=True "
-        "SINGLE_WRITER=True"
-    )
-
-    tasks = []
-
-    for source_key, routes in groups.items():
-
-        tasks.append(asyncio.create_task(fastvip2_source_worker(source_key)))
-
-        tasks.append(asyncio.create_task(fastvip2_watchdog(source_key, routes)))
-
-    await asyncio.gather(*tasks)
-
-
-# END FAST_VIP_EVENT_ROUTER_V2
+# END ENGINE_INTAKE_V1
 
 
 async def handle_edited_message(event):
     """A source post was edited: update its mapped copies in place.
 
-    New posts are delivered by FASTVIP2 and the owner routes through the
+    New posts are delivered by the engine intake and the owner routes through the
     delivery engine; an edit never creates a new destination message.
     """
     message = event.message
@@ -2071,76 +1346,6 @@ async def get_forum_topic_title(chat_id, topic_id):
     return ""
 
 
-# BEGIN VIP7_REBUILD_FROM_RELAY508_V1
-
-VIP7_REBUILD_FROM_RELAY508_ONCE = os.environ.get("VIP7_REBUILD_FROM_RELAY508_ONCE", "0").strip() == "1"
-
-VIP7_REBUILD_SOURCE_CHAT = -1004367822325
-VIP7_REBUILD_SOURCE_TOPIC = 508
-VIP7_REBUILD_DEST_CHAT = -1003726286301
-VIP7_REBUILD_DEST_TOPIC = 7
-
-VIP7_REBUILD_STATE_FILE = DATA_DIR / "vip7_rebuild_from_relay508_v1.state.json"
-VIP7_REBUILD_DONE_FILE = DATA_DIR / "vip7_rebuild_from_relay508_v1.done.json"
-
-
-def vip7_rebuild_load_state():
-    if not VIP7_REBUILD_STATE_FILE.exists():
-        return {}
-
-    try:
-        value = json.loads(VIP7_REBUILD_STATE_FILE.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
-    except Exception:
-        return {}
-
-
-VIP7_REBUILD_SUPPRESS_IDS = set(
-    int(value) for value in vip7_rebuild_load_state().get("suppress_dest_ids", []) if str(value).strip()
-)
-
-
-def vip7_rebuild_in_progress():
-    return VIP7_REBUILD_FROM_RELAY508_ONCE and not VIP7_REBUILD_DONE_FILE.exists()
-
-
-def vip7_rebuild_should_hold_or_suppress(source_key, unit):
-    ids = [int(getattr(message, "id", 0) or 0) for message in (unit or [])]
-
-    if not ids:
-        return None
-
-    source_chat = int(source_key[0])
-    source_topic = int(source_key[1]) if source_key[1] is not None else None
-
-    # Historical refill messages created in VIP7 must never fan
-    # out through existing VIP7 outbound routes.
-    if source_chat == VIP7_REBUILD_DEST_CHAT and source_topic == VIP7_REBUILD_DEST_TOPIC:
-        flags = [message_id in VIP7_REBUILD_SUPPRESS_IDS for message_id in ids]
-
-        if flags and all(flags):
-            log.warning("[VIP7 REBUILD OUTBOUND HISTORY SUPPRESSED] " f"ids={ids}")
-            return True
-
-        if vip7_rebuild_in_progress():
-            log.warning("[VIP7 REBUILD OUTBOUND HELD] " f"ids={ids} " "WATCHDOG_WILL_RECHECK=True")
-            return False
-
-    # Hold new Relay508 live input until purge+refill finishes.
-    if (
-        source_chat == VIP7_REBUILD_SOURCE_CHAT
-        and source_topic == VIP7_REBUILD_SOURCE_TOPIC
-        and vip7_rebuild_in_progress()
-    ):
-        log.warning("[VIP7 REBUILD RELAY508 LIVE HELD] " f"ids={ids} " "WATCHDOG_WILL_RECHECK=True")
-        return False
-
-    return None
-
-
-# END VIP7_REBUILD_FROM_RELAY508_V1
-
-
 WARM_ENTITY_CACHE_ON_START = os.environ.get("WARM_ENTITY_CACHE_ON_START", "1").strip() == "1"
 
 
@@ -2192,36 +1397,10 @@ async def warm_entity_cache_once():
         log.warning(f"[ENTITY STILL UNRESOLVED] chat={chat_id} {error_name}")
 
 
-# OFF BY DEFAULT — DO NOT ENABLE ON THIS TELETHON BUILD.
-#
-# The reliable check is GetForumTopicsByIDRequest, which this Telethon runtime
-# does not expose. The service-message fallback below is NOT a valid substitute:
-# a live topic whose creation service message is missing or unretrievable reads
-# back as deleted, and on 2026-09-14 that wrongly dropped most routes in
-# production (Triad FX, NS Trades, all Route568/Route569, and more).
-#
-# Only turn this on after upgrading Telethon to a version that has
-# GetForumTopicsByIDRequest, and verify the guard reports missing=0 on a healthy
-# start before trusting it.
-
-
-async def recover_deployment_gaps(worker):
-    """Deliver FASTVIP2 posts that arrived while MAIN was restarting (engine/gaps.py)."""
-    from telegram_worker.engine.gaps import recover_gaps
-
-    for _ in range(60):  # VIP7 restyling needs the emoji registry; it is ready within a second or two
-        if EMOJI_REGISTRY is not None:
-            break
-        await asyncio.sleep(0.25)
-    try:
-        await asyncio.wait_for(recover_gaps(worker, DELIVERY_ENGINE, fast_vip_routes()), timeout=120)
-    except Exception as exc:
-        log.warning(f"[GAP CHECK FAILED SAFE] {type(exc).__name__}: {exc} LIVE_FORWARDING_CONTINUES=True")
-
-
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     liveness.LoopWatchdog("ExposedFX MAIN", DATA_DIR, log).start()
+    liveness.start_heartbeat("ExposedFX MAIN", client, log)
     await client.connect()
     if not await client.is_user_authorized():
         raise RuntimeError(
@@ -2236,15 +1415,15 @@ async def main():
     from telegram_worker.engine.runtime import install_engine
 
     install_engine(owner_module)
-    from telegram_worker.wholechat_relay_4281603170_to_3743381585 import run_with_retry as run_wholechat
+    from telegram_worker.samgtrades_relay import run_with_retry as run_wholechat
 
     owner_module.WHOLECHAT_4281603170_TO_3743381585_TASK = asyncio.create_task(
         run_wholechat(owner_module, log)
     )
-    from telegram_worker.owner_requested_routes_20261102 import run_owner_requested_routes
+    from telegram_worker.owner_routes import run_owner_requested_routes
 
     owner_module.OWNER_REQUESTED_ROUTES_TASK = asyncio.create_task(run_owner_requested_routes(owner_module))
-    from telegram_worker.owner_formatted_route_20261103 import run_owner_formatted_route
+    from telegram_worker.owner_formatted_route import run_owner_formatted_route
 
     owner_module.OWNER_FORMATTED_ROUTE_TASK = asyncio.create_task(run_owner_formatted_route(owner_module))
     from telegram_worker.health_monitor import install_health_monitor
@@ -2267,8 +1446,7 @@ async def main():
         f"telethon={telethon_version} python={sys.version.split()[0]}"
     )
     asyncio.create_task(relay508_mapped_edit_reconcile_loop())
-    await recover_deployment_gaps(owner_module)
-    asyncio.create_task(fast_vip_event_router_v2())
+    await start_engine_intake()
     asyncio.create_task(stats.loop(client))
     log.info("Weekly stats reporter running for Sunday 00:00 Europe/Malta")
     await client.run_until_disconnected()

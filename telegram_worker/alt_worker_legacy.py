@@ -7,9 +7,10 @@ import time
 from pathlib import Path
 
 from telethon import TelegramClient, events, functions
-from telethon.errors import FloodWaitError, ChannelPrivateError
+from telethon.errors import ChannelPrivateError
 from telethon.sessions import StringSession
 from telegram_worker import owner_forwarding_policy as owner_policy
+from telegram_worker.state_store import SQLiteMap, open_message_map
 from telethon.tl.types import MessageMediaWebPage
 
 # ==============================================================
@@ -48,20 +49,6 @@ MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 CONNECT_DELAY = max(0, int(os.environ.get("TELEGRAM_CONNECT_DELAY_SECONDS", "5")))
 
 WATCHDOG_SECONDS = max(2.0, float(os.environ.get("ALT_WATCHDOG_SECONDS", "5")))
-
-WATCHDOG_LIMIT = max(50, int(os.environ.get("ALT_WATCHDOG_LIMIT", "500")))
-
-
-# BEGIN ALT_LAST50_ONCE_CONFIG_V1
-
-
-# END ALT_LAST50_ONCE_CONFIG_V1
-
-
-# BEGIN ALT_PREMIUM_HISTORY_ONCE_CONFIG_V1
-
-
-# END ALT_PREMIUM_HISTORY_ONCE_CONFIG_V1
 
 
 # ==============================================================
@@ -134,7 +121,7 @@ SOURCE_CHATS = sorted({route["source_chat"] for route in ROUTES})
 # CLIENT
 # ==============================================================
 
-DELIVERY_ENGINE = None  # engine.alt.AltDeliverer, installed by alt_worker.main()
+DELIVERY_ENGINE = None  # engine.alt.AltEngine, installed by alt_worker.main()
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
@@ -156,6 +143,9 @@ def load_json(path):
 
 
 def save_json(path, value):
+    if isinstance(value, SQLiteMap):
+        value.snapshot_to(path)  # already durable in SQLite; refresh the rollback copy
+        return
     temp = path.with_suffix(path.suffix + ".tmp")
 
     temp.write_text(json.dumps(value, separators=(",", ":")), encoding="utf-8")
@@ -163,7 +153,7 @@ def save_json(path, value):
     temp.replace(path)
 
 
-message_map = load_json(MAP_FILE)
+message_map = open_message_map(DATA_DIR, MAP_FILE, load_legacy=lambda: load_json(MAP_FILE))
 
 route_state = load_json(STATE_FILE)
 
@@ -733,76 +723,9 @@ async def edit_existing(route, source_message):
             return False
 
 
-# BEGIN ALT_PAIR106_ORIGINAL_DEDUPE_V1
-
-ALT_PAIR106_SOURCE_CHATS = {-1003252087470, -1002438454194}
-
-ALT_PAIR106_DEST_CHAT = -1004367822325
-ALT_PAIR106_DEST_TOPIC = 106
-
-ALT_PAIR106_SEEN_FILE = DATA_DIR / "pair106_original_dedupe.json"
-
-ALT_PAIR106_SEEN = load_json(ALT_PAIR106_SEEN_FILE)
-
-ALT_PAIR106_LOCK = asyncio.Lock()
-
-# Pair routes are not allowed to process Telegram updates until
-# their first-start no-history baseline has been established.
-ALT_PAIR106_READY_ROUTE_KEYS = set()
-
-
-def alt_pair106_route(route):
-    try:
-        return (
-            int(route["source_chat"]) in ALT_PAIR106_SOURCE_CHATS
-            and route["source_topic"] is None
-            and (int(route["dest_chat"]) == ALT_PAIR106_DEST_CHAT)
-            and (int(route["dest_topic"]) == ALT_PAIR106_DEST_TOPIC)
-        )
-    except Exception:
-        return False
-
-
-# END ALT_PAIR106_ORIGINAL_DEDUPE_V1
-
-
 # ==============================================================
 # TELEGRAM PUSH EVENTS
 # ==============================================================
-
-
-@client.on(events.NewMessage(chats=SOURCE_CHATS))
-async def new_message_handler(event):
-    try:
-        message = event.message
-
-        # Album event owns grouped messages.
-        if getattr(message, "grouped_id", None):
-            return
-
-        routes = matching_routes(event.chat_id, message)
-
-        if not routes:
-            return
-
-        await asyncio.gather(*[copy_unit(route, [message], "telegram_push") for route in routes])
-
-    except Exception as exc:
-        log.exception("[ALT NEW MESSAGE HANDLER ERROR] " f"{type(exc).__name__}: {exc}")
-
-
-@client.on(events.Album(chats=SOURCE_CHATS))
-async def album_handler(event):
-    try:
-        messages = sorted(list(event.messages or []), key=lambda message: int(message.id))
-        if not messages:
-            return
-        routes = matching_routes(event.chat_id, messages[0])
-        if not routes:
-            return
-        await asyncio.gather(*[copy_unit(route, messages, "telegram_album") for route in routes])
-    except Exception as exc:
-        log.exception(f"[ALT ALBUM HANDLER ERROR] {type(exc).__name__}: {exc}")
 
 
 @client.on(events.MessageEdited(chats=SOURCE_CHATS))
@@ -869,189 +792,43 @@ def build_units(messages):
     return units
 
 
-# BEGIN ALT LEGACY WATCHDOG EFFICIENCY V1
-# Only inaccessible legacy PAIR106 sources are cooled down. Live push,
-# healthy watchdogs, route checkpoints, mappings and history are untouched.
-ALT_LEGACY_WATCHDOG_RETRY_SECONDS = max(60, int(os.environ.get("ALT_LEGACY_WATCHDOG_RETRY_SECONDS", "300")))
+# BEGIN ENGINE_INTAKE_V1
+# New posts reach the delivery engine through engine/intake.py (shared with
+# MAIN): Telegram pushes first, a checkpointed watchdog behind them, and
+# everything missed while ALT was down delivered in order, however old.
+INTAKE = None
 
 
-def alt_legacy_watchdog_access_failure(route, exc):
-    return alt_pair106_route(route) and (
-        isinstance(exc, ChannelPrivateError)
-        or (isinstance(exc, ValueError) and "Could not find the input entity" in str(exc))
-    )
-
-
-# END ALT LEGACY WATCHDOG EFFICIENCY V1
-
-
-async def watchdog(route):
+async def intake_deliver(route, unit, reason):
     if owner_policy.is_stopped(route):
-        return
-    stored_checkpoint = checkpoint(route)
-
-    # ----------------------------------------------------------
-    # FIRST EVER START
-    #
-    # No persistent checkpoint exists:
-    # Snapshot current newest message and copy NOTHING.
-    # ----------------------------------------------------------
-
-    if stored_checkpoint <= 0:
-        while True:
-            if owner_policy.is_stopped(route):
-                return
-            try:
-                current = list(await fetch_route_messages(route, 50) or [])
-
-                if owner_policy.is_stopped(route):
-                    return
-
-                stored_checkpoint = max([int(message.id) for message in current] or [0])
-
-                route_state[route_key(route)] = stored_checkpoint
-
-                save_json(STATE_FILE, route_state)
-
-                if stored_checkpoint > 0 and alt_pair106_route(route):
-                    ALT_PAIR106_READY_ROUTE_KEYS.add(route_key(route))
-
-                log.warning(
-                    "[ALT WATCHDOG FIRST BASELINE] "
-                    f"route={route['name']} "
-                    f"baseline={stored_checkpoint} "
-                    "COPIED_HISTORY=0"
-                )
-
-                break
-
-            except Exception as exc:
-                if alt_legacy_watchdog_access_failure(route, exc):
-                    log.warning(
-                        "[ALT LEGACY WATCHDOG ACCESS COOLDOWN] "
-                        f"phase=baseline source={route['source_chat']} "
-                        f"reason={type(exc).__name__} "
-                        f"retry_seconds={ALT_LEGACY_WATCHDOG_RETRY_SECONDS} "
-                        "CHECKPOINT_UNCHANGED=True LIVE_PUSH_UNAFFECTED=True"
-                    )
-                    await asyncio.sleep(ALT_LEGACY_WATCHDOG_RETRY_SECONDS)
-                else:
-                    log.warning("[ALT WATCHDOG BASELINE FAILED] " f"{type(exc).__name__}: {exc}")
-                    await asyncio.sleep(2)
-
-    else:
-        # ------------------------------------------------------
-        # RESTART / FUTURE DEPLOY
-        #
-        # Continue from durable checkpoint instead of taking a
-        # new baseline. Anything missed during deployment can
-        # therefore be recovered.
-        # ------------------------------------------------------
-
-        log.warning(
-            "[ALT WATCHDOG RESTORE] "
-            f"route={route['name']} "
-            f"checkpoint={stored_checkpoint} "
-            "DEPLOYMENT_GAP_RECOVERY=True"
-        )
-
-    last_id = int(stored_checkpoint)
-
-    while True:
-        if owner_policy.is_stopped(route):
-            return
-        await asyncio.sleep(WATCHDOG_SECONDS)
-
-        try:
-            current = list(await fetch_route_messages(route, WATCHDOG_LIMIT, min_id=last_id) or [])
-
-            fresh = [message for message in current if int(message.id) > last_id]
-
-            for unit in build_units(fresh):
-                if not unit:
-                    continue
-
-                # Give Telegram a moment to finish albums.
-                grouped_id = getattr(unit[0], "grouped_id", None)
-
-                if grouped_id:
-                    timestamps = []
-
-                    for item in unit:
-                        value = getattr(item, "date", None)
-
-                        if value:
-                            try:
-                                timestamps.append(float(value.timestamp()))
-                            except Exception:
-                                pass
-
-                    if timestamps and (time.time() - max(timestamps)) < 1.5:
-                        break
-
-                max_id = max(int(message.id) for message in unit)
-
-                success = await copy_unit(route, unit, "watchdog_recovery")
-
-                if not success:
-                    # Preserve ordering.
-                    break
-
-                last_id = max(last_id, max_id)
-
-                update_checkpoint(route, last_id)
-
-        except FloodWaitError as exc:
-            wait_for = max(1, int(exc.seconds))
-
-            log.warning("[ALT WATCHDOG FLOODWAIT] " f"wait={wait_for}s " "LIVE_PUSH_UNAFFECTED=True")
-
-            await asyncio.sleep(wait_for)
-
-        except Exception as exc:
-            if alt_legacy_watchdog_access_failure(route, exc):
-                log.warning(
-                    "[ALT LEGACY WATCHDOG ACCESS COOLDOWN] "
-                    f"phase=recovery source={route['source_chat']} "
-                    f"reason={type(exc).__name__} "
-                    f"retry_seconds={ALT_LEGACY_WATCHDOG_RETRY_SECONDS} "
-                    "CHECKPOINT_UNCHANGED=True LIVE_PUSH_UNAFFECTED=True"
-                )
-                await asyncio.sleep(ALT_LEGACY_WATCHDOG_RETRY_SECONDS)
-            else:
-                log.warning(
-                    "[ALT WATCHDOG ERROR] " f"{type(exc).__name__}: {exc} " "LIVE_PUSH_UNAFFECTED=True"
-                )
+        return True  # nothing left to deliver on a stopped route
+    return bool(await copy_unit(route, unit, reason)) or owner_policy.is_stopped(route)
 
 
-# BEGIN ALT_ARABIC115_LAST50_V1
+def start_engine_intake():
+    from telegram_worker.engine.intake import Checkpoints, Intake, first_start_checkpoint, group_by_source
+
+    global INTAKE
+
+    async def first_checkpoint(source, routes):
+        # First start on the intake: continue from the old per-route checkpoints.
+        return await first_start_checkpoint(client, source, [checkpoint(r) for r in routes])
+
+    INTAKE = Intake(
+        "ALT",
+        client,
+        group_by_source([r for r in ROUTES if not owner_policy.is_stopped(r)]),
+        intake_deliver,
+        Checkpoints(message_map.db),
+        topic_of,
+        first_checkpoint,
+        watchdog_seconds=WATCHDOG_SECONDS,
+    )
+    return INTAKE.start()
 
 
-# END ALT_ARABIC115_LAST50_V1
+# END ENGINE_INTAKE_V1
 
-
-# BEGIN ALT_LAST50_ONCE_HELPER_V1
-
-
-# END ALT_LAST50_ONCE_HELPER_V1
-
-
-# BEGIN ALT_PREMIUM_HISTORY_ONCE_HELPER_V1
-
-
-# END ALT_PREMIUM_HISTORY_ONCE_HELPER_V1
-
-
-# BEGIN ALT_FORCE50_V3
-
-
-# END ALT_FORCE50_V3
-
-
-# BEGIN ALT_ROUTE508_LAST50_V1
-
-
-# END ALT_ROUTE508_LAST50_V1
 
 # ==============================================================
 # MAIN
@@ -1103,19 +880,7 @@ async def main():
     # ACCESS PREFLIGHT
     # ----------------------------------------------------------
 
-    required_routes = {
-        (-1004349952583, 5246, -1004367822325, 7248),
-        (-1004349952583, 5247, -1004367822325, 7250),
-    }
-
     for route in list(ROUTES):
-        identity = (
-            int(route["source_chat"]),
-            int(route["source_topic"]) if route["source_topic"] is not None else None,
-            int(route["dest_chat"]),
-            int(route["dest_topic"]),
-        )
-
         try:
             source = await client.get_entity(route["source_chat"])
             destination = await client.get_entity(route["dest_chat"])
@@ -1159,24 +924,18 @@ async def main():
             f"dest_title={getattr(destination, 'title', None)!r}"
         )
 
-    # ----------------------------------------------------------
-    # PAIR106 STRICT NO-HISTORY INITIALISATION
-    # ----------------------------------------------------------
-
     # One-time history imports (ARABIC115 last50, FORCE50 v3, last50, guarded
     # history, route508 last50) were retired on 4 Nov 2026: every flag was off
     # in production and each import had finished. See archive/README.md.
 
-    # Recovery tasks.
-    for route in ROUTES:
-        asyncio.create_task(watchdog(route))
+    start_engine_intake()
 
     log.warning(
         "[ALT RELAY READY] "
         f"user_id={me.id} "
         f"routes={len(ROUTES)} "
         f"sources={SOURCE_CHATS} "
-        "PRIMARY=TELEGRAM_PUSH "
+        "PRIMARY=TELEGRAM_PUSH INTAKE=engine "
         f"WATCHDOG={WATCHDOG_SECONDS}s "
         "FIRST_START_NO_HISTORY=True "
         "RESTART_RECOVERY=True "

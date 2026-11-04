@@ -24,15 +24,16 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 from telethon.errors import FloodWaitError
 
 from telegram_worker import owner_forwarding_policy as policy
 from telegram_worker.permanent_delivery_errors import permanent_error_name, route_key
 
-from .model import Route, Send, Skip
+from .model import Plan, Route, Send, Skip
 from .plan import Planner
+from .render import Rendered
 from .replies import reply_parent_ids, reply_target
 from .rules import is_real_media, text_of
 
@@ -62,13 +63,13 @@ def reply_target_gone(exc: Exception) -> bool:
     return "REPLY" in text or "MSG_ID_INVALID" in text or "MESSAGE_ID_INVALID" in text
 
 
-def _as_list(sent) -> List:
+def _as_list(sent: Any) -> List:
     if sent is None:
         return []
     return [x for x in sent if x] if isinstance(sent, list) else [sent]
 
 
-def structure_problem(source, sent, expected_text: str):
+def structure_problem(source: Any, sent: Any, expected_text: str) -> Optional[str]:
     """None when the copy has the source's media presence and text."""
     items = _as_list(sent)
     if not items:
@@ -85,14 +86,14 @@ def structure_problem(source, sent, expected_text: str):
 class Deliverer:
     def __init__(
         self,
-        worker,
+        worker: Any,
         planner: Planner,
         attempts: int = 3,
         sleep_cap: int = 120,
-        sleep=asyncio.sleep,
-        clock=time.time,
-        alert=None,
-    ):
+        sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+        clock: Callable[[], float] = time.time,
+        alert: Optional[Callable[[str], Any]] = None,
+    ) -> None:
         self.worker = worker
         self.client = worker.client
         self.planner = planner
@@ -164,7 +165,9 @@ class Deliverer:
         )
         return bool(_as_list(sent))
 
-    async def copy_unit(self, owner_routes, legacy_route: Dict, route: Route, unit: Sequence):
+    async def copy_unit(
+        self, owner_routes: Any, legacy_route: Dict, route: Route, unit: Sequence
+    ) -> Tuple[str, List[int]]:
         """Owner-route contract: ("existing" | "sent" | "filtered", destination ids); errors raise."""
         unit = sorted(unit, key=lambda m: int(m.id))
         before = owner_routes.mapped_ids(self.worker, legacy_route, unit)
@@ -180,7 +183,9 @@ class Deliverer:
         after = owner_routes.mapped_ids(self.worker, legacy_route, unit)
         return ("sent" if any(i not in before for i in after) else "filtered"), after
 
-    async def plan(self, legacy_route, route: Route, unit, ensure_reply: bool, check_ledger: bool):
+    async def plan(
+        self, legacy_route: Dict, route: Route, unit: Sequence, ensure_reply: bool, check_ledger: bool
+    ) -> Plan:
         self.planner.context["emoji_registry"] = getattr(self.worker, "EMOJI_REGISTRY", None)
         plan = self.planner.plan(route, unit, legacy_route, check_ledger=check_ledger)
         if not isinstance(plan, Send) or not ensure_reply or plan.reply_to != route.dest_topic:
@@ -203,7 +208,7 @@ class Deliverer:
         target = reply_target(unit[0], route, self.planner.maps)
         return plan if target == plan.reply_to else Send(**{**plan.__dict__, "reply_to": target})
 
-    async def _recover_signal_parent(self, legacy_route, route: Route, message):
+    async def _recover_signal_parent(self, legacy_route: Dict, route: Route, message: Any) -> Optional[int]:
         """VIP topic 7: copy the one XAU signal a reply points at when it was missed.
 
         Only an explicitly replied-to parent that parses as a signal and is at
@@ -260,7 +265,7 @@ class Deliverer:
         )
         return dest_id
 
-    async def send(self, legacy_route, route: Route, unit, plan: Send):
+    async def send(self, legacy_route: Dict, route: Route, unit: Sequence, plan: Send) -> Any:
         last_exc = None
         attempt = 0
         while attempt < self.attempts:
@@ -313,10 +318,11 @@ class Deliverer:
                     await self.sleep(wait)
                     continue
                 raise
+        assert last_exc is not None  # the loop only ends early by returning
         raise last_exc
 
     # -- sending -----------------------------------------------------------
-    async def _send_once(self, legacy_route, route: Route, unit, plan: Send):
+    async def _send_once(self, legacy_route: Dict, route: Route, unit: Sequence, plan: Send) -> Any:
         rendered = plan.payload
         if plan.kind == "album":
             sent = await self._send_file(route, unit, rendered.media, plan, rendered)
@@ -358,7 +364,7 @@ class Deliverer:
         self.worker.remember_message(unit[0], sent, legacy_route)
         return sent
 
-    async def _send_single(self, route: Route, unit, plan: Send, rendered):
+    async def _send_single(self, route: Route, unit: Sequence, plan: Send, rendered: Rendered) -> Any:
         if plan.kind == "media":
             return await self._send_file(route, unit, rendered.media[0], plan, rendered)
         return await self.client.send_message(
@@ -370,7 +376,9 @@ class Deliverer:
             link_preview=True,
         )
 
-    async def _send_file(self, route: Route, unit, file, plan: Send, rendered):
+    async def _send_file(
+        self, route: Route, unit: Sequence, file: Any, plan: Send, rendered: Rendered
+    ) -> Any:
         caption = rendered.text or None
         kwargs = dict(
             caption=caption,
@@ -410,7 +418,7 @@ class Deliverer:
                 except Exception:
                     pass
 
-    async def _delete(self, route: Route, sent, reason: str):
+    async def _delete(self, route: Route, sent: Any, reason: str) -> None:
         ids = [int(i.id) for i in _as_list(sent) if getattr(i, "id", None)]
         if not ids:
             return
@@ -431,7 +439,7 @@ class Deliverer:
                 exc,
             )
 
-    def _alert_impaired(self, legacy_route, route: Route, error: str, dest: str):
+    def _alert_impaired(self, legacy_route: Dict, route: Route, error: str, dest: str) -> None:
         throttle = getattr(self.worker, "FASTVIP_IMPAIRED_ALERTS", None)
         if throttle and throttle.ready(route_key(legacy_route)):
             try:
@@ -443,7 +451,7 @@ class Deliverer:
                 pass
 
 
-def _bot_alert(text: str):
+def _bot_alert(text: str) -> Any:
     from telegram_worker.runtime_guard import send_alert
 
     return send_alert(text)
@@ -455,7 +463,7 @@ RETIRED_MARKERS = {
 }
 
 
-def _log_skip(route: Route, ids, reason: str):
+def _log_skip(route: Route, ids: Sequence[int], reason: str) -> None:
     marker = RETIRED_MARKERS.get(reason)
     if marker:
         log.warning(
@@ -470,6 +478,6 @@ def _log_skip(route: Route, ids, reason: str):
         log.info("[ENGINE SKIP] route=%s ids=%s reason=%s", route.name, ids, reason)
 
 
-def _original(unit, rendered_message):
+def _original(unit: Sequence, rendered_message: Any) -> Any:
     """The source message a (possibly restyled) message was rendered from."""
     return next((m for m in unit if m.id == rendered_message.id), rendered_message)

@@ -13,32 +13,40 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
-from .model import Route, Send, entity_keys
-from .plan import Facts
+from .model import Plan, Route, Send, entity_keys
+from .plan import Facts, Planner
 from .rules import is_real_media
 
 log = logging.getLogger("engine-audit")
 STATE_FILE = "engine_replay_audit_v1.json"
 AUDIT_VERSION = 2  # 2: first run with every MAIN route on the engine
+
+
+def audit_key(version: int) -> str:
+    """The audit runs once per deployment (and per audit version), so every deploy is checked."""
+    return f"{version}:{os.environ.get('RAILWAY_DEPLOYMENT_ID', '')}"
+
+
 PER_ROUTE = 25
 
 
-def _media_kind(message) -> Optional[str]:
+def _media_kind(message: Any) -> Optional[str]:
     if not is_real_media(message):
         return None
     return "photo" if getattr(message.media, "photo", None) is not None else "document"
 
 
-def _reply_to(message) -> int:
+def _reply_to(message: Any) -> int:
     reply = getattr(message, "reply_to", None)
     return int(getattr(reply, "reply_to_msg_id", 0) or 0)
 
 
-def compare(plan, source, dest) -> List[str]:
+def compare(plan: Plan, source: Any, dest: Any) -> List[str]:
     """Fields where the engine's plan differs from the delivered copy."""
     if not isinstance(plan, Send):
         return [f"engine_skip:{plan.reason}"]
@@ -56,7 +64,7 @@ def compare(plan, source, dest) -> List[str]:
     return fields
 
 
-def newest_mapped(message_map: Dict, route: Route, limit: int) -> List[tuple]:
+def newest_mapped(message_map: Mapping[str, Any], route: Route, limit: int) -> List[tuple]:
     prefix, suffix = f"{route.source_chat}:", f":{route.dest_chat}:{route.dest_topic}"
     pairs = []
     for key, value in message_map.items():
@@ -70,15 +78,17 @@ def newest_mapped(message_map: Dict, route: Route, limit: int) -> List[tuple]:
     return sorted(pairs)[-limit:]
 
 
-async def audit_route(client, planner, legacy_route: Dict, formatter: str, limit: int = PER_ROUTE) -> Dict:
+async def audit_route(
+    client: Any, planner: Planner, legacy_route: Dict, formatter: str, limit: int = PER_ROUTE
+) -> Dict:
     route = Route.from_legacy(legacy_route, formatter=formatter)
     pairs = newest_mapped(planner.maps.mapping, route, limit)
     if not pairs:
         return {"checked": 0}
     sources = await client.get_messages(route.source_chat, ids=[s for s, _ in pairs])
     dests = await client.get_messages(route.dest_chat, ids=[d for _, d in pairs])
-    result = Counter()
-    examples = []
+    result: Counter = Counter()
+    examples: List[Dict] = []
     for source, dest in zip(sources, dests):
         if source is None or dest is None or getattr(source, "grouped_id", None):
             result["unavailable_or_album"] += 1
@@ -104,11 +114,11 @@ async def audit_route(client, planner, legacy_route: Dict, formatter: str, limit
     return {**result, "examples": examples}
 
 
-async def run_replay_audit(worker, planner, delay_seconds: float = 90.0) -> Optional[Dict]:
+async def run_replay_audit(worker: Any, planner: Planner, delay_seconds: float = 90.0) -> Optional[Dict]:
     path = Path(worker.DATA_DIR) / STATE_FILE
     try:
-        if json.loads(path.read_text(encoding="utf-8")).get("version") == AUDIT_VERSION:
-            log.info("[ENGINE REPLAY AUDIT SKIPPED] version=%s already_done=True", AUDIT_VERSION)
+        if json.loads(path.read_text(encoding="utf-8")).get("version") == audit_key(AUDIT_VERSION):
+            log.info("[ENGINE REPLAY AUDIT SKIPPED] version=%s already_done=True", audit_key(AUDIT_VERSION))
             return None
     except Exception:
         pass
@@ -140,7 +150,8 @@ async def run_replay_audit(worker, planner, delay_seconds: float = 90.0) -> Opti
         await asyncio.sleep(1.0)
     try:
         path.write_text(
-            json.dumps({"version": AUDIT_VERSION, "report": report}, ensure_ascii=False), encoding="utf-8"
+            json.dumps({"version": audit_key(AUDIT_VERSION), "report": report}, ensure_ascii=False),
+            encoding="utf-8",
         )
     except Exception:
         pass

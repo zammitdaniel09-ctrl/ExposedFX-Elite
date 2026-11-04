@@ -20,13 +20,7 @@ from telethon.errors import FloodWaitError
 
 from telegram_worker import library_signal_format as fmt
 from telegram_worker import owner_forwarding_policy as policy
-from telegram_worker.owner_requested_routes_20261102 import (
-    load_state,
-    rpc,
-    save_state,
-    topic_id,
-    verify_roots,
-)
+from telegram_worker.owner_routes import load_state, rpc, save_state, topic_id, verify_roots
 
 log = logging.getLogger("owner-formatted-20261103")
 ROUTE = {

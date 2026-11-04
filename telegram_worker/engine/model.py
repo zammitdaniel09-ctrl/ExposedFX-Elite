@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional, Tuple, Union
+from typing import Any, Iterable, Mapping, Optional, Tuple, Union
 
 # (type name, offset, length, extra) - comparable and hashable.
 EntityKey = Tuple[str, int, int, Any]
@@ -64,7 +64,7 @@ class Send:
 Plan = Union[Skip, Send]
 
 
-def entity_key(entity) -> EntityKey:
+def entity_key(entity: Any) -> EntityKey:
     name = type(entity).__name__
     extra = None
     for attr in ("url", "document_id", "user_id", "language"):
@@ -75,11 +75,11 @@ def entity_key(entity) -> EntityKey:
     return (name, int(getattr(entity, "offset", 0)), int(getattr(entity, "length", 0)), extra)
 
 
-def entity_keys(entities) -> Tuple[EntityKey, ...]:
+def entity_keys(entities: Optional[Iterable[Any]]) -> Tuple[EntityKey, ...]:
     return tuple(entity_key(e) for e in (entities or ()))
 
 
-def media_key(media) -> Any:
+def media_key(media: Any) -> Any:
     """Identity of a media object: the photo/document id it carries."""
     if media is None:
         return None

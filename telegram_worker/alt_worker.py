@@ -264,6 +264,7 @@ async def main():
     from telegram_worker.health_monitor import install_health_monitor
 
     liveness.LoopWatchdog("ExposedFX ALT", _legacy.DATA_DIR, _legacy.log).start()
+    liveness.start_heartbeat("ExposedFX ALT", _legacy.client, _legacy.log)
     _legacy.log.warning(
         "[ALT RUNTIME] telethon=%s python=%s liveness=True json_logs=True",
         __import__("telethon").__version__,
@@ -273,7 +274,7 @@ async def main():
     from telegram_worker.engine.alt import install_alt_engine, run_alt_replay_audit
 
     engine = install_alt_engine(_legacy)
-    audit_task = asyncio.create_task(run_alt_replay_audit(_legacy, engine))
+    engine.audit_task = asyncio.create_task(run_alt_replay_audit(_legacy, engine))
     new_topics_last20_task = asyncio.create_task(_run_new_topics_last20_guarded())
     select_last30_task = asyncio.create_task(_run_select_last30_guarded())
     try:

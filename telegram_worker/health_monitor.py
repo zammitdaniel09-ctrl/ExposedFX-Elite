@@ -64,6 +64,13 @@ FLOOD = (
 GAP_STALE = re.compile(
     r"\[GAP STALE NOT SENT\] route=(?P<route>.+?) ids=(?P<ids>\[[^\]]*\]) age=(?P<age>\w+)s"
 )
+GAVE_UP = re.compile(
+    r"\[INTAKE GAVE UP\] route=(?P<route>.+?) ids=(?P<ids>\[[^\]]*\]) attempts=(?P<attempts>\d+)"
+)
+AUDIT_MISMATCH = re.compile(
+    r"\[(?:ALT )?ENGINE REPLAY AUDIT\] route=(?P<route>.+?) checked=(?P<checked>\d+) match=\d+ "
+    r"mismatch=(?P<mismatch>[1-9]\d*)"
+)
 
 
 class HealthMonitor:
@@ -110,7 +117,7 @@ class HealthMonitor:
         self.outbox.append(text)
 
     def observe(self, level, text, has_exc=False):
-        if "[" not in text and "flood wait" not in text:
+        if "[" not in text and "flood wait" not in text and not (level >= logging.ERROR and has_exc):
             return
         for pattern in SUCCESS:
             match = pattern.search(text)
@@ -158,6 +165,16 @@ class HealthMonitor:
                         ("flood", route), f"⏳ {self.service}: Telegram flood wait {seconds}s ({route})"
                     )
                 return
+        match = AUDIT_MISMATCH.search(text)
+        if match:
+            route = match.group("route").strip()
+            self._alert(
+                ("audit", route),
+                f"\U0001f50d {self.service}: {route}\nAfter this deploy {match.group('mismatch')} of "
+                f"{match.group('checked')} recent posts would be sent differently from the copies already "
+                "delivered. Delivery continues; check the Railway logs ([ENGINE REPLAY AUDIT]).",
+            )
+            return
         match = GAP_STALE.search(text)
         if match:
             route = match.group("route").strip()
@@ -166,6 +183,15 @@ class HealthMonitor:
                 f"⏭️ {self.service}: {route}\nPost(s) {match.group('ids')} arrived during a restart and are "
                 f"{match.group('age')}s old, so they were not sent (stale signals can mislead). "
                 "Forward manually if still relevant.",
+            )
+            return
+        match = GAVE_UP.search(text)
+        if match:
+            route = match.group("route").strip()
+            self._alert(
+                ("gave_up", route, match.group("ids")),
+                f"⚠️ {self.service}: {route}\nPost(s) {match.group('ids')} still failed after "
+                f"{match.group('attempts')} attempts, so they were skipped. Forward manually if still relevant.",
             )
             return
         if level >= logging.ERROR and has_exc:
@@ -205,29 +231,32 @@ class HealthMonitor:
         await client.send_message("me", text, parse_mode=None, link_preview=False)
 
     async def run(self, client):
-        while True:
-            await asyncio.sleep(5)
+        try:
+            while True:
+                await asyncio.sleep(5)
+                await self._tick(client)
+        except asyncio.CancelledError:
+            self.save()  # keep the counters when the worker stops
+            raise
+
+    async def _tick(self, client):
+        while self.outbox:
+            text = self.outbox[0]
             try:
-                while self.outbox:
-                    text = self.outbox[0]
-                    try:
-                        await self._send(client, text)
-                    except Exception as exc:
-                        log.warning("[HEALTH ALERT NOT SENT] %s: %s", type(exc).__name__, exc)
-                        break
-                    self.outbox.popleft()
-                if self.digest_due():
-                    try:
-                        await self._send(client, self.digest())
-                        self.reset_after_digest()
-                        self.save()
-                    except Exception as exc:
-                        log.warning("[HEALTH DIGEST NOT SENT] %s: %s", type(exc).__name__, exc)
-                if self.clock() - self.last_save >= SAVE_EVERY_SECONDS:
-                    self.save()
-            except asyncio.CancelledError:
+                await self._send(client, text)
+            except Exception as exc:
+                log.warning("[HEALTH ALERT NOT SENT] %s: %s", type(exc).__name__, exc)
+                break
+            self.outbox.popleft()
+        if self.digest_due():
+            try:
+                await self._send(client, self.digest())
+                self.reset_after_digest()
                 self.save()
-                raise
+            except Exception as exc:
+                log.warning("[HEALTH DIGEST NOT SENT] %s: %s", type(exc).__name__, exc)
+        if self.clock() - self.last_save >= SAVE_EVERY_SECONDS:
+            self.save()
 
 
 class _LogHandler(logging.Handler):

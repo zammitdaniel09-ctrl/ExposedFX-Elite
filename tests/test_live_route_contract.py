@@ -12,9 +12,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 package = sys.modules.setdefault("telegram_worker", types.ModuleType("telegram_worker"))
 package.__path__ = [str(ROOT / "telegram_worker")]
-from telegram_worker import owner_formatted_route_20261103 as formatted
+from telegram_worker import owner_formatted_route as formatted
 from telegram_worker import owner_forwarding_policy as policy
-from telegram_worker import wholechat_relay_4281603170_to_3743381585 as wholechat
+from telegram_worker import samgtrades_relay as wholechat
 from telegram_worker.routes import ROUTES
 
 VIP = -1003726286301

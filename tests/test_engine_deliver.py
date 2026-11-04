@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 package = sys.modules.setdefault("telegram_worker", types.ModuleType("telegram_worker"))
 package.__path__ = [str(ROOT / "telegram_worker")]
 from telegram_worker import owner_forwarding_policy as policy
-from telegram_worker import owner_requested_routes_20261102 as owner_routes
+from telegram_worker import owner_routes as owner_routes
 from telegram_worker.engine.deliver import Deliverer, structure_problem
 from telegram_worker.engine.model import Route
 from telegram_worker.engine.plan import Planner

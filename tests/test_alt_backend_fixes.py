@@ -48,9 +48,9 @@ class AltBackendFixTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    def test_watchdog_passes_its_checkpoint(self):
+    def test_intake_continues_from_the_route_checkpoints(self):
         source = " ".join((ROOT / "telegram_worker/alt_worker_legacy.py").read_text(encoding="utf-8").split())
-        self.assertIn("fetch_route_messages(route, WATCHDOG_LIMIT, min_id=last_id)", source)
+        self.assertIn("first_start_checkpoint(client, source, [checkpoint(r) for r in routes])", source)
 
     async def test_copies_wait_for_dialogs_then_proceed(self):
         ready = asyncio.Event()

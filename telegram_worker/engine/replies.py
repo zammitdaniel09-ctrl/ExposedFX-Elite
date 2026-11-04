@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, List, Mapping, Union
+from typing import Any, Callable, Iterable, List, Mapping, Union
 
 from .model import Route
 
 
-def _ids(value) -> List[int]:
+def _ids(value: Any) -> List[int]:
     """Message-map values are an int, a list of ints or (rarely) a dict of them."""
     if not value:
         return []
@@ -60,11 +60,14 @@ class MessageMap:
         return any(self.dest_ids(route, m.id) for m in unit)
 
 
-def reply_parent_ids(message, route: Route) -> List[int]:
+def reply_parent_ids(message: Any, route: Route) -> List[int]:
     """Real parents first, then thread ids; never the source topic root."""
     out: List[int] = []
     reply = getattr(message, "reply_to", None)
-    candidates = [getattr(message, "reply_to_msg_id", None), getattr(reply, "reply_to_msg_id", None)]
+    candidates: List[Any] = [
+        getattr(message, "reply_to_msg_id", None),
+        getattr(reply, "reply_to_msg_id", None),
+    ]
     for obj in (message, reply):
         candidates += [getattr(obj, "reply_to_top_id", None), getattr(obj, "top_msg_id", None)]
     for value in candidates:
@@ -77,7 +80,7 @@ def reply_parent_ids(message, route: Route) -> List[int]:
     return out
 
 
-def reply_target(message, route: Route, maps: MessageMap) -> int:
+def reply_target(message: Any, route: Route, maps: MessageMap) -> int:
     for parent in reply_parent_ids(message, route):
         ids = maps.dest_ids(route, parent, scan=True)
         if ids:

@@ -92,12 +92,9 @@ class EditReconcileTests(unittest.TestCase):
         self.assertNotEqual(ns["mapped_edit_fingerprint"](fetch()), ns["mapped_edit_fingerprint"](changed))
 
 
-class VipRouterTests(unittest.TestCase):
-    def test_backstop_ignores_service_messages(self):
-        self.assertIn('> baseline and not getattr(message, "action", None)', " ".join(WORKER_SOURCE.split()))
-
-    # Unsupported posts, album map saves and media fallbacks are covered by
-    # tests/test_engine_deliver.py (the engine delivers every FASTVIP2 post).
+# The live VIP intake (service messages, ordering, restart gaps) is covered by
+# tests/test_engine_intake.py; unsupported posts, album map saves and media
+# fallbacks by tests/test_engine_deliver.py.
 
 
 class AlertTests(unittest.TestCase):

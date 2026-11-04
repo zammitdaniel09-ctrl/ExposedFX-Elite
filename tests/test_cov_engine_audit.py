@@ -245,7 +245,7 @@ class RunReplayAuditTests(unittest.TestCase):
         self.assertEqual(report[ROUTE["name"]], {"checked": 1, "match": 1, "examples": []})
         self.assertEqual(report[BROKEN["name"]], {"error": "ConnectionError: source chat unavailable"})
         self.assertIs(self.planner.context["emoji_registry"], self.registry)
-        self.assertEqual(self.sleeps, [90.0, 1.0, 1.0])
+        self.assertEqual(self.sleeps, [90.0, audit.ROUTE_PAUSE_SECONDS, audit.ROUTE_PAUSE_SECONDS])
         by_route = {r.getMessage().split(" checked=")[0]: r.levelno for r in logs.records}
         self.assertEqual(by_route[f"[ENGINE REPLAY AUDIT] route={ROUTE['name']}"], logging.INFO)
         self.assertEqual(by_route[f"[ENGINE REPLAY AUDIT] route={BROKEN['name']}"], logging.WARNING)

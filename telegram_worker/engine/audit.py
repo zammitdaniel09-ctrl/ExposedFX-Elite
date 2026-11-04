@@ -24,6 +24,7 @@ from .rules import is_real_media
 
 log = logging.getLogger("engine-audit")
 STATE_FILE = "engine_replay_audit_v1.json"
+ROUTE_PAUSE_SECONDS = 3.0  # 1 s still drew a 22 s GetMessages flood wait (4 Nov 2026)
 AUDIT_VERSION = 2  # 2: first run with every MAIN route on the engine
 
 
@@ -161,7 +162,7 @@ async def run_replay_audit(worker: Any, planner: Planner, delay_seconds: float =
                 ensure_ascii=False,
             ),
         )
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(ROUTE_PAUSE_SECONDS)  # stay under Telegram's read limit
     try:
         path.write_text(
             json.dumps({"version": audit_key(AUDIT_VERSION), "report": report}, ensure_ascii=False),

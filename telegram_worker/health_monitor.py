@@ -42,7 +42,7 @@ SUCCESS = (
         r"outcome=(?:signal|update|recap) lag=(?P<lag>[\d.]+)s"
     ),
     re.compile(r"\[WHOLECHAT SENT\] reason=\S+ source=\S+ dest=(?P<route>\S+)"),
-    re.compile(r"\[ALT COPIED\] route=(?P<route>.+?) (?:source_msg|ids)="),
+    re.compile(r"\[ALT COPIED\] route=(?P<route>.+?) (?:source_msg|ids)=.*?(?:lag=(?P<lag>[\d.]+)s|$)"),
 )
 FAILURE = (
     re.compile(r"\[FASTVIP DEST FAILED\] route=(?P<route>.+?) ids=.*? dest=\S+ (?P<error>\w+)"),

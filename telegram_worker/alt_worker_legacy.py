@@ -717,6 +717,12 @@ async def send_album(route, messages):
 # ==============================================================
 
 
+def _lag(message):
+    """Seconds from the provider's post to now, for the health digest."""
+    date = getattr(message, "date", None)
+    return f"{max(0.0, time.time() - date.timestamp()):.1f}s" if date else "n/a"
+
+
 async def _owner_original_copy_unit(route, messages, reason):
     if alt_vip5_block(route):
         log.warning("[ALT VIP5 DESTINATION PERMANENT BLOCK] copy_unit")
@@ -779,7 +785,7 @@ async def _owner_original_copy_unit(route, messages, reason):
                     f"ids="
                     f"{[m.id for m in messages]} "
                     "kind=ALBUM "
-                    f"reason={reason}"
+                    f"reason={reason} lag={_lag(messages[0])}"
                 )
 
                 return True
@@ -803,7 +809,7 @@ async def _owner_original_copy_unit(route, messages, reason):
                 f"source_msg={message.id} "
                 f"dest_msg="
                 f"{getattr(sent, 'id', None)} "
-                f"reason={reason}"
+                f"reason={reason} lag={_lag(message)}"
             )
 
             return True

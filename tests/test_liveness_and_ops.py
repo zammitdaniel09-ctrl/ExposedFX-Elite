@@ -90,6 +90,11 @@ class DigestTests(unittest.TestCase):
                 "[FASTVIP COPIED] route=Relay7248 To VIP10877 source=-1004367822325_7248 "
                 "ids=[2] kind=SINGLE dest=-1003726286301_10877",
             )
+            monitor.observe(
+                logging.WARNING,
+                "[ALT COPIED] route=ALT RELAY 1 source_msg=5 dest_msg=9 reason=telegram_push lag=1.4s",
+            )
+            self.assertIn("• ALT RELAY 1: 1 · 1.4s", monitor.digest())
             monitor.extras.append(lambda: "Engine shadow (match/seen): Relay7248 To VIP10877: 2/2")
             digest = monitor.digest()
             self.assertIn("• Relay7248 To VIP10877: 2 · 0.8s", digest)

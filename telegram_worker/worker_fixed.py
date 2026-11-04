@@ -14,12 +14,10 @@ from telethon import __version__ as telethon_version
 from telethon.errors import FloodWaitError
 from telethon.tl.types import MessageMediaWebPage
 
-from telegram_worker.runtime_guard import start_runtime_guard, alert_crash, send_alert
+from telegram_worker.runtime_guard import start_runtime_guard, alert_crash
 from telegram_worker.permanent_delivery_errors import (
     PermanentFailureLedger,
     Throttle,
-    permanent_error_name,
-    route_key as permanent_route_key,
 )
 from telegram_worker.provider_profiles import is_promo_text
 from telegram_worker.routes import ROUTES
@@ -38,13 +36,8 @@ DRY_RUN = os.environ.get("DRY_RUN", "0").strip() == "1"
 FORWARD_EDITED_MESSAGES = (
     os.environ.get("FORWARD_EDITED_MESSAGES", "1").strip() == "1"
 )  # mapped-message edits only
-PROCESS_GROUPED_MESSAGES_IN_NEW_HANDLER = os.environ.get("PROCESS_GROUPED_MESSAGES_IN_NEW_HANDLER", "1").strip() == "1"
-ENABLE_ALBUM_HANDLER = os.environ.get("ENABLE_ALBUM_HANDLER", "0").strip() == "1"
 ENABLE_ROUTE_FALLBACK_ALL_MESSAGES = os.environ.get("ENABLE_ROUTE_FALLBACK_ALL_MESSAGES", "1").strip() == "1"
-ENABLE_ALBUM_REUPLOAD_FALLBACK = os.environ.get("ENABLE_ALBUM_REUPLOAD_FALLBACK", "1").strip() == "1"
-NO_ROUTE_TEXT_LIMIT = int(os.environ.get("NO_ROUTE_TEXT_LIMIT", "180"))
 COPY_RETRY_ATTEMPTS = int(os.environ.get("COPY_RETRY_ATTEMPTS", "2"))
-COPY_RETRY_SLEEP_CAP_SECONDS = int(os.environ.get("COPY_RETRY_SLEEP_CAP_SECONDS", "120"))
 NEW_MIRROR_DEBUG_CHATS_RAW = os.environ.get(
     "NEW_MIRROR_DEBUG_CHATS",
     "-1003812195730,-1003371106919,-1003651353503,-1003087047858,-1002817163788,-1003770573057",
@@ -123,7 +116,6 @@ VIP_TOPIC_MOVE_SUPPRESS_IDS = set()
 # END VIP_TOPIC_MOVE_STATE_V1
 
 
-MIRROR_STRUCTURE_REPAIR = os.environ.get("MIRROR_STRUCTURE_REPAIR", "1").strip() == "1"
 STRICT_ROUTE_TITLE_CHECK = os.environ.get("STRICT_ROUTE_TITLE_CHECK", "0").strip() == "1"
 MIRROR_DELETED_MESSAGES = os.environ.get("MIRROR_DELETED_MESSAGES", "1").strip() == "1"
 
@@ -135,7 +127,6 @@ SESSION_BASE = DATA_DIR / "session"
 SESSION_FILE = DATA_DIR / "session.session"
 MESSAGE_MAP_FILE = DATA_DIR / "message_map.json"
 DEDUP_FILE = DATA_DIR / "dedupe_map.json"
-DEDUP_WINDOW_SECONDS = int(os.environ.get("DEDUP_WINDOW_SECONDS", "900"))
 
 CROSS_SOURCE_DEDUP_DEST_TOPICS_RAW = os.environ.get("CROSS_SOURCE_DEDUP_DEST_TOPICS", "1927").strip()
 CROSS_SOURCE_DEDUP_DEST_TOPICS = {
@@ -258,81 +249,16 @@ def load_dedupe():
         return {}
 
 
-def save_dedupe():
-    try:
-        cutoff = time.time() - DEDUP_WINDOW_SECONDS
-        old = list(content_dedupe_map.keys())
-        for k in old:
-            if float(content_dedupe_map.get(k, 0)) < cutoff:
-                content_dedupe_map.pop(k, None)
-
-        tmp = DEDUP_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(content_dedupe_map), encoding="utf-8")
-        tmp.replace(DEDUP_FILE)
-    except Exception as exc:
-        log.warning(f"[dedupe save failed] {exc}")
 
 
-def normalise_for_dedupe(text):
-    text = (text or "").lower()
-    text = text.replace("\\ufe0f", "").replace("\\u200d", "").replace("\\u200b", "")
-    text = re.sub(r"\\s+", "", text)
-    return text.strip()
 
 
-def media_tag(message):
-    if not getattr(message, "media", None):
-        return "no-media"
-
-    # Keep albums/screenshots safer: exact duplicate media/text gets blocked,
-    # different images with same caption can still pass.
-    media_id = getattr(getattr(message, "photo", None), "id", None)
-    if media_id:
-        return f"photo:{media_id}"
-
-    document = getattr(message, "document", None)
-    if document:
-        return f"doc:{getattr(document, 'id', '')}:{getattr(document, 'size', '')}"
-
-    return "media"
 
 
-def dedupe_key(route, message, text):
-    """
-    Normal dedupe keeps sources separate.
-    For selected destination topics, dedupe across different source groups too,
-    because providers often forward each other's exact messages.
-    """
-    cross_source = bool(route.get("cross_source_dedupe")) or int(route["dest_topic"]) in CROSS_SOURCE_DEDUP_DEST_TOPICS
-
-    source_chat_key = "ANY_SOURCE" if cross_source else str(route["source_chat"])
-    source_topic_key = "ANY_TOPIC" if cross_source else str(route.get("source_topic"))
-
-    # For text/caption messages in cross-source dedupe topics, prioritise text.
-    # This blocks duplicate forwarded posts even if Telegram gives different media ids.
-    media_key = "TEXT_OR_CAPTION" if cross_source and normalise_for_dedupe(text) else media_tag(message)
-
-    base = "|".join([
-        source_chat_key,
-        source_topic_key,
-        str(route["dest_chat"]),
-        str(route["dest_topic"]),
-        normalise_for_dedupe(text),
-        media_key,
-    ])
-    return hashlib.sha256(base.encode("utf-8", errors="ignore")).hexdigest()
 
 
-def is_recent_duplicate(route, message, text):
-    key = dedupe_key(route, message, text)
-    last = float(content_dedupe_map.get(key, 0) or 0)
-    return (time.time() - last) <= DEDUP_WINDOW_SECONDS
 
 
-def remember_dedupe(route, message, text):
-    key = dedupe_key(route, message, text)
-    content_dedupe_map[key] = time.time()
-    save_dedupe()
 
 
 def mapped_ids_from_value(value):
@@ -374,82 +300,15 @@ def existing_destination_ids(message, route):
     return mapped_ids_from_value(message_map.get(key))
 
 
-def all_existing_destination_ids_for_source(message, route):
-    """
-    Strong edit cleanup:
-    - exact key match
-    - scan old map keys for same source chat + source msg id + same destination
-    This protects against topic/fallback route changes between original and edit.
-    """
-    wanted_source = str(route["source_chat"])
-    wanted_msg = str(message.id)
-    wanted_dest_chat = str(route["dest_chat"])
-    wanted_dest_topic = str(route["dest_topic"])
-
-    ids = []
-    keys_to_remove = set()
-
-    exact_key = map_key(route["source_chat"], message.id, route["dest_chat"], route["dest_topic"])
-
-    for key, value in list(message_map.items()):
-        try:
-            parts = str(key).split(":")
-            if len(parts) != 4:
-                continue
-
-            source_chat, source_msg_id, dest_chat, dest_topic = parts
-
-            same_source_msg = source_chat == wanted_source and source_msg_id == wanted_msg
-            same_dest = dest_chat == wanted_dest_chat and dest_topic == wanted_dest_topic
-
-            if key == exact_key or (same_source_msg and same_dest):
-                ids.extend(mapped_ids_from_value(value))
-                keys_to_remove.add(key)
-
-        except Exception:
-            continue
-
-    clean_ids = []
-    for mid in ids:
-        if mid and mid not in clean_ids:
-            clean_ids.append(mid)
-
-    return clean_ids, keys_to_remove
 
 
-async def delete_existing_destination(message, route):
-    ids, keys_to_remove = all_existing_destination_ids_for_source(message, route)
-
-    if not ids:
-        log.info(f"[edited cleanup] no previous mapped copy source={getattr(message, 'id', None)} route={route['name']}")
-        return False
-
-    try:
-        await client.delete_messages(route["dest_chat"], ids)
-
-        for key in keys_to_remove:
-            message_map.pop(key, None)
-
-        save_map()
-
-        log.info(
-            f"[edited cleanup] deleted old forwarded msgs {ids} "
-            f"for source={message.id} route={route['name']}"
-        )
-        return True
-
-    except Exception as exc:
-        log.warning(
-            f"[edited cleanup failed] source={message.id} route={route['name']} "
-            f"dest_msgs={ids}: {exc}"
-        )
-        return False
 
 
 write_login_file()
 message_map = load_map()
 content_dedupe_map = load_dedupe()
 client = TelegramClient(str(SESSION_BASE), API_ID, API_HASH)
+DELIVERY_ENGINE = None  # telegram_worker.engine.runtime.DeliveryEngine, set in main()
 owner_policy.install_send_guard(client, log)
 
 
@@ -775,132 +634,18 @@ def forward_origin_chat_ids(message):
     return out
 
 
-def should_block_private_peer_loop(
-    message,
-    route,
-):
-    peers_raw = (
-        route.get("loop_guard_peers")
-        if isinstance(route, dict)
-        else None
-    )
-
-    if not peers_raw:
-        return False
-
-    peers = set()
-
-    for value in peers_raw:
-        try:
-            peers.add(int(value))
-        except Exception:
-            pass
-
-    origins = forward_origin_chat_ids(
-        message
-    )
-
-    matched = sorted(
-        origins & peers
-    )
-
-    if not matched:
-        return False
-
-    log.warning(
-        "[PEER LOOP BLOCKED] "
-        f"route={route.get('name')} "
-        f"source={route.get('source_chat')}_"
-        f"{route.get('source_topic')} "
-        f"msg={getattr(message, 'id', None)} "
-        f"forward_origins={sorted(origins)} "
-        f"matched_peers={matched} "
-        f"dest={route.get('dest_chat')}_"
-        f"{route.get('dest_topic')}"
-    )
-
-    return True
 
 # END PRIVATE_LOOP_GUARD_V1
 
 
 # BEGIN HARD_BLOCK_2521699926_FROM_VIP_V1
 
-VIP_HARD_BLOCK_CHAT = -1003726286301
-VIP_HARD_BLOCKED_SOURCE = -1002521699926
 
 
-def should_hard_block_2521699926_from_vip(message, route):
-    """
-    Absolute VIP protection.
-
-    Blocks:
-    1. any direct route whose source is -1002521699926
-    2. any Telegram-forwarded post whose ForwardHeader says
-       the original channel was -1002521699926
-
-    This applies to EVERY topic inside -1003852763875.
-    """
-
-    if not isinstance(route, dict):
-        return False
-
-    try:
-        dest_chat = int(
-            route.get("dest_chat", 0)
-        )
-    except Exception:
-        return False
-
-    if dest_chat != VIP_HARD_BLOCK_CHAT:
-        return False
-
-    try:
-        direct_source = int(
-            route.get("source_chat", 0)
-        )
-    except Exception:
-        direct_source = 0
-
-    try:
-        forward_origins = (
-            forward_origin_chat_ids(message)
-        )
-    except Exception:
-        forward_origins = set()
-
-    direct_match = (
-        direct_source
-        == VIP_HARD_BLOCKED_SOURCE
-    )
-
-    forwarded_match = (
-        VIP_HARD_BLOCKED_SOURCE
-        in forward_origins
-    )
-
-    if not direct_match and not forwarded_match:
-        return False
-
-    log.warning(
-        "[VIP SOURCE HARD BLOCK] "
-        f"blocked_source={VIP_HARD_BLOCKED_SOURCE} "
-        f"direct_source={direct_source} "
-        f"forward_origins={sorted(forward_origins)} "
-        f"source_msg={getattr(message, 'id', None)} "
-        f"route={route.get('name')} "
-        f"dest={route.get('dest_chat')}_"
-        f"{route.get('dest_topic')}"
-    )
-
-    return True
 
 # END HARD_BLOCK_2521699926_FROM_VIP_V1
 
 
-def is_blocked_sender(message):
-    ids = sender_ids_for_message(message)
-    return bool(ids & BLOCKED_SENDER_IDS)
 
 
 def should_hard_block_sender(message, context="", route=None):
@@ -1126,40 +871,8 @@ def reply_source_ids(message):
     return ids
 
 
-def mapped_reply_id(message, route):
-    for source_msg_id in reply_source_ids(message):
-        if route["source_topic"] is not None and source_msg_id == route["source_topic"]:
-            continue
-
-        key = map_key(route["source_chat"], source_msg_id, route["dest_chat"], route["dest_topic"])
-        mapped = message_map.get(key)
-
-        if mapped:
-            try:
-                return int(mapped)
-            except Exception:
-                return None
-
-    return None
 
 
-def reply_target(message, route):
-    reply = getattr(message, "reply_to", None)
-
-    if not reply:
-        return route["dest_topic"]
-
-    mapped = mapped_reply_id(message, route)
-
-    if mapped:
-        return mapped
-
-    log.info(
-        f"[reply fallback] {route['name']} could not find mapped source reply "
-        f"ids={reply_source_ids(message)} -> using destination topic {route['dest_topic']}"
-    )
-
-    return route["dest_topic"]
 
 
 def remember_message(src_msg, dst_msg, route, save=True):
@@ -1251,323 +964,28 @@ async def delete_mapped_destination_for_source(source_chat, source_msg_id):
     return deleted_any
 
 
-def log_stats(route, message, text):
-    result = stats.log_message(route, message, text)
-    if result:
-        log.info(f"[stats logged] {route['name']} {result['status']} {result['pips']} pips")
-
-
-def safe_maybe_post_signal(route, message, text, context=""):
-    # Owner explicitly stopped the signals feed on 2026-11-02.
-    """Owner stopped all signal-feed processing on 2026-11-02."""
-    return
-
-
-def safe_log_stats(route, message, text, context=""):
-    """
-    Forwarding must never fail because stats parsing failed.
-    """
-    try:
-        log_stats(route, message, text)
-    except Exception as exc:
-        log.warning(
-            f"[stats sidecar skipped] route={route.get('name')} "
-            f"msg={getattr(message, 'id', None)} context={context}: {type(exc).__name__}: {exc}"
-        )
-
-
-def route_send_as_peer(route):
-    """
-    For privacy routes, send as the destination Telegram group/channel itself.
-
-    IMPORTANT:
-    There is intentionally NO visible-account fallback.
-    If Telegram rejects send_as, the route fails closed.
-    """
-    if route.get("anonymous_send_as"):
-        return int(route["dest_chat"])
-    return None
-
-
-async def send_media_exact(message, route, target_reply, text, entities):
-    if vip5_retired_destination(route):
-        log.warning("[VIP5 DESTINATION BLOCKED] dest=-1003726286301_5")
-        return None
-    """
-    Robust media copier:
-    1. Try direct Telethon media resend.
-    2. If that fails, download and re-upload.
-    This preserves photos/videos/documents + captions + caption entities.
-    """
-    try:
-        return await client.send_file(
-            route["dest_chat"],
-            message.media,
-            caption=text if text else None,
-            formatting_entities=entities if text else None,
-            parse_mode=None,
-            reply_to=target_reply,
-            send_as=route_send_as_peer(route),
-        )
-    except Exception as exc:
-        if isinstance(exc, FloodWaitError) or owner_policy.permanent_access_error(exc):
-            raise
-        log.warning(f"[media direct copy failed] msg={message.id} route={route['name']}: {exc}")
-
-    cache_dir = DATA_DIR / "media_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    downloaded = None
-    try:
-        downloaded = await message.download_media(file=str(cache_dir / f"{route['dest_topic']}_{message.id}"))
-        if not downloaded:
-            raise RuntimeError("download_media returned no file path")
-
-        sent = await client.send_file(
-            route["dest_chat"],
-            downloaded,
-            caption=text if text else None,
-            formatting_entities=entities if text else None,
-            parse_mode=None,
-            reply_to=target_reply,
-            send_as=route_send_as_peer(route),
-        )
-
-        return sent
-
-    finally:
-        if downloaded:
-            try:
-                Path(downloaded).unlink(missing_ok=True)
-            except Exception:
-                pass
-
-
-async def ensure_replied_message_copied(message, route, depth=0):
-    if route.get("live_only") and not route.get("copy_reply_parent", False):
-        # A brand-new message may reply to an old source message.
-        # Do NOT import that old parent into a no-history route.
-        return False
-
-    """
-    If source message replies to another source message and that parent was not copied yet,
-    copy the parent first, then this message can reply to the correct destination message.
-    This prevents detached replies in ExposedFX topics.
-    """
-    if depth > 2:
-        return False
 
-    for source_msg_id in reply_source_ids(message):
-        try:
-            source_msg_id = int(source_msg_id)
-        except Exception:
-            continue
 
-        if route.get("source_topic") is not None and source_msg_id == int(route["source_topic"]):
-            continue
 
-        key = map_key(route["source_chat"], source_msg_id, route["dest_chat"], route["dest_topic"])
-        if message_map.get(key):
-            return True
 
-        try:
-            parent = await client.get_messages(route["source_chat"], ids=source_msg_id)
-            if not parent:
-                continue
 
-            if should_hard_block_sender(parent, "reply_parent", route):
-                continue
 
-            if has_username_mention(parent):
 
-                log_username_filter_main(
-                    [parent],
-                    "reply_parent",
-                    route=route,
-                    source_chat=route.get("source_chat"),
-                    source_topic=route.get("source_topic"),
-                )
 
-                continue
 
-            await copy_one(parent, route, edited=False, ensure_reply=False)
-            log.info(
-                f"[reply parent copied] route={route['name']} "
-                f"parent_source={source_msg_id} -> dest={route['dest_chat']}_{route['dest_topic']}"
-            )
-            return True
 
-        except Exception as exc:
-            log.warning(
-                f"[reply parent copy failed] route={route['name']} "
-                f"parent_source={source_msg_id}: {exc}"
-            )
 
-    return False
 
 
-def sent_as_list(sent):
-    if sent is None:
-        return []
-    if isinstance(sent, list):
-        return [x for x in sent if x]
-    return [sent]
 
 
-def sent_ids(sent):
-    ids = []
-    for item in sent_as_list(sent):
-        mid = getattr(item, "id", None)
-        if mid:
-            ids.append(int(mid))
-    return ids
 
 
-def normalise_structure_text(value):
-    return re.sub(r"\s+", " ", (value or "").strip())
 
 
-def mirror_structure_status(source_message, sent, expected_text):
-    items = sent_as_list(sent)
 
-    if not items:
-        return False, "no_sent_message"
 
-    source_has_media = is_real_media(source_message)
-    dest_has_media = any(is_real_media(item) for item in items)
 
-    if source_has_media and not dest_has_media:
-        return False, "missing_media"
-
-    if not source_has_media and dest_has_media:
-        return False, "unexpected_media"
-
-    expected = normalise_structure_text(expected_text)
-    received = normalise_structure_text("\n".join(text_of(item) for item in items if text_of(item)))
-
-    if expected and expected != received:
-        return False, "text_or_caption_mismatch"
-
-    return True, "ok"
-
-
-async def delete_sent_copy(route, sent, reason):
-    ids = sent_ids(sent)
-
-    if not ids:
-        return
-
-    try:
-        await client.delete_messages(route["dest_chat"], ids)
-        log.warning(f"[mirror structure repair] deleted bad copy ids={ids} route={route['name']} reason={reason}")
-    except Exception as exc:
-        log.warning(f"[mirror structure repair delete failed] ids={ids} route={route['name']} reason={reason}: {exc}")
-
-
-async def repair_bad_mirror_structure(message, route, target_reply, text, entities, sent):
-    """
-    Safety rule:
-    NEVER leave or map a structure we already know is wrong.
-
-    Previous behaviour could delete the bad first send and then,
-    if the repair itself failed, return the already-deleted first
-    Message object. That made the message map unreliable.
-
-    This version fails CLOSED.
-    """
-
-    if not MIRROR_STRUCTURE_REPAIR:
-        return sent
-
-    ok, reason = mirror_structure_status(
-        message,
-        sent,
-        text,
-    )
-
-    if ok:
-        return sent
-
-    await delete_sent_copy(
-        route,
-        sent,
-        reason,
-    )
-
-    try:
-
-        if is_real_media(message):
-
-            repaired = await send_media_exact(
-                message,
-                route,
-                target_reply,
-                text,
-                entities,
-            )
-
-        else:
-
-            repaired = await client.send_message(
-                route["dest_chat"],
-                text,
-                formatting_entities=(
-                    entities if text else None
-                ),
-                parse_mode=None,
-                reply_to=target_reply,
-                link_preview=True,
-                send_as=route_send_as_peer(route),
-            )
-
-    except Exception as exc:
-
-        log.exception(
-            "[mirror structure repair resend failed CLOSED] "
-            f"route={route['name']} "
-            f"source_msg={message.id}: "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        raise RuntimeError(
-            "mirror structure repair failed"
-        ) from exc
-
-    ok2, reason2 = mirror_structure_status(
-        message,
-        repaired,
-        text,
-    )
-
-    if ok2:
-
-        log.info(
-            "[mirror structure repair ok] "
-            f"route={route['name']} "
-            f"source_msg={message.id}"
-        )
-
-        return repaired
-
-    # Repair is STILL wrong.
-    # Remove it. Never map it.
-    await delete_sent_copy(
-        route,
-        repaired,
-        reason2,
-    )
-
-    log.error(
-        "[mirror structure repair rejected CLOSED] "
-        f"route={route['name']} "
-        f"source_msg={message.id} "
-        f"reason={reason2}"
-    )
-
-    raise RuntimeError(
-        "mirror structure mismatch after repair: "
-        + str(reason2)
-    )
 
 
 # BEGIN MAIN_MAPPED_IN_PLACE_EDITS_V1
@@ -1967,325 +1385,16 @@ async def relay508_mapped_edit_reconcile_loop():
 # END MAIN_MAPPED_IN_PLACE_EDITS_V1
 
 
-async def copy_one(message, route, edited=False, ensure_reply=True):
-    if owner_policy.is_stopped(route):
-        return None
-    if vip5_retired_destination(route):
-        log.warning("[VIP5 DESTINATION BLOCKED] dest=-1003726286301_5")
-        return None
-    if (
-        int(route.get("source_chat") or 0) == -1004367822325
-        and int(route.get("source_topic") or 0) == 7250
-        and not owner_policy.relay7250_allowed(route)
-    ):
-        log.warning("[RELAY7250 PERMANENT OUTBOUND BLOCK] copy_one=True")
-        return None
-    if has_username_mention(message):
-
-        log_username_filter_main(
-            [message],
-            "copy_one_hard_guard",
-            route=route,
-            source_chat=route.get("source_chat"),
-            source_topic=route.get("source_topic"),
-        )
-
-        return None
-
-    if should_hard_block_sender(message, "copy_one", route):
-        return None
-
-    if should_hard_block_2521699926_from_vip(message, route):
-        return None
-
-    if should_block_private_peer_loop(message, route):
-        return None
-
-    if edited:
-        await delete_existing_destination(message, route)
-
-    text = text_of(message)
-    entities = entities_of(message)
-
-    if ensure_reply:
-        await ensure_replied_message_copied(message, route)
-
-    target_reply = reply_target(message, route)
-
-    if DRY_RUN:
-        log.info(f"[DRY_RUN copy] {route['name']}")
-        return None
-
-    if is_real_media(message):
-        log.info(
-            f"[media copy] msg={message.id} route={route['name']} "
-            f"has_caption={bool(text)} reply_to={target_reply}"
-        )
-        sent = await send_media_exact(message, route, target_reply, text, entities)
-
-    else:
-        if not text:
-            log.info(f"[skip empty unsupported] route={route['name']} msg={message.id}")
-            return None
-
-        sent = await client.send_message(
-            route["dest_chat"],
-            text,
-            formatting_entities=entities if text else None,
-            parse_mode=None,
-            reply_to=target_reply,
-            link_preview=True,
-            send_as=route_send_as_peer(route),
-        )
-
-    sent = await repair_bad_mirror_structure(message, route, target_reply, text, entities, sent)
-    remember_message(message, sent, route)
-    return sent
 
 
-async def copy_album(messages, route):
-    if owner_policy.is_stopped(route):
-        return None
-    if vip5_retired_destination(route):
-        log.warning("[VIP5 DESTINATION BLOCKED] dest=-1003726286301_5")
-        return None
-    if (
-        int(route.get("source_chat") or 0) == -1004367822325
-        and int(route.get("source_topic") or 0) == 7250
-        and not owner_policy.relay7250_allowed(route)
-    ):
-        log.warning("[RELAY7250 PERMANENT OUTBOUND BLOCK] copy_album=True")
-        return None
-    if unit_has_username_mention(messages):
-
-        log_username_filter_main(
-            messages,
-            "copy_album_hard_guard",
-            route=route,
-            source_chat=route.get("source_chat"),
-            source_topic=route.get("source_topic"),
-        )
-
-        return None
-
-    for item in messages:
-        if should_hard_block_sender(item, "album", route):
-            return None
-
-        if should_hard_block_2521699926_from_vip(item, route):
-            return None
-
-        if should_block_private_peer_loop(item, route):
-            return None
-
-    first = messages[0]
-    await ensure_replied_message_copied(first, route)
-    target_reply = reply_target(first, route)
-
-    files = []
-    caption = None
-    caption_entities = None
-
-    for msg in messages:
-        if is_real_media(msg):
-            files.append(msg.media)
-        if caption is None:
-            txt = text_of(msg)
-            if txt:
-                caption = txt
-                caption_entities = entities_of(msg)
-
-    if DRY_RUN:
-        log.info(f"[DRY_RUN album] {route['name']} items={len(files)}")
-        return None
-
-    if not files:
-        log.info(f"[album skip empty] {route['name']} first_msg={getattr(first, 'id', None)}")
-        return None
-
-    sent = None
-    downloaded_files = []
-
-    try:
-        sent = await client.send_file(
-            route["dest_chat"],
-            files,
-            caption=caption,
-            formatting_entities=caption_entities,
-            parse_mode=None,
-            reply_to=target_reply,
-            send_as=route_send_as_peer(route),
-        )
-    except Exception as exc:
-        if isinstance(exc, FloodWaitError) or owner_policy.permanent_access_error(exc):
-            raise
-        log.warning(f"[album direct copy failed] {route['name']} first_msg={getattr(first, 'id', None)}: {exc}")
-
-        if not ENABLE_ALBUM_REUPLOAD_FALLBACK:
-            raise
-
-        cache_dir = DATA_DIR / "media_cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
-            for msg in messages:
-                if not is_real_media(msg):
-                    continue
-
-                downloaded = await msg.download_media(
-                    file=str(cache_dir / f"album_{route['dest_topic']}_{msg.id}")
-                )
-
-                if downloaded:
-                    downloaded_files.append(downloaded)
-
-            if not downloaded_files:
-                raise RuntimeError("album fallback downloaded no files")
-
-            sent = await client.send_file(
-                route["dest_chat"],
-                downloaded_files,
-                caption=caption,
-                formatting_entities=caption_entities,
-                parse_mode=None,
-                reply_to=target_reply,
-                send_as=route_send_as_peer(route),
-            )
-
-            log.info(f"[album fallback reupload ok] {route['name']} items={len(downloaded_files)}")
-
-        finally:
-            for downloaded in downloaded_files:
-                try:
-                    Path(downloaded).unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-    sent_items_check = sent_as_list(sent)
-
-    if len(files) > 1 and len(sent_items_check) != len(files):
-        await delete_sent_copy(
-            route,
-            sent,
-            "album_item_count_mismatch",
-        )
-
-        raise RuntimeError(
-            f"mirror album structure mismatch: "
-            f"expected={len(files)} sent={len(sent_items_check)}"
-        )
-
-    if isinstance(sent, list):
-        for src, dst in zip(messages, sent):
-            remember_message(src, dst, route, save=False)
-        save_map()
-    else:
-        remember_message(first, sent, route)
-
-    return sent
 
 
-def is_transient_copy_error(exc):
-    text = str(exc).lower()
-    patterns = (
-        "timeout",
-        "timed out",
-        "connection",
-        "server disconnected",
-        "temporarily",
-        "transport",
-        "network",
-        "request failed",
-        "mirror structure",
-        "mirror album structure",
-    )
-    return any(p in text for p in patterns)
 
 
-async def copy_one_with_retry(message, route, edited=False):
-    if owner_policy.is_stopped(route):
-        return None
-    attempts = max(1, COPY_RETRY_ATTEMPTS)
-    last_exc = None
-
-    for attempt in range(1, attempts + 1):
-        try:
-            return await copy_one(message, route, edited=edited)
-        except FloodWaitError as exc:
-            last_exc = exc
-            wait = min(int(exc.seconds) + 1, COPY_RETRY_SLEEP_CAP_SECONDS)
-            log.warning(
-                f"[copy retry floodwait] attempt={attempt}/{attempts} wait={wait}s "
-                f"route={route['name']} msg={getattr(message, 'id', None)}"
-            )
-            await asyncio.sleep(wait)
-        except Exception as exc:
-            last_exc = exc
-            reason = owner_policy.permanent_access_error(exc)
-            if reason:
-                owner_policy.stop_route(route, reason, log)
-                raise
-            if attempt < attempts and is_transient_copy_error(exc):
-                wait = min(2 * attempt, COPY_RETRY_SLEEP_CAP_SECONDS)
-                log.warning(
-                    f"[copy retry transient] attempt={attempt}/{attempts} wait={wait}s "
-                    f"route={route['name']} msg={getattr(message, 'id', None)} error={exc}"
-                )
-                await asyncio.sleep(wait)
-                continue
-            raise
-
-    if last_exc:
-        raise last_exc
-
-    return None
 
 
-async def copy_album_with_retry(messages, route):
-    if owner_policy.is_stopped(route):
-        return None
-    attempts = max(1, COPY_RETRY_ATTEMPTS)
-    first = messages[0] if messages else None
-    last_exc = None
-
-    for attempt in range(1, attempts + 1):
-        try:
-            return await copy_album(messages, route)
-        except FloodWaitError as exc:
-            last_exc = exc
-            wait = min(int(exc.seconds) + 1, COPY_RETRY_SLEEP_CAP_SECONDS)
-            log.warning(
-                f"[album retry floodwait] attempt={attempt}/{attempts} wait={wait}s "
-                f"route={route['name']} first_msg={getattr(first, 'id', None)}"
-            )
-            await asyncio.sleep(wait)
-        except Exception as exc:
-            last_exc = exc
-            reason = owner_policy.permanent_access_error(exc)
-            if reason:
-                owner_policy.stop_route(route, reason, log)
-                raise
-            if attempt < attempts and is_transient_copy_error(exc):
-                wait = min(2 * attempt, COPY_RETRY_SLEEP_CAP_SECONDS)
-                log.warning(
-                    f"[album retry transient] attempt={attempt}/{attempts} wait={wait}s "
-                    f"route={route['name']} first_msg={getattr(first, 'id', None)} error={exc}"
-                )
-                await asyncio.sleep(wait)
-                continue
-            raise
-
-    if last_exc:
-        raise last_exc
-
-    return None
 
 
-def route_debug_names(routes):
-    try:
-        return [r.get("name") for r in routes]
-    except Exception:
-        return []
 
 
 async def get_route_poll_messages(route, limit):
@@ -2630,35 +1739,6 @@ async def fast_vip_pair_release(
         )
 
 
-def fast_vip_effective_route(
-    route,
-):
-    """
-    Pair routes use canonical first-copy-wins protection
-    instead of the old broad peer-loop / 15-minute text dedupe.
-    """
-
-    if not is_fast_vip_pair_route(
-        route
-    ):
-        return route
-
-
-    effective = dict(
-        route
-    )
-
-    effective.pop(
-        "loop_guard_peers",
-        None,
-    )
-
-    effective.pop(
-        "cross_source_dedupe",
-        None,
-    )
-
-    return effective
 
 
 # END FAST_VIP_ROUTER_CONFIG_V1
@@ -2763,338 +1843,14 @@ FASTVIP_IMPAIRED_ALERTS = Throttle(6 * 3600)
 # END FASTVIP PERMANENT DESTINATION ERRORS V1
 
 
-async def fast_vip_deliver_route(
-    route,
-    unit,
-    skip_permanent_errors=False,
-):
-    if owner_policy.is_stopped(route):
-        return True  # Policy stop, NOT a successful delivery.
-
-    ids = [
-        int(
-            getattr(
-                item,
-                "id",
-                0,
-            )
-            or 0
-        )
-        for item in unit
-    ]
-
-    first = unit[0]
-
-    grouped_id = getattr(
-        first,
-        "grouped_id",
-        None,
-    )
-
-    dest = (
-        int(route["dest_chat"]),
-        int(route["dest_topic"]),
-    )
-
-
-    try:
-
-        mapped_flags = [
-            bool(
-                existing_destination_ids(
-                    item,
-                    route,
-                )
-            )
-            for item in unit
-        ]
-
-
-        if all(mapped_flags):
-
-            log.info(
-                "[FASTVIP DEST ALREADY COPIED] "
-                f"route={route.get('name')} "
-                f"ids={ids} "
-                f"dest={dest[0]}_{dest[1]}"
-            )
-
-            return True
-
-
-        if (
-            skip_permanent_errors
-            and FASTVIP_PERMANENT_FAILURES.contains_all(
-                route,
-                ids,
-            )
-        ):
-
-            log.info(
-                "[FASTVIP PERMANENT SKIP RECALLED] "
-                f"route={route.get('name')} "
-                f"ids={ids} "
-                f"dest={dest[0]}_{dest[1]} "
-                "NOT_DELIVERED=True RETRY=False"
-            )
-
-            return True
-
-
-        if (
-            grouped_id
-            and any(mapped_flags)
-        ):
-
-            raise RuntimeError(
-                "partial album mapping detected "
-                f"ids={ids} "
-                f"mapped={mapped_flags}"
-            )
-
-
-        # ----------------------------------------------------
-        # HARD SENDER PROTECTION
-        # ----------------------------------------------------
-
-        if any(
-            should_hard_block_sender(
-                item,
-                "fastvip",
-                route,
-            )
-            for item in unit
-        ):
-
-            log.warning(
-                "[FASTVIP HARD-SENDER SKIP] "
-                f"route={route.get('name')} "
-                f"ids={ids}"
-            )
-
-            return True
-
-
-        if any(
-            should_hard_block_2521699926_from_vip(
-                item,
-                route,
-            )
-            for item in unit
-        ):
-
-            log.warning(
-                "[FASTVIP HARD-VIP-SOURCE SKIP] "
-                f"route={route.get('name')} "
-                f"ids={ids}"
-            )
-
-            return True
-
-
-        pair_route = is_fast_vip_pair_route(
-            route
-        )
-
-
-        # ----------------------------------------------------
-        # Existing loop guard remains active everywhere
-        # EXCEPT the special paired providers feeding VIP 11.
-        # ----------------------------------------------------
-
-        if (
-            not pair_route
-            and any(
-                should_block_private_peer_loop(
-                    item,
-                    route,
-                )
-                for item in unit
-            )
-        ):
-
-            log.warning(
-                "[FASTVIP LOOP SKIP] "
-                f"route={route.get('name')} "
-                f"ids={ids} "
-                f"dest={dest[0]}_{dest[1]}"
-            )
-
-            return True
-
-
-        effective_route = (
-            fast_vip_effective_route(
-                route
-            )
-        )
-
-
-        # ----------------------------------------------------
-        # Other cross-source dedupe routes retain existing
-        # behaviour. Paired VIP-11 sources use canonical
-        # Telegram original IDs instead.
-        # ----------------------------------------------------
-
-        if (
-            not pair_route
-            and route.get(
-                "cross_source_dedupe"
-            )
-        ):
-
-            text = ""
-
-            for item in unit:
-
-                candidate = text_of(
-                    item
-                )
-
-                if candidate:
-
-                    text = candidate
-                    break
-
-
-            if (
-                text
-                and is_recent_duplicate(
-                    route,
-                    first,
-                    text,
-                )
-            ):
-
-                log.info(
-                    "[FASTVIP CROSS DUPLICATE SKIP] "
-                    f"route={route.get('name')} "
-                    f"ids={ids}"
-                )
-
-                return True
-
-
-        # ----------------------------------------------------
-        # COPY
-        # ----------------------------------------------------
-
-        if (
-            grouped_id
-            and len(unit) > 1
-        ):
-
-            sent = await copy_album_with_retry(
-                unit,
-                effective_route,
-            )
-
-            kind = (
-                f"ALBUM items={len(unit)}"
-            )
-
-
-        else:
-
-            sent = await copy_one_with_retry(
-                first,
-                effective_route,
-                edited=False,
-            )
-
-            kind = "SINGLE"
-
-
-        if not sent:
-
-            if not any(text_of(item) or is_real_media(item) for item in unit):
-
-                log.info(
-                    "[FASTVIP SKIP UNSUPPORTED] "
-                    f"route={route.get('name')} ids={ids} HANDLED=True"
-                )
-
-                return True
-
-            raise RuntimeError(
-                "VIP priority copy returned "
-                "no destination message"
-            )
-
-
-        log.warning(
-            "[FASTVIP COPIED] "
-            f"route={route.get('name')} "
-            f"source={route.get('source_chat')}_"
-            f"{route.get('source_topic')} "
-            f"ids={ids} "
-            f"kind={kind} "
-            f"dest={dest[0]}_{dest[1]}"
-        )
-
-
-        return True
-
-
-    except Exception as exc:
-
-        error_name = (
-            permanent_error_name(
-                exc,
-                dest[0],
-            )
-            if skip_permanent_errors
-            else None
-        )
-
-
-        if error_name:
-
-            saved = FASTVIP_PERMANENT_FAILURES.record(
-                route,
-                ids,
-                error_name,
-            )
-
-            log.error(
-                "[FASTVIP ROUTE IMPAIRED - NOT DELIVERED] "
-                f"route={route.get('name')} "
-                f"ids={ids} "
-                f"dest={dest[0]}_{dest[1]} "
-                f"error={error_name} "
-                f"PERMANENT=True RETRY=False LEDGER_SAVED={saved}"
-            )
-
-            if FASTVIP_IMPAIRED_ALERTS.ready(
-                permanent_route_key(route)
-            ):
-
-                try:
-
-                    await asyncio.to_thread(
-                        send_alert,
-                        "⚠️ <b>Route impaired</b>: "
-                        f"{route.get('name')}\n"
-                        f"<code>{error_name}</code> at {dest[0]}_{dest[1]}. "
-                        "New messages get one attempt each; nothing is retried.",
-                    )
-
-                except Exception:
-
-                    pass
-
-            return True
-
-
-        log.exception(
-            "[FASTVIP DEST FAILED] "
-            f"route={route.get('name')} "
-            f"ids={ids} "
-            f"dest={dest[0]}_{dest[1]} "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return False
+async def fast_vip_deliver_route(route, unit, skip_permanent_errors=False):
+    """Deliver one FASTVIP2 post on one route through the delivery engine.
+
+    True when handled (sent, already copied or rightly skipped), False to let
+    the watchdog retry. skip_permanent_errors marks live delivery: a destination
+    that refuses this account for good is then recorded once and not retried.
+    """
+    return await DELIVERY_ENGINE.deliver(route, unit, live=skip_permanent_errors)
 
 
 # END FAST_VIP_ROUTER_V1
@@ -4185,128 +2941,37 @@ async def fast_vip_event_router_v2():
 # END FAST_VIP_EVENT_ROUTER_V2
 
 
-async def handle_single_message(event, edited=False):
+async def handle_edited_message(event):
+    """A source post was edited: update its mapped copies in place.
+
+    New posts are delivered by FASTVIP2 and the owner routes through the
+    delivery engine; an edit never creates a new destination message.
+    """
     message = event.message
     chat_id = event.chat_id
-
     if has_username_mention(message):
-
-        log_username_filter_main(
-            [message],
-            "normal_event",
-            source_chat=chat_id,
-            source_topic=None,
-        )
-
+        log_username_filter_main([message], "edited_event", source_chat=chat_id, source_topic=None)
         return
     topic_id = topic_of(message, chat_id)
-    text = text_of(message)
-
-    if should_hard_block_sender(message, "live_handler"):
+    if should_hard_block_sender(message, "edit_handler"):
         return
-
-    if is_promo_text(text, topic_id):
+    if is_promo_text(text_of(message), topic_id):
         log.info(f"[promo blocked incoming] msg={getattr(message, 'id', None)} topic={topic_id}")
         return
-
-    if getattr(message, "grouped_id", None) and not PROCESS_GROUPED_MESSAGES_IN_NEW_HANDLER and not edited:
-        return
-
-    routes = routes_for(chat_id, topic_id, message)
-
-    if int(chat_id) in NEW_MIRROR_DEBUG_CHATS:
-        log.info(
-            f"[new mirror incoming] chat={chat_id} topic={topic_id} "
-            f"msg={getattr(message, 'id', None)} edited={edited} "
-            f"media={is_real_media(message)} text={text[:160]!r} "
-            f"matched_routes={route_debug_names(routes)}"
-        )
-
-    if not routes:
-        known = sorted(known_source_topics_for_chat(chat_id))
-        log.warning(
-            f"[no route] source={chat_id}_{topic_id} msg={getattr(message, 'id', None)} "
-            f"grouped={getattr(message, 'grouped_id', None)} media={is_real_media(message)} "
-            f"reply_ids={reply_source_ids(message)} known_topics={known[:40]} "
-            f"text={text[:NO_ROUTE_TEXT_LIMIT]!r}"
-        )
-        return
-
-    for route in routes:
+    for route in routes_for(chat_id, topic_id, message):
         try:
-            # LIVE_ONLY SINGLE WRITER:
-            # New messages are handled exclusively by the ordered
-            # private poller. Edited messages can still update an
-            # already-mapped destination copy.
-            if route.get("live_only") and not edited:
-                log.info(
-                    f"[live-only normal-handler skipped] "
-                    f"route={route['name']} "
-                    f"source={chat_id}_{topic_id} "
-                    f"msg={getattr(message, 'id', None)}"
-                )
+            if not existing_destination_ids(message, route):
+                log.info(f"[unmapped edit skipped] route={route['name']} source={chat_id}_{topic_id} msg={message.id}")
                 continue
-
-            if edited:
-                # HARD SAFETY: edits are updates only. Never create a new
-                # destination message from an unmapped/historical edit.
-                if not existing_destination_ids(message, route):
-                    log.info(
-                        f"[unmapped edit skipped] route={route['name']} "
-                        f"source={chat_id}_{topic_id} msg={message.id}"
-                    )
-                    continue
-
-                updated = await edit_existing_destination_in_place(
-                    message,
-                    route,
-                )
-
-                if not updated:
-                    log.warning(
-                        f"[mapped edit not applied] route={route['name']} "
-                        f"source={chat_id}_{topic_id} msg={message.id}"
-                    )
-
-                # Never fall through to copy_one(... edited=True), because
-                # that legacy path deletes/resends and changes message order.
-                continue
-
-            if not edited and is_recent_duplicate(route, message, text):
-                log.info(f"[duplicate skipped] {route['name']} source={chat_id}_{topic_id} msg={message.id}")
-                continue
-
-            sent = await copy_one_with_retry(message, route, edited=edited)
-
-            if not sent:
-                log.warning(f"[copy returned none] {route['name']} source={chat_id}_{topic_id} msg={getattr(message, 'id', None)}")
-                continue
-
-            remember_dedupe(route, message, text)
-
-            if text:
-                safe_maybe_post_signal(route, message, text, 'live')
-                safe_log_stats(route, message, text, 'live')
-
-            direction = "outgoing" if getattr(message, "out", False) else "incoming"
-            edit_tag = ":edited" if edited else ""
-            log.info(f"[copied{edit_tag}:{direction}] {route['name']} source={chat_id}_{topic_id} -> dest={route['dest_chat']}_{route['dest_topic']}")
-
+            if not await edit_existing_destination_in_place(message, route):
+                log.warning(f"[mapped edit not applied] route={route['name']} source={chat_id}_{topic_id} msg={message.id}")
         except FloodWaitError as exc:
             log.warning(f"FloodWait {exc.seconds}s")
             await asyncio.sleep(min(exc.seconds + 1, 60))
-
         except Exception as exc:
-            log.exception(f"[copy failed] {route['name']} source={chat_id}_{topic_id} msg={getattr(message, 'id', None)}: {exc}")
+            log.exception(f"[edit failed] {route['name']} source={chat_id}_{topic_id} msg={getattr(message, 'id', None)}: {exc}")
 
 
-@client.on(events.NewMessage(chats=SOURCE_CHATS))
-async def on_message(event):
-    try:
-        await handle_single_message(event, edited=False)
-    except Exception as exc:
-        log.exception(f"[handler crash:on_message] chat={getattr(event, 'chat_id', None)}: {exc}")
-        alert_crash("imperium-telegram-worker:on_message", exc)
 
 
 @client.on(events.MessageEdited(chats=SOURCE_CHATS))
@@ -4314,7 +2979,7 @@ async def on_message_edited(event):
     if not FORWARD_EDITED_MESSAGES:
         return
     try:
-        await handle_single_message(event, edited=True)
+        await handle_edited_message(event)
     except Exception as exc:
         log.exception(f"[handler crash:on_message_edited] chat={getattr(event, 'chat_id', None)}: {exc}")
         alert_crash("imperium-telegram-worker:on_message_edited", exc)
@@ -4349,90 +3014,6 @@ async def on_message_deleted(event):
         alert_crash("imperium-telegram-worker:on_message_deleted", exc)
 
 
-@client.on(events.Album(chats=SOURCE_CHATS))
-async def on_album(event):
-    try:
-        if not ENABLE_ALBUM_HANDLER:
-            return
-        if not event.messages:
-            return
-
-        if unit_has_username_mention(
-            event.messages
-        ):
-
-            log_username_filter_main(
-                event.messages,
-                "normal_album",
-                source_chat=event.chat_id,
-                source_topic=None,
-            )
-
-            return
-
-        first = event.messages[0]
-
-        if any(is_blocked_sender(m) for m in event.messages):
-            ids = sorted(set().union(*(sender_ids_for_message(m) for m in event.messages)))
-            log.warning(f"[blocked sender album] ids={ids} first_msg={getattr(first, 'id', None)}")
-            return
-
-        chat_id = event.chat_id
-        topic_id = topic_of(first, chat_id)
-        routes = routes_for(chat_id, topic_id, first)
-
-        if not routes:
-            known = sorted(known_source_topics_for_chat(chat_id))
-            log.warning(
-                f"[album no route] source={chat_id}_{topic_id} first_msg={getattr(first, 'id', None)} "
-                f"items={len(event.messages)} known_topics={known[:40]}"
-            )
-            return
-
-        text = ""
-        for msg in event.messages:
-            text = text_of(msg)
-            if text:
-                break
-
-        for route in routes:
-            try:
-                if route.get("live_only"):
-                    log.info(
-                        f"[live-only album-handler skipped] "
-                        f"route={route['name']} "
-                        f"first_msg={getattr(first, 'id', None)}"
-                    )
-                    continue
-
-                if text and is_recent_duplicate(route, first, text):
-                    log.info(f"[album duplicate skipped] {route['name']} source={chat_id}_{topic_id} items={len(event.messages)}")
-                    continue
-
-                sent = await copy_album_with_retry(event.messages, route)
-
-                if not sent:
-                    log.warning(f"[album copy returned none] {route['name']} source={chat_id}_{topic_id} items={len(event.messages)}")
-                    continue
-
-                if text:
-                    remember_dedupe(route, first, text)
-                    safe_maybe_post_signal(route, first, text, 'album')
-                    safe_log_stats(route, first, text, 'album')
-
-                direction = "outgoing" if getattr(first, "out", False) else "incoming"
-                log.info(f"[album copied:{direction}] {route['name']} items={len(event.messages)}")
-
-            except FloodWaitError as exc:
-                log.warning(f"FloodWait album {exc.seconds}s")
-                await asyncio.sleep(min(exc.seconds + 1, 60))
-
-            except Exception as exc:
-                log.exception(f"[album failed] {route['name']} source={chat_id}_{topic_id} first_msg={getattr(first, 'id', None)}: {exc}")
-
-    except Exception as exc:
-        log.exception(f"[handler crash:on_album] chat={getattr(event, 'chat_id', None)}: {exc}")
-        alert_crash("imperium-telegram-worker:on_album", exc)
 
 
 def channel_function(name):
@@ -4701,6 +3282,8 @@ async def main():
     await warm_entity_cache_once()
 
     owner_module = __import__("sys").modules[__name__]
+    from telegram_worker.engine.runtime import install_engine
+    install_engine(owner_module)
     from telegram_worker.owner_requested_routes_20261102 import run_owner_requested_routes
     owner_module.OWNER_REQUESTED_ROUTES_TASK = asyncio.create_task(run_owner_requested_routes(owner_module))
     from telegram_worker.owner_formatted_route_20261103 import run_owner_formatted_route
@@ -4709,18 +3292,8 @@ async def main():
     owner_module.HEALTH_MONITOR = install_health_monitor("ExposedFX MAIN", client, DATA_DIR)
     from telegram_worker.destination_directory import log_destination_directory
     owner_module.DESTINATION_DIRECTORY_TASK = asyncio.create_task(log_destination_directory(owner_module))
-    if os.environ.get("ENGINE_SHADOW", "1").strip() == "1":
-        try:
-            from telegram_worker import owner_requested_routes_20261102 as owner_routes
-            from telegram_worker.engine.shadow import install_shadow
-            owner_module.ENGINE_SHADOW = install_shadow(owner_module, owner_routes)
-            owner_module.HEALTH_MONITOR.extras.append(
-                lambda: "Engine shadow (match/seen): " + owner_module.ENGINE_SHADOW.summary())
-            from telegram_worker.engine.audit import run_replay_audit
-            owner_module.ENGINE_AUDIT_TASK = asyncio.create_task(run_replay_audit(owner_module, owner_module.ENGINE_SHADOW))
-        except Exception as exc:
-            log.warning(f"[ENGINE SHADOW NOT INSTALLED] {type(exc).__name__}: {exc} LEGACY_UNCHANGED=True")
-
+    from telegram_worker.engine.audit import run_replay_audit
+    owner_module.ENGINE_AUDIT_TASK = asyncio.create_task(run_replay_audit(owner_module, DELIVERY_ENGINE.planner))
     log.warning(
         "[MAIN READY] "
         f"routes={len(ROUTES)} source_chats={SOURCE_CHATS} "

@@ -1,7 +1,4 @@
-"""ExposedFX delivery engine.
-
-A small, typed replacement for the legacy copy pipeline (worker_fixed.py's
-FASTVIP2 delivery, copy_one/copy_album and the wrappers patched onto them):
+"""ExposedFX delivery engine: every new post on every MAIN route goes through here.
 
     model.py    Route, Send/Skip plans, comparable entity and media keys
     rules.py    which posts are never delivered (mentions, links, blocked
@@ -9,9 +6,12 @@ FASTVIP2 delivery, copy_one/copy_album and the wrappers patched onto them):
     replies.py  message-map reads and the reply target in the destination
     render.py   formatter plugins: "copy" and "imperium_vip" (VIP topic 7)
     plan.py     Planner: one post on one route -> Send or Skip
-    shadow.py   shadow mode: plans every live post and compares it with what
-                the legacy pipeline actually sent, without sending anything
+    deliver.py  Deliverer: send, verify, retry, record the mapping
+    runtime.py  DeliveryEngine wired into FASTVIP2 and the owner routes
+    audit.py    replay audit: re-plans recent posts and compares them with
+                the copies in the destinations (read-only, once per version)
 
-Routes move to the engine one at a time once shadow mode has matched the
-legacy output on live traffic (docs/ARCHITECTURE.md, "Delivery engine").
+It replaced the legacy copy pipeline on 4 Nov 2026 after shadow mode (git
+history: engine/shadow.py) and a replay audit matched the legacy output on
+156/156 delivered posts.
 """

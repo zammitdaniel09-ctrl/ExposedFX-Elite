@@ -1,11 +1,12 @@
 """Exact owner routes; sequential 50/20/20/20 bootstrap and durable live polling.
 
-Runs inside the already-authorized MAIN process, using its own copy pipeline.
+Runs inside the already-authorized MAIN process; posts go through the delivery engine.
 No new Telegram session, whole-chat fallback, deletion, or credential changes.
 """
 import asyncio
 import json
 import logging
+import sys
 import time
 from pathlib import Path
 
@@ -92,20 +93,12 @@ async def verify_copies(worker, route, ids):
 
 
 async def copy_unit(worker, route, unit):
-    # The same route is never handled by any legacy live writer.
-    # Never import a reply's older parent merely to satisfy this history request.
-    unit = sorted(unit, key=lambda m: int(m.id))
-    if all(worker.existing_destination_ids(m, route) for m in unit):
-        return "existing", mapped_ids(worker, route, unit)
-    before = mapped_ids(worker, route, unit)
-    if len(unit) > 1 and getattr(unit[0], "grouped_id", None):
-        await worker.copy_album(unit, route)
-    else:
-        await worker.copy_one(unit[0], route, edited=False, ensure_reply=False)
-    after = mapped_ids(worker, route, unit)
-    if any(i not in before for i in after):
-        return "sent", after
-    return "filtered", after
+    """("existing" | "sent" | "filtered", destination ids) for one post.
+
+    Delivered by the MAIN delivery engine (telegram_worker/engine). Never
+    imports a reply's older parent merely to satisfy this history request.
+    """
+    return await worker.DELIVERY_ENGINE.copy_unit(sys.modules[__name__], route, unit)
 
 
 def _copyable(worker, message, route):

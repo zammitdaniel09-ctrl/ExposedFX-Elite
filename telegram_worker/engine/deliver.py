@@ -67,7 +67,7 @@ def structure_problem(source, sent, expected_text: str):
 
 class Deliverer:
     def __init__(self, worker, planner: Planner, attempts: int = 3, sleep_cap: int = 120,
-                 sleep=asyncio.sleep, clock=time.time):
+                 sleep=asyncio.sleep, clock=time.time, alert=None):
         self.worker = worker
         self.client = worker.client
         self.planner = planner
@@ -75,6 +75,7 @@ class Deliverer:
         self.sleep_cap = sleep_cap
         self.sleep = sleep
         self.clock = clock
+        self.alert = alert or _bot_alert
 
     # -- public ------------------------------------------------------------
     async def deliver(self, legacy_route: Dict, route: Route, unit: Sequence, live: bool = True) -> bool:
@@ -90,7 +91,7 @@ class Deliverer:
                 log.error("[FASTVIP DEST FAILED] route=%s ids=%s dest=%s RuntimeError: partial album mapping "
                           "engine=True", route.name, ids, dest)
                 return False
-            log.info("[ENGINE SKIP] route=%s ids=%s reason=%s", route.name, ids, plan.reason)
+            _log_skip(route, ids, plan.reason)
             return True
         try:
             sent = await self.send(legacy_route, route, unit, plan)
@@ -124,7 +125,7 @@ class Deliverer:
         if isinstance(plan, Send):
             await self.send(legacy_route, route, unit, plan)
         else:
-            log.info("[ENGINE SKIP] route=%s ids=%s reason=%s", route.name, [m.id for m in unit], plan.reason)
+            _log_skip(route, [m.id for m in unit], plan.reason)
         after = owner_routes.mapped_ids(self.worker, legacy_route, unit)
         return ("sent" if any(i not in before for i in after) else "filtered"), after
 
@@ -296,13 +297,33 @@ class Deliverer:
 
     def _alert_impaired(self, legacy_route, route: Route, error: str, dest: str):
         throttle = getattr(self.worker, "FASTVIP_IMPAIRED_ALERTS", None)
-        send_alert = getattr(self.worker, "send_alert", None)
-        if throttle and send_alert and throttle.ready(route_key(legacy_route)):
+        if throttle and throttle.ready(route_key(legacy_route)):
             try:
-                send_alert(f"⚠️ <b>Route impaired</b>: {route.name}\n<code>{error}</code> at {dest}. "
+                self.alert(f"⚠️ <b>Route impaired</b>: {route.name}\n<code>{error}</code> at {dest}. "
                            "New messages get one attempt each; nothing is retried.")
             except Exception:
                 pass
+
+
+def _bot_alert(text: str):
+    from telegram_worker.runtime_guard import send_alert
+
+    return send_alert(text)
+
+
+RETIRED_MARKERS = {
+    "vip5_retired": "[VIP5 DESTINATION BLOCKED]",
+    "relay7250_retired": "[RELAY7250 PERMANENT OUTBOUND BLOCK]",
+}
+
+
+def _log_skip(route: Route, ids, reason: str):
+    marker = RETIRED_MARKERS.get(reason)
+    if marker:
+        log.warning("%s route=%s ids=%s dest=%s_%s engine=True", marker, route.name, ids,
+                    route.dest_chat, route.dest_topic)
+    else:
+        log.info("[ENGINE SKIP] route=%s ids=%s reason=%s", route.name, ids, reason)
 
 
 def _original(unit, rendered_message):

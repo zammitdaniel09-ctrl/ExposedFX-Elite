@@ -99,8 +99,6 @@ def check_routes():
 def check_worker_invariants():
     worker = (PACKAGE / "worker_fixed.py").read_text(encoding="utf-8-sig")
     for marker in (
-        "[RELAY7250 PERMANENT OUTBOUND BLOCK]",
-        "[VIP5 DESTINATION BLOCKED]",
         "message_map = load_map()",
         "liveness.exit_disconnected(",
     ):
@@ -108,6 +106,12 @@ def check_worker_invariants():
     policy = (PACKAGE / "owner_forwarding_policy.py").read_text(encoding="utf-8-sig")
     for paused in ("-1003216105903", "-1003918958200", "-1004442967052"):
         require(paused in policy, f"Paused destination no longer stopped: {paused}")
+    engine = (PACKAGE / "engine" / "rules.py").read_text(encoding="utf-8-sig")
+    for marker in ('return "vip5_retired"', 'return "relay7250_retired"', "RELAY_7250_ONLY_DESTINATION = (-1003726286301, 12161)"):
+        require(marker in engine, f"Engine retired-path stop missing: {marker}")
+    deliver = (PACKAGE / "engine" / "deliver.py").read_text(encoding="utf-8-sig")
+    for marker in ("[RELAY7250 PERMANENT OUTBOUND BLOCK]", "[VIP5 DESTINATION BLOCKED]"):
+        require(marker in deliver, f"Engine retired-path log marker missing: {marker}")
     print("PASS: worker runtime safeguards still installed")
 
 

@@ -15,6 +15,9 @@ from telethon.tl.types import MessageMediaWebPage
 
 from .model import Route
 
+RELAY_7250 = (-1004367822325, 7250)
+RELAY_7250_ONLY_DESTINATION = (-1003726286301, 12161)
+
 USERNAME_RE = re.compile(r"(?<![A-Za-z0-9._%+\-])@[A-Za-z][A-Za-z0-9_]{4,31}(?![A-Za-z0-9_])")
 URL_SCHEME_RE = re.compile(r"(?i)(?<![A-Za-z0-9._%+\-@])(?:https?://|tg://|www\.|t\.me/|telegram\.me/)\S+")
 BARE_DOMAIN_RE = re.compile(
@@ -139,11 +142,23 @@ class Rules:
     def loop(self, message, route: Route) -> bool:
         return bool(route.loop_guard_peers and forward_origins(message) & route.loop_guard_peers)
 
+    # -- retired paths (hard stops kept from the legacy copy path) --------
+    def retired(self, route: Route) -> Optional[str]:
+        if (route.dest_chat, route.dest_topic) == (self.vip_chat, 5):
+            return "vip5_retired"  # VIP topic 5 retired; outbound is always blocked
+        if (route.source_chat, route.source_topic) == RELAY_7250 and \
+                (route.dest_chat, route.dest_topic) != RELAY_7250_ONLY_DESTINATION:
+            return "relay7250_retired"  # relay 7250 may only feed VIP EXTRA PARTNER [ 4 ]
+        return None
+
     # -- whole unit ------------------------------------------------------
     def skip_reason(self, unit: Sequence, route: Route, legacy_route=None) -> Optional[str]:
         """First rule that stops this post on this route, or None to deliver."""
         if self.stopped is not None and legacy_route is not None and self.stopped(legacy_route):
             return "owner_stopped"
+        retired = self.retired(route)
+        if retired:
+            return retired
         if any(self.blocked_sender(m) for m in unit):
             return "blocked_sender"
         if any(self.vip_hard_block(m, route) for m in unit):

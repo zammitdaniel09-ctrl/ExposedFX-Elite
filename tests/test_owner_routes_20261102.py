@@ -67,6 +67,20 @@ class Harness:
         self.maps = {}
         self.sent = []
         self.stop_after = None
+        self.DELIVERY_ENGINE = self
+
+    async def copy_unit(self, owner_module, route, unit):
+        """Stand-in for engine.runtime.DeliveryEngine.copy_unit (same contract)."""
+        unit = sorted(unit, key=lambda m: int(m.id))
+        before = owner_module.mapped_ids(self, route, unit)
+        if all(self.existing_destination_ids(m, route) for m in unit):
+            return "existing", before
+        if len(unit) > 1 and getattr(unit[0], "grouped_id", None):
+            await self.copy_album(unit, route)
+        else:
+            await self.copy_one(unit[0], route)
+        after = owner_module.mapped_ids(self, route, unit)
+        return ("sent" if any(i not in before for i in after) else "filtered"), after
 
     def text_of(self,m):
         return m.message

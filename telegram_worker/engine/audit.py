@@ -22,7 +22,7 @@ from .rules import is_real_media
 
 log = logging.getLogger("engine-audit")
 STATE_FILE = "engine_replay_audit_v1.json"
-AUDIT_VERSION = 1
+AUDIT_VERSION = 2  # 2: first run with every MAIN route on the engine
 PER_ROUTE = 25
 
 
@@ -96,7 +96,7 @@ async def audit_route(client, planner, legacy_route: Dict, formatter: str, limit
     return {**result, "examples": examples}
 
 
-async def run_replay_audit(worker, shadow, delay_seconds: float = 90.0) -> Optional[Dict]:
+async def run_replay_audit(worker, planner, delay_seconds: float = 90.0) -> Optional[Dict]:
     path = Path(worker.DATA_DIR) / STATE_FILE
     try:
         if json.loads(path.read_text(encoding="utf-8")).get("version") == AUDIT_VERSION:
@@ -105,14 +105,14 @@ async def run_replay_audit(worker, shadow, delay_seconds: float = 90.0) -> Optio
     except Exception:
         pass
     await asyncio.sleep(delay_seconds)  # let startup and live delivery settle first
-    from .shadow import formatter_for
+    from .runtime import formatter_for
 
-    shadow.planner.context["emoji_registry"] = getattr(worker, "EMOJI_REGISTRY", None)
+    planner.context["emoji_registry"] = getattr(worker, "EMOJI_REGISTRY", None)
     report = {}
     for legacy_route in list(worker.ROUTES):
         route = Route.from_legacy(legacy_route)
         try:
-            outcome = await audit_route(worker.client, shadow.planner, legacy_route, formatter_for(route))
+            outcome = await audit_route(worker.client, planner, legacy_route, formatter_for(route))
         except Exception as exc:
             outcome = {"error": f"{type(exc).__name__}: {exc}"}
         report[route.name] = outcome

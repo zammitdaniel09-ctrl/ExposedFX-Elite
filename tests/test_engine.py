@@ -1,13 +1,11 @@
 """Delivery engine: differential tests against the legacy pipeline's own code.
 
-The legacy rule and reply functions are executed straight from worker_fixed.py
-and reply_hardening.py (no worker import, no credentials) and compared with the
-engine on a generated corpus, then shadow mode is exercised end to end.
+The legacy rules (frozen in tests/fixtures/legacy_rules_20261104.py) and the
+reply functions in reply_hardening.py are executed and compared with the
+engine on a generated corpus; the VIP7 formatter and the replay audit too.
 """
-import ast
 import asyncio
 import itertools
-import json
 import logging
 import random
 import re
@@ -26,38 +24,21 @@ from telethon.tl.types import (
 ROOT = Path(__file__).resolve().parents[1]
 package = sys.modules.setdefault("telegram_worker", types.ModuleType("telegram_worker"))
 package.__path__ = [str(ROOT / "telegram_worker")]
-from telegram_worker import owner_forwarding_policy as policy
 from telegram_worker import reply_hardening
-from telegram_worker.engine import shadow as shadow_mod
 from telegram_worker.engine.model import Route, Send, Skip, entity_keys
 from telegram_worker.engine.plan import Planner
 from telegram_worker.engine.replies import MessageMap, reply_target
 from telegram_worker.engine.rules import Rules, forward_origins, sender_ids
 
 VIP, RELAY = -1003726286301, -1004367822325
-LEGACY_NAMES = {
-    "text_of", "FILTER_USERNAME_MENTIONS", "USERNAME_HANDLE_RE", "has_username_mention", "FILTER_LINKS",
-    "URL_SCHEME_RE", "BARE_DOMAIN_RE", "_original_has_username_mention_v2", "has_link",
-    "unit_has_username_mention", "sender_ids_for_message", "_marked_peer_id", "forward_origin_chat_ids",
-    "should_block_private_peer_loop", "VIP_HARD_BLOCK_CHAT", "VIP_HARD_BLOCKED_SOURCE",
-    "should_hard_block_2521699926_from_vip", "should_hard_block_sender", "map_key",
-    "mapped_ids_from_value",
-}
+LEGACY_ORACLE = ROOT / "tests" / "fixtures" / "legacy_rules_20261104.py"
 
 
 def legacy_worker():
-    """Execute the legacy rule definitions, in file order, into a namespace."""
-    tree = ast.parse((ROOT / "telegram_worker/worker_fixed.py").read_text(encoding="utf-8"))
-    body = []
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in LEGACY_NAMES:
-            body.append(node)
-        elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in LEGACY_NAMES
-                                                  for t in node.targets):
-            body.append(node)
+    """Execute the frozen legacy rule definitions into a namespace."""
     ns = {"os": __import__("os"), "re": re, "log": logging.getLogger("legacy-test"),
           "BLOCKED_SENDER_IDS": {7556281143}}
-    exec(compile(ast.Module(body=body, type_ignores=[]), "worker_fixed.py", "exec"), ns)
+    exec(compile(LEGACY_ORACLE.read_text(encoding="utf-8"), str(LEGACY_ORACLE), "exec"), ns)
     return ns
 
 
@@ -271,102 +252,6 @@ class ReplayAuditTests(unittest.TestCase):
         result = self.run_audit(source, dest, {f"{VIP}:21:-1003786932333:28": 9000})
         self.assertEqual(result["mismatch"], 1)
         self.assertEqual(sorted(result["examples"][0]["fields"]), ["reply_to", "text"])
-
-
-class FakeClient:
-    def __init__(self):
-        self.sent = []
-
-    async def send_message(self, entity, message, **kwargs):
-        self.sent.append(("text", entity, message, kwargs))
-        return SimpleNamespace(id=5000 + len(self.sent))
-
-    async def send_file(self, entity, file, **kwargs):
-        self.sent.append(("file", entity, file, kwargs))
-        return SimpleNamespace(id=5000 + len(self.sent))
-
-
-class ShadowTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.client = FakeClient()
-        self.worker = SimpleNamespace(client=self.client, message_map={}, DATA_DIR=self.tmp.name,
-                                      FASTVIP_PERMANENT_FAILURES=None, EMOJI_REGISTRY=None)
-        self.behaviour = None
-
-        async def legacy_deliver(route, unit, skip_permanent_errors=False):
-            return await self.behaviour(route, unit)
-
-        self.worker.fast_vip_deliver_route = legacy_deliver
-        self.shadow = shadow_mod.install_shadow(self.worker)
-        self.route = dict(ROUTE_DICTS[2], name="Owner VIP1364 To Partner28")
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def deliver(self, unit):
-        async def run():
-            result = await self.worker.fast_vip_deliver_route(self.route, unit, skip_permanent_errors=True)
-            await asyncio.sleep(0)
-            return result
-        asyncio.run(run())
-        return self.shadow.totals.get(self.route["name"], {})
-
-    def post(self, msg_id, text):
-        m = reply_message(msg_id)
-        m.message = m.raw_text = m.text = text
-        m.entities = [MessageEntityBold(0, 2)]
-        return m
-
-    def test_identical_send_is_a_match_and_the_send_still_happens(self):
-        async def legacy(route, unit):
-            await self.client.send_message(route["dest_chat"], unit[0].message, formatting_entities=unit[0].entities,
-                                           parse_mode=None, reply_to=route["dest_topic"], link_preview=True)
-            return True
-        self.behaviour = legacy
-        totals = self.deliver([self.post(1, "TP2 hit")])
-        self.assertEqual(totals, {"match_send": 1})
-        self.assertEqual(len(self.client.sent), 1, "shadow never blocks or duplicates a send")
-
-    def test_wrong_reply_target_is_reported_with_the_field(self):
-        async def legacy(route, unit):
-            await self.client.send_message(route["dest_chat"], unit[0].message, formatting_entities=unit[0].entities,
-                                           reply_to=99999)
-            return True
-        self.behaviour = legacy
-        with self.assertLogs("engine-shadow", "WARNING") as logs:
-            totals = self.deliver([self.post(2, "TP3 hit")])
-        self.assertEqual(totals, {"mismatch": 1})
-        self.assertIn("detail=reply_to", logs.output[0])
-
-    def test_both_skipping_a_link_post_is_a_match(self):
-        async def legacy(route, unit):
-            return True
-        self.behaviour = legacy
-        self.assertEqual(self.deliver([self.post(3, "join t.me/x")]), {"match_skip": 1})
-
-    def test_legacy_failure_is_not_counted_as_a_logic_mismatch(self):
-        async def legacy(route, unit):
-            raise ConnectionError("reset")
-        self.behaviour = legacy
-        with self.assertRaises(ConnectionError):
-            self.deliver([self.post(4, "TP1 hit")])
-        self.assertEqual(self.shadow.totals[self.route["name"]], {"legacy_failed": 1})
-
-    def test_sends_outside_a_tracked_delivery_are_ignored(self):
-        asyncio.run(self.client.send_message("me", "health digest"))
-        self.assertEqual(self.shadow.totals, {})
-
-    def test_totals_survive_restart(self):
-        async def legacy(route, unit):
-            return True
-        self.behaviour = legacy
-        self.deliver([self.post(5, "join t.me/x")])
-        self.shadow._save(force=True)
-        reloaded = shadow_mod.Shadow(self.worker, self.tmp.name)
-        self.assertEqual(reloaded.totals, {self.route["name"]: {"match_skip": 1}})
-        self.assertEqual(json.loads((Path(self.tmp.name) / shadow_mod.STATE_FILE).read_text())
-                         [self.route["name"]]["match_skip"], 1)
 
 
 if __name__ == "__main__":

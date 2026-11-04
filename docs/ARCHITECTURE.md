@@ -64,30 +64,25 @@ Custom emoji ids come from the owner's Saved Messages (`community_emoji_registry
 
 ## Delivery engine (`telegram_worker/engine/`)
 
-The clean replacement for the legacy copy pipeline: typed routes and plans,
-pure delivery rules, reply-target resolution, formatter plugins and a planner
-(see the package docstring). It runs in **shadow mode** on MAIN: every live
-post on the FASTVIP2 and owner routes is planned by the engine and compared
-with what the legacy pipeline actually sent. Shadow mode never sends; it
-logs `[SHADOW MATCH_SEND]` / `[SHADOW MATCH_SKIP]` / `[SHADOW MISMATCH]` and
-keeps totals in `engine_shadow_v1.json`. Set `ENGINE_SHADOW=0` on MAIN to
-turn it off. A route moves to the engine only after its shadow totals show
-no mismatch on live traffic.
+Every new post on every MAIN route is delivered by the engine (see the package
+docstring): FASTVIP2 calls `fast_vip_deliver_route`, which hands the post to
+`DeliveryEngine.deliver`; the owner routes call `DeliveryEngine.copy_unit`.
+One planner decides Send or Skip (rules, reply target, formatter), one
+deliverer sends, verifies, retries and writes the message map. Edits and
+deletes still go through the worker's mapped edit/delete handlers, which read
+the same map.
 
-**Moving a route to the engine:** set `ENGINE_ROUTES` on MAIN to a comma
-separated list of route names (e.g. `VIP RELAY Topic2 To VIP1364`). Those
-routes are then delivered by `engine/deliver.py` (same Telegram calls, same
-map, same log markers with `engine=True lag=…`); all others stay on legacy
-under shadow comparison. Remove the name to roll back; nothing else changes.
+How it replaced the legacy copy pipeline (4 Nov 2026): shadow mode compared
+every live post with the legacy output, a replay audit matched 156/156
+delivered posts on the 7 active routes, one route ran on the engine as a
+canary, then all routes moved and the legacy copy stack (copy_one,
+copy_album, their retry wrappers and the four modules that patched them) was
+deleted. The legacy rules are frozen in
+`tests/fixtures/legacy_rules_20261104.py` and the engine is tested against
+them on generated corpora (`tests/test_engine.py`).
 
-Replay audit (4 Nov 2026, `engine/audit.py`): 156/156 recent posts on the 7
-active routes planned identically to the copies in the destinations. Relay
-topics 106 and 508 have no feeding ALT route (dormant), so they had nothing
-to compare.
-
-The rules are tested against the legacy functions themselves
-(`tests/test_engine.py`): content filter, sender block, VIP hard block, loop
-guard, reply targets and the VIP topic 7 formatter on generated corpora.
+Rollback: Railway, MAIN, Deployments, redeploy the last deployment before
+the cutover commit. State files are shared and need no changes.
 
 ## Safety layers
 

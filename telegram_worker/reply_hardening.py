@@ -521,7 +521,12 @@ async def _ensure_reply_mapping_uncached(main_module, client, message, route, pa
 
 
 def install_reply_hardening(main_module, logger=None):
-    """Install reply preservation globally across every main-worker route."""
+    """Self-test the reply metadata readers and mark reply recovery ready.
+
+    The delivery engine (telegram_worker/engine/deliver.py) calls
+    ensure_reply_mapping before sending a reply whose parent is unmapped; no
+    worker function is wrapped any more.
+    """
     logger = logger or log
 
     if main_module is None:
@@ -533,11 +538,6 @@ def install_reply_hardening(main_module, logger=None):
 
     if not isinstance(getattr(main_module, "message_map", None), dict):
         raise RuntimeError("worker message_map unavailable")
-
-    original_copy_one = getattr(main_module, "copy_one", None)
-    original_copy_album = getattr(main_module, "copy_album", None)
-    if not callable(original_copy_one):
-        raise RuntimeError("worker copy_one unavailable")
 
     # Startup regression tests for the Telegram metadata forms that caused the
     # historical failures.
@@ -560,83 +560,11 @@ def install_reply_hardening(main_module, logger=None):
     if _mapped_ids(main_module, {"a": 903, "b": 904}) != [903, 904]:
         raise RuntimeError("reply hardening dict-map self-test failed")
 
-    def patched_reply_source_ids(message):
-        return reply_source_ids(message)
-
-    def patched_mapped_reply_id(message, route):
-        return mapped_reply_id(main_module, message, route)
-
-    def patched_reply_target(message, route):
-        parents = real_reply_source_ids(message, route)
-        if not parents:
-            return route["dest_topic"]
-
-        mapped = mapped_reply_id(main_module, message, route)
-        if mapped:
-            return mapped
-
-        logger.warning(
-            "[REPLY FALLBACK TO TOPIC ROOT] route=%s source=%s_%s msg=%s real_parent_ids=%s dest=%s_%s",
-            route.get("name"),
-            route.get("source_chat"),
-            route.get("source_topic"),
-            getattr(message, "id", None),
-            parents,
-            route.get("dest_chat"),
-            route.get("dest_topic"),
-        )
-        return route["dest_topic"]
-
-    async def global_copy_one(message, route, edited=False, ensure_reply=True):
-        if ensure_reply and real_reply_source_ids(message, route):
-            # Fast path: a correct durable mapping costs no history request.
-            if mapped_reply_id(main_module, message, route) is None:
-                registry = getattr(main_module, "EMOJI_REGISTRY", None)
-                await ensure_reply_mapping(
-                    main_module,
-                    message,
-                    route,
-                    registry=registry,
-                    logger=logger,
-                )
-        return await original_copy_one(
-            message,
-            route,
-            edited=edited,
-            ensure_reply=ensure_reply,
-        )
-
-    async def global_copy_album(messages, route):
-        messages = list(messages or [])
-        probe = next(
-            (m for m in messages if real_reply_source_ids(m, route)),
-            messages[0] if messages else None,
-        )
-        if probe is not None and real_reply_source_ids(probe, route):
-            if mapped_reply_id(main_module, probe, route) is None:
-                registry = getattr(main_module, "EMOJI_REGISTRY", None)
-                await ensure_reply_mapping(
-                    main_module,
-                    probe,
-                    route,
-                    registry=registry,
-                    logger=logger,
-                )
-        return await original_copy_album(messages, route)
-
-    main_module.reply_source_ids = patched_reply_source_ids
-    main_module.mapped_reply_id = patched_mapped_reply_id
-    main_module.reply_target = patched_reply_target
-    main_module.copy_one = global_copy_one
-    if callable(original_copy_album):
-        main_module.copy_album = global_copy_album
-
     state = {
         "reply_metadata": "direct+header",
         "topic_root_filter": True,
         "map_values": "int+list+dict",
-        "global_copy_one": True,
-        "global_copy_album": callable(original_copy_album),
+        "used_by": "engine.deliver (ensure_reply_mapping)",
         "all_routes": True,
         "recovery": "local-map->history-text/media->root",
         "history_scan": "GetHistory-first/GetReplies-last",

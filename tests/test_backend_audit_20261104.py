@@ -60,20 +60,14 @@ class MessageMapTests(unittest.TestCase):
         self.assertEqual(saves, [])
         ns["remember_message"](SimpleNamespace(id=12), SimpleNamespace(id=22), route)
         self.assertEqual((len(saves), message_map["-1:12:-2:3"]), (1, 22))
-        self.assertIn("remember_message(src, dst, route, save=False)\n        save_map()", WORKER_SOURCE)
 
 
 class VipRouterTests(unittest.TestCase):
     def test_backstop_ignores_service_messages(self):
         self.assertIn('> baseline\n                and not getattr(message, "action", None)', WORKER_SOURCE)
 
-    def test_uncopyable_unit_counts_as_handled(self):
-        self.assertIn("if not any(text_of(item) or is_real_media(item) for item in unit):", WORKER_SOURCE)
-        self.assertIn("[FASTVIP SKIP UNSUPPORTED]", WORKER_SOURCE)
-
-    def test_media_fallbacks_reraise_flood_and_lost_access(self):
-        guard = "if isinstance(exc, FloodWaitError) or owner_policy.permanent_access_error(exc):\n            raise"
-        self.assertEqual(WORKER_SOURCE.count(guard), 2)
+    # Unsupported posts, album map saves and media fallbacks are covered by
+    # tests/test_engine_deliver.py (the engine delivers every FASTVIP2 post).
 
 
 class AlertTests(unittest.TestCase):

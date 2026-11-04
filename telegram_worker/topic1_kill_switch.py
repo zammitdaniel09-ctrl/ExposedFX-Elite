@@ -248,11 +248,6 @@ def install_topic1_kill_switch(main_module, logger=None):
     removed_now = apply_quarantine_to_routes()
     _save_state(state_path, state)
 
-    original_copy_one = getattr(main_module, "copy_one", None)
-    original_copy_album = getattr(main_module, "copy_album", None)
-    if not callable(original_copy_one) or not callable(original_copy_album):
-        raise RuntimeError("main worker copy_one/copy_album unavailable")
-
     async def quarantine_route(route, reason, escaped_ids=None):
         sig = _route_sig(route)
         key = _sig_key(sig)
@@ -277,54 +272,6 @@ def install_topic1_kill_switch(main_module, logger=None):
                 removed,
                 list(escaped_ids or []),
             )
-
-    async def inspect_sent_result(route, result):
-        messages = result if isinstance(result, (list, tuple)) else [result]
-        escaped = []
-        for message in messages:
-            if message is None:
-                continue
-            if _as_int(getattr(message, "chat_id", None)) not in (None, HUB_CHAT):
-                continue
-            if _topic_id(message) == DEAD_TOPIC:
-                mid = _as_int(getattr(message, "id", None))
-                if mid is not None and mid != DEAD_TOPIC:
-                    escaped.append(mid)
-        if escaped:
-            await _delete_ids(client, escaped, logger, "post-send-escape")
-            await quarantine_route(route, "send_landed_in_dead_topic_1", escaped)
-        return result
-
-    async def guarded_copy_one(message, route, *args, **kwargs):
-        if is_quarantined(route):
-            logger.warning(
-                "[TOPIC1 SEND BLOCKED] route=%r source=%s_%s intended_dest=%s_%s",
-                route.get("name"),
-                route.get("source_chat"),
-                route.get("source_topic"),
-                route.get("dest_chat"),
-                route.get("dest_topic"),
-            )
-            return None
-        result = await original_copy_one(message, route, *args, **kwargs)
-        return await inspect_sent_result(route, result)
-
-    async def guarded_copy_album(messages, route, *args, **kwargs):
-        if is_quarantined(route):
-            logger.warning(
-                "[TOPIC1 ALBUM BLOCKED] route=%r source=%s_%s intended_dest=%s_%s",
-                route.get("name"),
-                route.get("source_chat"),
-                route.get("source_topic"),
-                route.get("dest_chat"),
-                route.get("dest_topic"),
-            )
-            return None
-        result = await original_copy_album(messages, route, *args, **kwargs)
-        return await inspect_sent_result(route, result)
-
-    main_module.copy_one = guarded_copy_one
-    main_module.copy_album = guarded_copy_album
 
     async def purge_and_reverse_audit(reason):
         children = await _fetch_topic_children(client, logger)

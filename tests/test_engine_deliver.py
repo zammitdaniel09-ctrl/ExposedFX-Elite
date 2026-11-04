@@ -105,7 +105,8 @@ class DelivererTests(unittest.TestCase):
 
         async def sleep(seconds):
             self.sleeps.append(seconds)
-        self.deliverer = Deliverer(worker, planner, attempts=3, sleep=sleep)
+        self.alerts = []
+        self.deliverer = Deliverer(worker, planner, attempts=3, sleep=sleep, alert=self.alerts.append)
         self.route = Route.from_legacy(ROUTE)
         policy._RUNTIME, policy._PATH = None, None
         policy.configure(self.tmp.name)
@@ -169,6 +170,34 @@ class DelivererTests(unittest.TestCase):
         # As in legacy, a structure mismatch is retryable: 3 attempts x (copy + repair), all deleted.
         self.assertEqual(len(self.client.deleted), 6)
         self.assertEqual(self.worker.message_map, {})
+
+    def test_retired_paths_are_never_written(self):
+        vip5 = dict(ROUTE, name="probe VIP5", dest_topic=5)
+        relay7250 = dict(ROUTE, name="probe 7250", source_topic=7250)
+        for legacy in (vip5, relay7250):
+            with self.assertLogs("imperium-worker", "WARNING") as logs:
+                self.assertTrue(asyncio.run(self.deliverer.deliver(legacy, Route.from_legacy(legacy),
+                                                                   [message(80, "TP1")])))
+            self.assertTrue(any("BLOCK" in line for line in logs.output))
+        self.assertEqual(self.client.calls, [])
+        allowed = dict(ROUTE, name="Owner Relay7250 To VIP12161", source_topic=7250, dest_topic=12161)
+        self.assertTrue(asyncio.run(self.deliverer.deliver(allowed, Route.from_legacy(allowed), [message(81, "TP1")])))
+        self.assertEqual(len(self.client.calls), 1, "7250 -> VIP12161 is the one allowed path")
+
+    def test_unsupported_post_is_handled_without_sending(self):
+        self.assertTrue(self.deliver([message(70, "")]))
+        self.assertEqual(self.client.calls, [])
+
+    def test_media_fallback_never_masks_flood_or_lost_access(self):
+        self.client.fail = [ChatWriteForbiddenError(request=None)]
+        with self.assertLogs("imperium-worker", "ERROR"):
+            self.deliver([message(71, "chart", media=True)])
+        self.assertEqual(len(self.client.calls), 1, "no re-upload after a permanent refusal")
+        policy._RUNTIME.clear()
+        self.client.calls.clear()
+        self.client.fail = [FloodWaitError(request=None, capture=3)]
+        self.assertTrue(self.deliver([message(72, "chart", media=True)]))
+        self.assertEqual([c[2] for c in self.client.calls][0], self.client.calls[1][2], "flood: same media retried")
 
     def test_blocked_posts_are_skipped_without_sending(self):
         post = message(7, "join t.me/x")

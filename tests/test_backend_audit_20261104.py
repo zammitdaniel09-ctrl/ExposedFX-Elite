@@ -150,6 +150,17 @@ class StartupCostTests(unittest.TestCase):
             self.assertEqual(len(calls), first)
 
 
+class Topic1SweepTests(unittest.TestCase):
+    def test_sweep_paused_while_hub_is_a_stopped_destination(self):
+        from telegram_worker import owner_forwarding_policy as policy
+        from telegram_worker import topic1_kill_switch as kill
+        self.assertIn(kill.HUB_CHAT, policy.STOPPED_DEST_CHATS)
+        source = (ROOT / "telegram_worker/topic1_kill_switch.py").read_text(encoding="utf-8")
+        body = source[source.index("async def sweep_loop():"):]
+        self.assertLess(body.index("[TOPIC1 SWEEP PAUSED]"), body.index('purge_and_reverse_audit("startup-full-purge")'))
+        self.assertIn("async def dead_topic_intrusion_guard(event):", source)
+
+
 class RepoHygieneTests(unittest.TestCase):
     def test_no_workflow_rewrites_production_code(self):
         for workflow in (ROOT / ".github/workflows").glob("*.yml"):

@@ -24,6 +24,8 @@ from pathlib import Path
 from telethon import events
 from telethon.errors import FloodWaitError
 
+from telegram_worker import owner_forwarding_policy
+
 
 log = logging.getLogger("topic1-kill-switch")
 
@@ -410,6 +412,17 @@ def install_topic1_kill_switch(main_module, logger=None):
         await _delete_ids(client, [message.id], logger, "live-intrusion")
 
     async def sweep_loop():
+        # Owner 4 Nov 2026: while the Hub is a paused destination nothing of
+        # ours posts there, so skip the startup purge and the 20s sweep
+        # (~4,300 history calls/day). The live intrusion delete stays active.
+        if HUB_CHAT in owner_forwarding_policy.STOPPED_DEST_CHATS:
+            logger.warning(
+                "[TOPIC1 SWEEP PAUSED] dest=%s_%s reason=destination_paused "
+                "LIVE_DELETE=True HISTORY_API_CALLS=0",
+                HUB_CHAT,
+                DEAD_TOPIC,
+            )
+            return
         await purge_and_reverse_audit("startup-full-purge")
         while True:
             await asyncio.sleep(SWEEP_SECONDS)

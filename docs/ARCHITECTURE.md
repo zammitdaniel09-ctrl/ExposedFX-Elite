@@ -62,6 +62,22 @@ Formatters: `library_signal_format.py` (EXTRA PARTNER [ 5 ]),
 `samgtrades_house_formatter.py` (Exposed | VIP), `imperium_vip_*` (VIP 7).
 Custom emoji ids come from the owner's Saved Messages (`community_emoji_registry.py`).
 
+## Delivery engine (`telegram_worker/engine/`)
+
+The clean replacement for the legacy copy pipeline: typed routes and plans,
+pure delivery rules, reply-target resolution, formatter plugins and a planner
+(see the package docstring). It runs in **shadow mode** on MAIN: every live
+post on the FASTVIP2 and owner routes is planned by the engine and compared
+with what the legacy pipeline actually sent. Shadow mode never sends; it
+logs `[SHADOW MATCH_SEND]` / `[SHADOW MATCH_SKIP]` / `[SHADOW MISMATCH]` and
+keeps totals in `engine_shadow_v1.json`. Set `ENGINE_SHADOW=0` on MAIN to
+turn it off. A route moves to the engine only after its shadow totals show
+no mismatch on live traffic.
+
+The rules are tested against the legacy functions themselves
+(`tests/test_engine.py`): content filter, sender block, VIP hard block, loop
+guard, reply targets and the VIP topic 7 formatter on generated corpora.
+
 ## Safety layers
 
 1. `owner_forwarding_policy.py` — `STOPPED_DEST_CHATS` / `STOPPED_SOURCE_CHATS`
@@ -105,9 +121,10 @@ A digest of deliveries, failures and lag per route arrives daily at 08:00 Malta.
 MAIN `/app/data`: session (rewritten from `SESSION_B64_*` at start),
 `message_map.json` (source→destination ids for replies/edits; an unreadable
 file is copied to `message_map.corrupt-*.json`), owner route/formatter state,
-wholechat map, stop ledger, `health_monitor_v1.json`.
+wholechat map, stop ledger, `health_monitor_v1.json`, `engine_shadow_v1.json`,
+`liveness_exit_v1.json` (only between a self-restart and the next start).
 ALT `/data-alt`: session, message map, route checkpoints, last-N import state,
-`health_monitor_v1.json`.
+`health_monitor_v1.json`, `liveness_exit_v1.json`.
 
 ## Runbook
 

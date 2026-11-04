@@ -4709,6 +4709,13 @@ async def main():
     owner_module.HEALTH_MONITOR = install_health_monitor("ExposedFX MAIN", client, DATA_DIR)
     from telegram_worker.destination_directory import log_destination_directory
     owner_module.DESTINATION_DIRECTORY_TASK = asyncio.create_task(log_destination_directory(owner_module))
+    if os.environ.get("ENGINE_SHADOW", "1").strip() == "1":
+        try:
+            from telegram_worker import owner_requested_routes_20261102 as owner_routes
+            from telegram_worker.engine.shadow import install_shadow
+            owner_module.ENGINE_SHADOW = install_shadow(owner_module, owner_routes)
+        except Exception as exc:
+            log.warning(f"[ENGINE SHADOW NOT INSTALLED] {type(exc).__name__}: {exc} LEGACY_UNCHANGED=True")
 
     log.warning(
         "[MAIN READY] "

@@ -4,6 +4,7 @@ Owner request 3 Nov 2026: list the groups/channels and their topics so routes
 can be kept or stopped by name. Reads titles only; never sends or edits.
 """
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -20,6 +21,7 @@ EXTRA_ACTIVE = (
 ALT_RELAY_CHAT = -1004367822325
 ALT_RELAY_TOPICS = (106, 2, 508, 115, 2583, 2585, 7248, 7250, 8323)
 PAUSED_ARCHIVE = Path(__file__).resolve().parents[1] / "docs" / "paused_routes_20261103.md"
+STATE_FILE = "destination_directory_v1.json"
 
 
 def _paused_routes():
@@ -67,9 +69,25 @@ async def _topic_titles(worker, chat, topics):
     return titles
 
 
+def _signature(entries):
+    return hashlib.sha256(json.dumps(
+        sorted([list(k), sorted(map(str, v))] for k, v in entries.items()), default=str,
+    ).encode("utf-8")).hexdigest()
+
+
 async def log_destination_directory(worker):
     try:
         entries = _directory(worker)
+        # Titles are only re-read when the route set changes (~50 API calls).
+        state_path = Path(worker.DATA_DIR) / STATE_FILE
+        signature = _signature(entries)
+        try:
+            previous = json.loads(state_path.read_text(encoding="utf-8")).get("signature")
+        except Exception:
+            previous = None
+        if previous == signature:
+            log.warning("[DEST DIRECTORY UNCHANGED] entries=%s API_CALLS=0", len(entries))
+            return
         chats = sorted({chat for _, chat, _ in entries})
         for chat in chats:
             try:
@@ -86,5 +104,6 @@ async def log_destination_directory(worker):
                 )
             await asyncio.sleep(0.3)
         log.warning("[DEST DIRECTORY DONE] chats=%s entries=%s", len(chats), len(entries))
+        state_path.write_text(json.dumps({"signature": signature}), encoding="utf-8")
     except Exception as exc:
         log.warning("[DEST DIRECTORY FAILED SAFE] %s: %s", type(exc).__name__, exc)

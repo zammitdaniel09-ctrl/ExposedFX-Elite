@@ -98,6 +98,21 @@ async def cleanup_relay7250_to_vip10877_once(main_module, logger=None):
             has_candidate_mapping = True
             break
 
+    previous = _load_json(data_dir / CLEANUP_FILE)
+    if (
+        has_candidate_mapping
+        and previous.get("mapped_posts_matched") == 0
+        and not previous.get("errors")
+        and not previous.get("uncertain")
+    ):
+        log.warning(
+            "[RELAY7250 CLEANUP ALREADY CLEAN] "
+            "source=%s_%s dest=%s_%s HISTORY_API_CALLS=0 "
+            "OUTBOUND7250_BLOCKED=True",
+            SRC_CHAT, SRC_TOPIC, DEST_CHAT, DEST_TOPIC,
+        )
+        return previous
+
     if not has_candidate_mapping:
         log.warning(
             "[RELAY7250 CLEANUP NO MAPS] "

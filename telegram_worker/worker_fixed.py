@@ -264,7 +264,13 @@ def load_map():
         return {}
     try:
         return json.loads(MESSAGE_MAP_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
+        backup = MESSAGE_MAP_FILE.with_name(f"message_map.corrupt-{int(time.time())}.json")
+        try:
+            backup.write_bytes(MESSAGE_MAP_FILE.read_bytes())
+        except Exception:
+            pass
+        log.error(f"[MESSAGE MAP UNREADABLE] {type(exc).__name__}: {exc} copy_kept={backup.name}")
         return {}
 
 
@@ -1223,7 +1229,7 @@ def reply_target(message, route):
     return route["dest_topic"]
 
 
-def remember_message(src_msg, dst_msg, route):
+def remember_message(src_msg, dst_msg, route, save=True):
     if not src_msg or not dst_msg:
         return
 
@@ -1238,13 +1244,15 @@ def remember_message(src_msg, dst_msg, route):
 
         if ids:
             message_map[key] = ids[0] if len(ids) == 1 else ids
-            save_map()
+            if save:
+                save_map()
         return
 
     mid = getattr(dst_msg, "id", None)
     if mid:
         message_map[key] = int(mid)
-        save_map()
+        if save:
+            save_map()
 
 
 async def delete_mapped_destination_for_source(source_chat, source_msg_id):
@@ -1507,6 +1515,8 @@ async def send_media_exact(message, route, target_reply, text, entities):
             send_as=route_send_as_peer(route),
         )
     except Exception as exc:
+        if isinstance(exc, FloodWaitError) or owner_policy.permanent_access_error(exc):
+            raise
         log.warning(f"[media direct copy failed] msg={message.id} route={route['name']}: {exc}")
 
     cache_dir = DATA_DIR / "media_cache"
@@ -2308,6 +2318,8 @@ async def copy_album(messages, route):
             send_as=route_send_as_peer(route),
         )
     except Exception as exc:
+        if isinstance(exc, FloodWaitError) or owner_policy.permanent_access_error(exc):
+            raise
         log.warning(f"[album direct copy failed] {route['name']} first_msg={getattr(first, 'id', None)}: {exc}")
 
         if not ENABLE_ALBUM_REUPLOAD_FALLBACK:
@@ -2366,7 +2378,8 @@ async def copy_album(messages, route):
 
     if isinstance(sent, list):
         for src, dst in zip(messages, sent):
-            remember_message(src, dst, route)
+            remember_message(src, dst, route, save=False)
+        save_map()
     else:
         remember_message(first, sent, route)
 
@@ -4426,6 +4439,15 @@ async def fast_vip_deliver_route(
 
         if not sent:
 
+            if not any(text_of(item) or is_real_media(item) for item in unit):
+
+                log.info(
+                    "[FASTVIP SKIP UNSUPPORTED] "
+                    f"route={route.get('name')} ids={ids} HANDLED=True"
+                )
+
+                return True
+
             raise RuntimeError(
                 "VIP priority copy returned "
                 "no destination message"
@@ -5796,6 +5818,7 @@ async def fastvip2_watchdog(
                     )
                     or 0
                 ) > baseline
+                and not getattr(message, "action", None)
             ]
 
 

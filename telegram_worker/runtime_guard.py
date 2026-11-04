@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import atexit
 import json
 import os
@@ -27,6 +28,16 @@ def send_alert(text: str):
     if not _alert_enabled():
         return False
 
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _post_alert(text)
+    # Inside the event loop: never block it on the Bot API.
+    threading.Thread(target=_post_alert, args=(text,), name="alert-post").start()
+    return True
+
+
+def _post_alert(text: str):
     try:
         requests.post(
             f"https://api.telegram.org/bot{ALERT_BOT_TOKEN}/sendMessage",

@@ -16,13 +16,17 @@ Deploys never overlap (`overlapSeconds=0`), so a session is never used by two
 containers at once. One codebase on `main` serves both accounts; Railway watch
 paths decide who restarts:
 
-- MAIN: everything except `telegram_worker/alt_*.py`, `tests/test_alt_*.py`
-  and this file.
+- MAIN: `**` except `telegram_worker/alt_*.py`, `tests/test_alt_*.py` and this
+  file (`/**` never matched in Railway's matcher; `**` does).
 - ALT: `telegram_worker/alt_*.py`, `owner_forwarding_policy.py`,
   `health_monitor.py`, `liveness.py`, `log_setup.py`, `__init__.py`,
   `runtime_guard.py`, `requirements.txt` (the only modules ALT imports). Add a
   module here if ALT starts importing it.
-- server: `server/**`, `requirements.txt`.
+- server: `server/**` only (it does not use Telethon; a rebuild would reset its
+  autocopier SQLite, which lives on ephemeral disk).
+
+Telethon is pinned to 1.45.0 in `requirements.txt` (the version both workers
+run and CI tests); raising it is a deliberate change that rebuilds MAIN and ALT.
 
 The old `alt-worker` branch is frozen as a rollback point (Railway → ALT →
 Settings → Source → branch `alt-worker`).

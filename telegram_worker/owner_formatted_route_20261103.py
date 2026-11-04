@@ -140,9 +140,13 @@ async def reformat_edited_signal(worker, state, path, message):
 
 
 def stop(state, path, reason):
+    """Returns False while the policy is still confirming a transient-looking reason."""
     policy.stop_route(ROUTE, reason, log)
+    if not policy.is_stopped(ROUTE):
+        return False
     state.update(status="stopped", stopped_reason=reason, stopped_at=time.time())
     save_state(path, state)
+    return True
 
 
 async def run_owner_formatted_route(worker):
@@ -189,8 +193,7 @@ async def run_owner_formatted_route(worker):
                 raise
             except Exception as exc:
                 reason = policy.permanent_access_error(exc)
-                if reason:
-                    stop(state, path, reason)
+                if reason and stop(state, path, reason):
                     return
                 log.warning("[OWNER FORMATTED WAIT] contract=%s error=%s", policy.identity(ROUTE), type(exc).__name__)
                 await asyncio.sleep(15)
@@ -207,8 +210,7 @@ async def run_owner_formatted_route(worker):
                 await asyncio.sleep(max(1, int(exc.seconds)) + 1)
             except Exception as exc:
                 reason = policy.permanent_access_error(exc)
-                if reason:
-                    stop(state, path, reason)
+                if reason and stop(state, path, reason):
                     return
                 log.warning("[OWNER FORMATTED LIVE WAIT] contract=%s error=%s",
                             policy.identity(ROUTE), type(exc).__name__)

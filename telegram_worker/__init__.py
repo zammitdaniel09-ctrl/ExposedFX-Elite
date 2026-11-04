@@ -115,7 +115,7 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                             logger=log,
                         )
                         if log:
-                            log.error(
+                            log.warning(
                                 "[PARTNER DEAD GUARD READY] "
                                 "dest_chat=-1003885074241 "
                                 "topics=4663,4665 "

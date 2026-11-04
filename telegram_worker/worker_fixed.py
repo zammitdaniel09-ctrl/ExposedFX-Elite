@@ -2721,7 +2721,7 @@ async def forward_polled_new_mirror_message(route, msg, reason):
         return True
 
     if "backfill" in str(reason).lower():
-        log.error(
+        log.warning(
             "[NO HISTORY HARD BLOCK] "
             f"reason=generic_backfill_attempt "
             f"route={route.get('name')} "
@@ -11240,6 +11240,8 @@ async def main():
     owner_module.OWNER_REQUESTED_ROUTES_TASK = asyncio.create_task(run_owner_requested_routes(owner_module))
     from telegram_worker.owner_formatted_route_20261103 import run_owner_formatted_route
     owner_module.OWNER_FORMATTED_ROUTE_TASK = asyncio.create_task(run_owner_formatted_route(owner_module))
+    from telegram_worker.health_monitor import install_health_monitor
+    owner_module.HEALTH_MONITOR = install_health_monitor("ExposedFX MAIN", client, DATA_DIR)
     from telegram_worker.destination_directory import log_destination_directory
     owner_module.DESTINATION_DIRECTORY_TASK = asyncio.create_task(log_destination_directory(owner_module))
 

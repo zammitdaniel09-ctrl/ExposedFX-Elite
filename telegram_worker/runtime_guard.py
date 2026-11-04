@@ -180,7 +180,7 @@ async def _auto_install_vip_emoji_registry(log=None):
                     if main_module is not None:
                         setattr(main_module, "TOPIC1_KILL_SWITCH_STATE", topic1_state)
                     if log:
-                        log.error(
+                        log.warning(
                             "[TOPIC1 PERMANENT BLOCK READY] "
                             "dest=-1003918958200_1 purge=True live_delete=True "
                             "persistent_route_quarantine=True"

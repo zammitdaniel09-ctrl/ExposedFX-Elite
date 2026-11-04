@@ -151,7 +151,7 @@ def enforce_requested_route_contracts(main_module, logger=None):
             )
         elif not matches:
             missing.append(contract)
-            logger.error(
+            logger.warning(
                 "[REQUESTED ROUTE MISSING] source=%s_%s dest=%s_%s",
                 *contract,
             )
@@ -383,7 +383,7 @@ async def run_requested_empty_topic_last50(main_module, logger=None):
         key = _contract_key(contract)
         route_matches = [route for route in routes if _route_tuple(route) == contract]
         if len(route_matches) != 1:
-            logger.error(
+            logger.warning(
                 "[REQUESTED LAST50 ROUTE INVALID] key=%s matches=%s action=SKIP",
                 key,
                 len(route_matches),

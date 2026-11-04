@@ -225,7 +225,7 @@ def install_partner_dead_destination_guard(main_module, logger=None):
 
     async def guarded_copy_one(message, route, *args, **kwargs):
         if _dead_destination(route):
-            logger.error(
+            logger.warning(
                 "[PARTNER DEAD SEND BLOCKED] route=%r source=%s_%s dest=%s_%s",
                 route.get("name"),
                 route.get("source_chat"),
@@ -243,7 +243,7 @@ def install_partner_dead_destination_guard(main_module, logger=None):
 
     async def guarded_copy_album(messages, route, *args, **kwargs):
         if _dead_destination(route):
-            logger.error(
+            logger.warning(
                 "[PARTNER DEAD ALBUM BLOCKED] route=%r source=%s_%s dest=%s_%s",
                 route.get("name"),
                 route.get("source_chat"),
@@ -286,7 +286,7 @@ def install_partner_dead_destination_guard(main_module, logger=None):
         state["purge_results"] = results
         state["purge_complete"] = True
 
-        logger.error(
+        logger.warning(
             "[PARTNER DEAD DESTINATIONS PURGED] dest_chat=%s topics=%s "
             "all_existing_messages_deleted=True roots_preserved=True",
             DEST_CHAT,
@@ -308,7 +308,7 @@ def install_partner_dead_destination_guard(main_module, logger=None):
     main_module.PARTNER_DEAD_DESTINATION_GUARD_STATE = state
     main_module.PARTNER_DEAD_DESTINATION_PURGE_TASK = purge_task
 
-    logger.error(
+    logger.warning(
         "[PARTNER DEAD DESTINATION GUARD ACTIVE] dest_chat=%s topics=%s "
         "routes_removed=%s copy_guard=True purge_started=True",
         DEST_CHAT,

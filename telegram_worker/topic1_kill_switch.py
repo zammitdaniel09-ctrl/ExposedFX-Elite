@@ -265,7 +265,7 @@ def install_topic1_kill_switch(main_module, logger=None):
             }
             removed = apply_quarantine_to_routes()
             _save_state(state_path, state)
-            logger.error(
+            logger.warning(
                 "[TOPIC1 ROUTE QUARANTINED] route=%r source=%s_%s intended_dest=%s_%s "
                 "reason=%s removed_from_routes=%s escaped_ids=%s",
                 route.get("name"),
@@ -297,7 +297,7 @@ def install_topic1_kill_switch(main_module, logger=None):
 
     async def guarded_copy_one(message, route, *args, **kwargs):
         if is_quarantined(route):
-            logger.error(
+            logger.warning(
                 "[TOPIC1 SEND BLOCKED] route=%r source=%s_%s intended_dest=%s_%s",
                 route.get("name"),
                 route.get("source_chat"),
@@ -311,7 +311,7 @@ def install_topic1_kill_switch(main_module, logger=None):
 
     async def guarded_copy_album(messages, route, *args, **kwargs):
         if is_quarantined(route):
-            logger.error(
+            logger.warning(
                 "[TOPIC1 ALBUM BLOCKED] route=%r source=%s_%s intended_dest=%s_%s",
                 route.get("name"),
                 route.get("source_chat"),
@@ -449,7 +449,7 @@ def install_topic1_kill_switch(main_module, logger=None):
     main_module.TOPIC1_KILL_SWITCH_TASK = task
     main_module.TOPIC1_KILL_SWITCH_STATE = state
 
-    logger.error(
+    logger.warning(
         "[TOPIC1 KILL SWITCH ACTIVE] dest=%s_%s explicit_routes_removed=%s "
         "persistent_quarantine=%s live_delete=True periodic_sweep=%ss root_preserved=True",
         HUB_CHAT,

@@ -164,10 +164,14 @@ async def bootstrap_route(worker, route, count, entry, state, path):
 
 
 def stop(worker, route, entry, state, path, reason):
+    """Returns False while the policy is still confirming a transient-looking reason."""
     policy.stop_route(route, reason, log)
+    if not policy.is_stopped(route):
+        return False
     entry.update(status="stopped", stopped_reason=reason, stopped_at=time.time())
     state[policy.identity(route)] = entry
     save_state(path, state)
+    return True
 
 
 async def live_cycle(worker, route, entry, state, path):
@@ -242,8 +246,7 @@ async def run_owner_requested_routes(worker):
                 raise
             except Exception as exc:
                 reason = policy.permanent_access_error(exc)
-                if reason:
-                    stop(worker, route, entry, state, path, reason)
+                if reason and stop(worker, route, entry, state, path, reason):
                     break
                 log.warning("[OWNER BACKFILL WAIT] contract=%s error=%s", key, type(exc).__name__)
                 await asyncio.sleep(15)
@@ -291,8 +294,7 @@ async def run_owner_requested_routes(worker):
                 await asyncio.sleep(max(1, int(exc.seconds)) + 1)
             except Exception as exc:
                 reason = policy.permanent_access_error(exc)
-                if reason:
-                    stop(worker, route, entry, state, path, reason)
+                if reason and stop(worker, route, entry, state, path, reason):
                     active.remove(route)
                 else:
                     log.warning("[OWNER LIVE WAIT] contract=%s error=%s", policy.identity(route), type(exc).__name__)

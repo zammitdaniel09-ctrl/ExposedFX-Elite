@@ -40,3 +40,13 @@ Removal was mechanical: the start-up call was deleted, then a script removed
 every top-level function and constant left with no reference anywhere in the
 package, scripts or tests, and checked that the resulting syntax tree equals
 the original minus exactly those definitions. Git history has the full code.
+
+## Route table (4 Nov 2026)
+
+`telegram_worker/routes.py` listed about 100 routes, of which 9 were live; the
+rest were removed at import by hard stops and the owner stop policy. Every
+live route of both workers now lives in `telegram_worker/route_table.py`, and
+the old file is kept verbatim as `telegram_worker/routes_before_table_20261104.py`
+so a paused route can be copied back into the table when its destination
+returns. The derived MAIN route list was checked equal to the old one, field
+by field (`tests/fixtures/main_live_routes_20261104.json`).

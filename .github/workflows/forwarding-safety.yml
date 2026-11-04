@@ -39,14 +39,15 @@ jobs:
         run: >-
           python -m pyflakes telegram_worker/engine telegram_worker/worker_fixed.py
           telegram_worker/alt_worker.py telegram_worker/alt_worker_legacy.py telegram_worker/state_store.py
+          telegram_worker/route_table.py telegram_worker/routes.py
           telegram_worker/liveness.py telegram_worker/log_setup.py telegram_worker/health_monitor.py
-      - name: Strict types (engine and state store)
+      - name: Strict types (engine, state store, route table)
         run: >-
-          python -m mypy telegram_worker/engine telegram_worker/state_store.py --ignore-missing-imports
+          python -m mypy telegram_worker/engine telegram_worker/state_store.py telegram_worker/route_table.py --ignore-missing-imports
           --check-untyped-defs --follow-imports=silent --disallow-untyped-defs
       - name: Run worker regression tests (offline, no credentials) with branch coverage
         run: python -m coverage run --branch -m unittest discover -s tests -v
       - name: Coverage gate (engine, state store, liveness, monitoring)
         run: >-
           python -m coverage report --fail-under=95
-          --include="telegram_worker/engine/*,telegram_worker/state_store.py,telegram_worker/liveness.py,telegram_worker/log_setup.py,telegram_worker/health_monitor.py"
+          --include="telegram_worker/engine/*,telegram_worker/state_store.py,telegram_worker/route_table.py,telegram_worker/liveness.py,telegram_worker/log_setup.py,telegram_worker/health_monitor.py"

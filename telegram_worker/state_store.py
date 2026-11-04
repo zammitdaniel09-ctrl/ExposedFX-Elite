@@ -118,6 +118,14 @@ class SQLiteMap(MutableMapping):
         """A snapshot list (callers iterate it while deleting entries)."""
         return [(k, json.loads(v)) for k, v in self.db.execute("SELECT key, value FROM message_map")]
 
+    def keys_with_prefix(self, prefix: str) -> List[str]:
+        """Keys starting with `prefix`, read through the primary-key index."""
+        if not prefix:
+            return list(self)
+        upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        rows = self.db.execute("SELECT key FROM message_map WHERE key >= ? AND key < ?", (prefix, upper))
+        return [row[0] for row in rows]
+
     def get(self, key: str, default: Any = None) -> Any:
         row = self.db.execute("SELECT value FROM message_map WHERE key = ?", (str(key),)).fetchone()
         return default if row is None else json.loads(row[0])

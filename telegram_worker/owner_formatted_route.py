@@ -20,16 +20,11 @@ from telethon.errors import FloodWaitError
 
 from telegram_worker import library_signal_format as fmt
 from telegram_worker import owner_forwarding_policy as policy
+from telegram_worker import route_table
 from telegram_worker.owner_routes import load_state, rpc, save_state, topic_id, verify_roots
 
 log = logging.getLogger("owner-formatted-20261103")
-ROUTE = {
-    "name": "Owner Relay8323 To VIP12289 Formatted",
-    "source_chat": -1004367822325,
-    "source_topic": 8323,
-    "dest_chat": -1003726286301,
-    "dest_topic": 12289,
-}
+ROUTE = route_table.one("Owner Relay8323 To VIP12289 Formatted").as_dict()
 BACKFILL = 30
 POLL_SECONDS = 3
 ORPHAN_MAX_AGE = 24 * 3600

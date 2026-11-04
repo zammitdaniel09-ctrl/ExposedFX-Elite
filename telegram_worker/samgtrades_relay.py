@@ -25,6 +25,7 @@ from telethon.errors import ChannelPrivateError
 from telethon import events
 from telethon.errors import FloodWaitError, MessageNotModifiedError
 
+from telegram_worker import route_table
 from telegram_worker.samgtrades_house_formatter import (
     format_samgtrades_text,
     parse_samgtrades_signal,
@@ -34,8 +35,9 @@ from telegram_worker.samgtrades_house_formatter import (
 
 log = logging.getLogger("wholechat-4281603170-to-3743381585")
 
-SOURCE_CHAT = -1004281603170
-DEST_CHAT = -1003743381585
+_ROUTE = route_table.one("SamGtrades To Exposed VIP")
+SOURCE_CHAT = _ROUTE.source_chat
+DEST_CHAT = _ROUTE.dest_chat
 LAST50_COUNT = 50
 SOURCE_FETCH_LIMIT = 250
 

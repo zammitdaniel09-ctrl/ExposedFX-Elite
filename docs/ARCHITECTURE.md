@@ -41,6 +41,10 @@ SamGtrades (-1004281603170) ──MAIN (whole chat, house format)──▶ Expos
 Market Slayers VIP (-1003838973021) ──MAIN──▶ IMPERIUM FX VIP topic 9
 ```
 
+Every live route of both workers is defined once, in
+`telegram_worker/route_table.py` (typed, validated at start-up: no route can
+write into a retired topic). The tables below mirror it.
+
 ### ALT routes (5)
 | Route | Source | Relay topic |
 |---|---|---|
@@ -127,6 +131,14 @@ every delivery. `message_map.json` is still written every 5 minutes and when
 Railway stops the worker, so rolling back to older code starts from the
 current map; entries only the JSON has are merged back on the next start.
 
+**Edits and deletions (`engine/mirror.py`, MAIN and ALT).** An edited source
+post updates each mapped copy in place, rendered like a new post (restyled for
+VIP 7, translated on ALT's T4T route); an edit never creates, deletes or
+re-sends a copy, and album copies are left alone. MAIN passes the edit on to
+copies of that copy (VIP topic to partner topic); ALT never changes a copy's
+media structure. A deleted source post deletes its copies on MAIN. A backup
+poller re-checks the newest Relay508 posts every 30 s for missed edit events.
+
 **No monkeypatching.** Startup is explicit in `worker_fixed.main()`: engine,
 owner routes, 8323 formatter, SamGtrades relay, health monitor, replay audit,
 intake. The one interception left is the owner send guard on
@@ -181,9 +193,11 @@ ALT `/data-alt`: session, `message_map.sqlite3` + JSON snapshot, route checkpoin
 
 ## Runbook
 
-- **Restore a paused destination:** remove its id from `STOPPED_DEST_CHATS`
-  in `owner_forwarding_policy.py`, update `tests/test_live_route_contract.py`,
-  push to `main`. Routes resume from their saved checkpoints.
+- **Add or restore a route:** add one line to `route_table.py` (old paused
+  definitions are in `archive/telegram_worker/routes_before_table_20261104.py`);
+  for a paused destination also remove its id from `STOPPED_DEST_CHATS` in
+  `owner_forwarding_policy.py`. Update `tests/test_live_route_contract.py`
+  (and the frozen MAIN fixture if MAIN changes), push to `main`.
 - **Resume a route stopped at runtime:** delete its entry from
   `owner_stopped_forwarding_20261102.json` on the volume, then restart.
 - **Roll back a deploy:** Railway → service → Deployments → previous → Redeploy.

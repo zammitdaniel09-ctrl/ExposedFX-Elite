@@ -64,6 +64,7 @@ FLOOD = (
 GAP_STALE = re.compile(
     r"\[GAP STALE NOT SENT\] route=(?P<route>.+?) ids=(?P<ids>\[[^\]]*\]) age=(?P<age>\w+)s"
 )
+ROUTE_TABLE_MISMATCH = re.compile(r"\[ROUTE TABLE MISMATCH\] worker=(?P<worker>\S+)")
 GAVE_UP = re.compile(
     r"\[INTAKE GAVE UP\] route=(?P<route>.+?) ids=(?P<ids>\[[^\]]*\]) attempts=(?P<attempts>\d+)"
 )
@@ -183,6 +184,14 @@ class HealthMonitor:
                 f"⏭️ {self.service}: {route}\nPost(s) {match.group('ids')} arrived during a restart and are "
                 f"{match.group('age')}s old, so they were not sent (stale signals can mislead). "
                 "Forward manually if still relevant.",
+            )
+            return
+        match = ROUTE_TABLE_MISMATCH.search(text)
+        if match:
+            self._alert(
+                ("route_table", match.group("worker")),
+                f"⚠️ {self.service}: routes in Railway differ from the route table, so the Railway "
+                "routes are still used. Check the logs ([ROUTE TABLE MISMATCH]).",
             )
             return
         match = GAVE_UP.search(text)

@@ -5,7 +5,6 @@ import asyncio
 import logging
 import time
 import re
-import hashlib
 import sys
 from pathlib import Path
 
@@ -20,9 +19,9 @@ from telegram_worker.provider_profiles import is_promo_text
 from telegram_worker.routes import ROUTES
 from telegram_worker import owner_forwarding_policy as owner_policy
 from telegram_worker.stats_reporter import WeeklyStats
-from telegram_worker.engine.model import entity_keys
 from telegram_worker.state_store import open_message_map
 from telegram_worker.engine.runtime import restyle_for_route
+from telegram_worker.engine.mirror import EditReconciler, Mirror
 
 from telegram_worker import liveness
 from telegram_worker.log_setup import configure_logging
@@ -689,376 +688,82 @@ def remember_message(src_msg, dst_msg, route, save=True):
             save_map()
 
 
-async def delete_mapped_destination_for_source(source_chat, source_msg_id):
-    """
-    Delete mirrored destination copies when the original source message is deleted.
-    Works with old map values: int
-    Works with new map values: list[int]
-    """
-    if not MIRROR_DELETED_MESSAGES:
-        return False
-    source_chat = str(source_chat)
-    source_msg_id = str(source_msg_id)
-    targets = {}
-    keys_to_remove = []
-    for key, value in list(message_map.items()):
-        try:
-            parts = str(key).split(":")
-            if len(parts) != 4:
-                continue
-            mapped_source_chat, mapped_source_msg_id, dest_chat, dest_topic = parts
-            if mapped_source_chat != source_chat or mapped_source_msg_id != source_msg_id:
-                continue
-            ids = mapped_ids_from_value(value)
-            if not ids:
-                continue
-            dest_chat_int = int(dest_chat)
-            targets.setdefault(dest_chat_int, [])
-            for mid in ids:
-                if mid not in targets[dest_chat_int]:
-                    targets[dest_chat_int].append(mid)
-            keys_to_remove.append(key)
-        except Exception as exc:
-            log.warning(f"[delete mirror scan failed] key={key}: {exc}")
-    if not targets:
-        log.info(f"[delete mirror] no mapped destination for source={source_chat}:{source_msg_id}")
-        return False
-    deleted_any = False
-    for dest_chat, ids in targets.items():
-        try:
-            await client.delete_messages(dest_chat, ids)
-            log.info(
-                f"[delete mirror] deleted dest={dest_chat} msgs={ids} for source={source_chat}:{source_msg_id}"
-            )
-            deleted_any = True
-        except Exception as exc:
-            log.warning(
-                f"[delete mirror failed] dest={dest_chat} ids={ids} source={source_chat}:{source_msg_id}: {exc}"
-            )
-    if deleted_any:
-        for key in keys_to_remove:
-            message_map.pop(key, None)
-        save_map()
-    return deleted_any
-
-
 # BEGIN MAIN_MAPPED_IN_PLACE_EDITS_V1
-
+# Edits and deletions are mirrored by engine/mirror.py (shared with ALT):
+# mapped copies only, edited in place, cascaded to copies of copies.
 MAPPED_EDIT_RECONCILE_FILE = DATA_DIR / "mapped_edit_reconcile_v2.json"
 MAPPED_EDIT_RECONCILE_INTERVAL_SECONDS = int(os.environ.get("MAPPED_EDIT_RECONCILE_INTERVAL_SECONDS", "30"))
 MAPPED_EDIT_RECONCILE_FETCH_LIMIT = int(os.environ.get("MAPPED_EDIT_RECONCILE_FETCH_LIMIT", "40"))
-
-
-def load_mapped_edit_reconcile_state():
-    if not MAPPED_EDIT_RECONCILE_FILE.exists():
-        return {}
-    try:
-        value = json.loads(MAPPED_EDIT_RECONCILE_FILE.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
-    except Exception:
-        return {}
-
-
-def save_mapped_edit_reconcile_state(state):
-    temp = MAPPED_EDIT_RECONCILE_FILE.with_suffix(".tmp")
-    temp.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
-    temp.replace(MAPPED_EDIT_RECONCILE_FILE)
-
-
-mapped_edit_reconcile_state = load_mapped_edit_reconcile_state()
-
-
-def mapped_edit_fingerprint(message):
-    edit_date = getattr(message, "edit_date", None)
-    if edit_date is None:
-        return None
-
-    try:
-        edit_stamp = edit_date.isoformat()
-    except Exception:
-        edit_stamp = str(edit_date)
-
-    payload = "|".join(
-        [
-            str(getattr(message, "id", 0) or 0),
-            edit_stamp,
-            text_of(message),
-            repr(entity_keys(entities_of(message))),
-        ]
-    )
-
-    return hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
+RELAY508_TO_VIP7 = (-1004367822325, 508, -1003726286301, 7)
 
 
 def exact_downstream_routes(source_chat, source_topic):
-    result = []
-
-    for candidate in ROUTES:
-        try:
-            if int(candidate.get("source_chat", 0)) != int(source_chat):
-                continue
-
-            candidate_topic = candidate.get("source_topic")
-
-            if source_topic is None:
-                if candidate_topic is not None:
-                    continue
-            else:
-                if candidate_topic is None or int(candidate_topic) != int(source_topic):
-                    continue
-
-            result.append(candidate)
-
-        except Exception:
-            continue
-
-    return result
-
-
-async def edit_existing_destination_in_place(message, route, cascade_depth=0, visited=None):
-    # MAPPED-ONLY edit propagation:
-    # never create from edit, never delete/resend, cascade mapped-only.
-    if visited is None:
-        visited = set()
-
-    source_message_id = int(getattr(message, "id", 0) or 0)
-
-    visit_key = (
-        int(route["source_chat"]),
-        source_message_id,
-        int(route["dest_chat"]),
-        int(route["dest_topic"]),
-    )
-
-    if visit_key in visited:
-        return True
-
-    visited.add(visit_key)
-
-    destination_ids = existing_destination_ids(message, route)
-
-    if not destination_ids:
-        log.info(
-            "[mapped edit skipped:no destination] " f"route={route['name']} source_msg={source_message_id}"
-        )
-        return False
-
-    if len(destination_ids) != 1:
-        log.warning(
-            "[MAPPED EDIT MULTI-ID SKIPPED SAFE] "
-            f"route={route['name']} source_msg={source_message_id} "
-            f"dest_ids={destination_ids}"
-        )
-        return False
-
-    destination_id = int(destination_ids[0])
-    message = restyle_for_route(message, route, EMOJI_REGISTRY)
-    new_text = text_of(message)
-    new_entities = entities_of(message)
-
-    try:
-        await client.edit_message(
-            route["dest_chat"],
-            destination_id,
-            new_text or "",
-            formatting_entities=(new_entities if new_text else None),
-            parse_mode=None,
-            link_preview=True,
-        )
-
-        log.warning(
-            "[EDIT PROPAGATED IN PLACE] "
-            f"depth={cascade_depth} route={route['name']} "
-            f"source_msg={source_message_id} dest_msg={destination_id} "
-            f"dest={route['dest_chat']}_{route['dest_topic']}"
-        )
-
-    except FloodWaitError:
-        # Never swallow a flood wait here. Callers (the Relay508 reconcile loop
-        # and the edited-message handler) have their own backoff, and they can
-        # only reach it if this propagates. Converting it to "return False"
-        # made the reconciler retry the same batch every few seconds, which
-        # kept the account permanently rate limited.
-        raise
-
-    except Exception as exc:
-        if "not modified" in str(exc).lower():
-            log.info(
-                "[EDIT ALREADY CURRENT] "
-                f"route={route['name']} source_msg={source_message_id} "
-                f"dest_msg={destination_id}"
-            )
-        else:
-            log.warning(
-                "[EDIT PROPAGATION FAILED SAFE] "
-                f"depth={cascade_depth} route={route['name']} "
-                f"source_msg={source_message_id} dest_msg={destination_id} "
-                f"{type(exc).__name__}: {exc}"
-            )
-            return False
-
-    if cascade_depth >= 4:
-        return True
-
-    downstream_routes = exact_downstream_routes(route["dest_chat"], route["dest_topic"])
-
-    if not downstream_routes:
-        return True
-
-    try:
-        downstream_source = await client.get_messages(route["dest_chat"], ids=destination_id)
-    except Exception as exc:
-        log.warning(
-            "[EDIT CASCADE SOURCE FETCH FAILED] "
-            f"chat={route['dest_chat']} msg={destination_id} "
-            f"{type(exc).__name__}: {exc}"
-        )
-        return True
-
-    if not downstream_source:
-        return True
-
-    for downstream_route in downstream_routes:
-        if not existing_destination_ids(downstream_source, downstream_route):
-            log.info(
-                "[EDIT CASCADE UNMAPPED SKIPPED] "
-                f"route={downstream_route['name']} source_msg={destination_id}"
-            )
-            continue
-
-        await edit_existing_destination_in_place(
-            downstream_source, downstream_route, cascade_depth=cascade_depth + 1, visited=visited
-        )
-
-    return True
-
-
-def relay508_to_vip7_edit_route():
-    matches = [
-        route
-        for route in ROUTES
-        if int(route.get("source_chat", 0)) == -1004367822325
-        and int(route.get("source_topic", 0) or 0) == 508
-        and (int(route.get("dest_chat", 0)) == -1003726286301)
-        and (int(route.get("dest_topic", 0)) == 7)
-        and bool(route.get("live_only"))
-        and bool(route.get("strict_source_topic"))
+    """Routes reading exactly this chat and topic (a whole-chat route only matches topic None)."""
+    return [
+        r
+        for r in ROUTES
+        if int(r["source_chat"]) == int(source_chat) and r.get("source_topic") == source_topic
     ]
-    if len(matches) != 1:
-        raise RuntimeError(f"Expected exactly one strict live Relay508 To VIP7 route; found={len(matches)}")
-    return matches[0]
 
 
-async def reconcile_relay508_mapped_edits_once(route):
-    # Backup for missed/delayed MessageEdited updates.
-    # Only edited source messages with exact mappings are considered.
-    probe = dict(route)
-    probe["strict_source_topic"] = True
+def edit_blocked(chat_id, message):
+    """Edits the live rules would not deliver are not passed on."""
+    if has_username_mention(message):
+        log_username_filter_main([message], "edited_event", source_chat=chat_id, source_topic=None)
+        return True
+    if should_hard_block_sender(message, "edit_handler"):
+        return True
+    topic_id = topic_of(message, chat_id)
+    if is_promo_text(text_of(message), topic_id):
+        log.info(f"[promo blocked incoming] msg={getattr(message, 'id', None)} topic={topic_id}")
+        return True
+    return False
 
-    messages = list(await get_route_poll_messages(probe, MAPPED_EDIT_RECONCILE_FETCH_LIMIT) or [])
 
-    reconciled = 0
+async def render_for_route(route, message):
+    """An edited post as the route publishes it (restyled for VIP 7)."""
+    message = restyle_for_route(message, route, EMOJI_REGISTRY)
+    return text_of(message), entities_of(message)
 
-    for message in messages:
-        try:
-            if topic_of(message, int(route["source_chat"])) != int(route["source_topic"]):
-                continue
 
-            fingerprint = mapped_edit_fingerprint(message)
-
-            if fingerprint is None:
-                continue
-
-            state_key = str(int(message.id))
-
-            if mapped_edit_reconcile_state.get(state_key) == fingerprint:
-                continue
-
-            if has_username_mention(message):
-                mapped_edit_reconcile_state[state_key] = fingerprint
-                save_mapped_edit_reconcile_state(mapped_edit_reconcile_state)
-
-                log.warning(
-                    "[EDIT RECONCILE FILTERED SAFE] " f"source_msg={message.id} destination_unchanged=True"
-                )
-                continue
-
-            destination_ids = existing_destination_ids(message, route)
-
-            if len(destination_ids) != 1:
-                continue
-
-            destination_id = int(destination_ids[0])
-
-            destination = await client.get_messages(route["dest_chat"], ids=destination_id)
-
-            if not destination:
-                # Deleted at the destination: remember this source version so
-                # it is not re-fetched every cycle. A later source edit
-                # changes the fingerprint and is checked once more.
-                log.warning(
-                    "[EDIT RECONCILE DEST MISSING] "
-                    f"source_msg={message.id} dest_msg={destination_id} RECHECK=next_source_edit"
-                )
-                mapped_edit_reconcile_state[state_key] = fingerprint
-                save_mapped_edit_reconcile_state(mapped_edit_reconcile_state)
-                continue
-
-            source_text = text_of(message)
-            destination_text = text_of(destination)
-
-            source_entities = entity_keys(entities_of(message))
-            destination_entities = entity_keys(entities_of(destination))
-
-            if source_text != destination_text or source_entities != destination_entities:
-                success = await edit_existing_destination_in_place(message, route)
-
-                if not success:
-                    continue
-
-                reconciled += 1
-
-                log.warning(
-                    "[RELAY508 EDIT RECONCILED] " f"source_msg={message.id} dest_msg={destination_id}"
-                )
-
-            mapped_edit_reconcile_state[state_key] = fingerprint
-            save_mapped_edit_reconcile_state(mapped_edit_reconcile_state)
-
-        except FloodWaitError:
-            raise
-
-        except Exception as exc:
-            log.warning(
-                "[EDIT RECONCILE ITEM FAILED SAFE] "
-                f"source_msg={getattr(message, 'id', None)} "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-    return reconciled
+MIRROR = Mirror(
+    "MAIN",
+    client,
+    message_map,
+    render_for_route,
+    blocked=edit_blocked,
+    routes_from=exact_downstream_routes,
+    save=save_map,
+    cascade_depth=4,
+)
 
 
 async def relay508_mapped_edit_reconcile_loop():
-    try:
-        route = relay508_to_vip7_edit_route()
-    except Exception as exc:
-        log.exception(f"[MAPPED EDIT RECONCILER CONFIG FAILED] {type(exc).__name__}: {exc}")
-        return
-    log.warning(
-        f"[MAPPED EDIT RECONCILER READY] route=Relay508 To VIP7 mapped_only=True cascade=True interval={MAPPED_EDIT_RECONCILE_INTERVAL_SECONDS}s fetch_limit={MAPPED_EDIT_RECONCILE_FETCH_LIMIT}"
+    """Backup for missed edit events on Relay508 -> VIP7 (the restyled route)."""
+    route = next(
+        (
+            r
+            for r in ROUTES
+            if (r["source_chat"], r.get("source_topic"), r["dest_chat"], r["dest_topic"]) == RELAY508_TO_VIP7
+        ),
+        None,
     )
-    while True:
-        try:
-            count = await reconcile_relay508_mapped_edits_once(route)
-            if count:
-                log.warning(f"[MAPPED EDIT RECONCILE PASS] updated={count}")
-        except FloodWaitError as exc:
-            wait_for = max(1, int(exc.seconds) + 1)
-            log.warning(f"[MAPPED EDIT RECONCILER FLOODWAIT] wait={wait_for}s")
-            await asyncio.sleep(wait_for)
-        except Exception as exc:
-            log.exception(f"[MAPPED EDIT RECONCILER FAILED SAFE] {type(exc).__name__}: {exc}")
-        await asyncio.sleep(MAPPED_EDIT_RECONCILE_INTERVAL_SECONDS)
+    if route is None:
+        log.warning("[MAPPED EDIT RECONCILER OFF] Relay508 To VIP7 is not a live route")
+        return
+
+    async def newest(limit):
+        messages = await get_route_poll_messages({**route, "strict_source_topic": True}, limit) or []
+        return [m for m in messages if topic_of(m, route["source_chat"]) == route["source_topic"]]
+
+    await EditReconciler(
+        MIRROR,
+        route,
+        newest,
+        MAPPED_EDIT_RECONCILE_FILE,
+        interval=MAPPED_EDIT_RECONCILE_INTERVAL_SECONDS,
+        limit=MAPPED_EDIT_RECONCILE_FETCH_LIMIT,
+    ).run()
 
 
 # END MAIN_MAPPED_IN_PLACE_EDITS_V1
@@ -1222,49 +927,14 @@ async def start_engine_intake():
 # END ENGINE_INTAKE_V1
 
 
-async def handle_edited_message(event):
-    """A source post was edited: update its mapped copies in place.
-
-    New posts are delivered by the engine intake and the owner routes through the
-    delivery engine; an edit never creates a new destination message.
-    """
-    message = event.message
-    chat_id = event.chat_id
-    if has_username_mention(message):
-        log_username_filter_main([message], "edited_event", source_chat=chat_id, source_topic=None)
-        return
-    topic_id = topic_of(message, chat_id)
-    if should_hard_block_sender(message, "edit_handler"):
-        return
-    if is_promo_text(text_of(message), topic_id):
-        log.info(f"[promo blocked incoming] msg={getattr(message, 'id', None)} topic={topic_id}")
-        return
-    for route in routes_for(chat_id, topic_id, message):
-        try:
-            if not existing_destination_ids(message, route):
-                log.info(
-                    f"[unmapped edit skipped] route={route['name']} source={chat_id}_{topic_id} msg={message.id}"
-                )
-                continue
-            if not await edit_existing_destination_in_place(message, route):
-                log.warning(
-                    f"[mapped edit not applied] route={route['name']} source={chat_id}_{topic_id} msg={message.id}"
-                )
-        except FloodWaitError as exc:
-            log.warning(f"FloodWait {exc.seconds}s")
-            await asyncio.sleep(min(exc.seconds + 1, 60))
-        except Exception as exc:
-            log.exception(
-                f"[edit failed] {route['name']} source={chat_id}_{topic_id} msg={getattr(message, 'id', None)}: {exc}"
-            )
-
-
 @client.on(events.MessageEdited(chats=SOURCE_CHATS))
 async def on_message_edited(event):
+    """A source post was edited: update its copies in place (engine/mirror.py)."""
     if not FORWARD_EDITED_MESSAGES:
         return
     try:
-        await handle_edited_message(event)
+        message, chat_id = event.message, event.chat_id
+        await MIRROR.on_edit(chat_id, message, routes_for(chat_id, topic_of(message, chat_id), message))
     except Exception as exc:
         log.exception(f"[handler crash:on_message_edited] chat={getattr(event, 'chat_id', None)}: {exc}")
         alert_crash("imperium-telegram-worker:on_message_edited", exc)
@@ -1274,26 +944,11 @@ async def on_message_edited(event):
 async def on_message_deleted(event):
     if not MIRROR_DELETED_MESSAGES:
         return
-
     try:
-        chat_id = getattr(event, "chat_id", None)
-        deleted_ids = list(getattr(event, "deleted_ids", []) or [])
-
-        if not deleted_ids:
-            one_id = getattr(event, "deleted_id", None)
-            if one_id:
-                deleted_ids = [one_id]
-
-        if chat_id is None:
-            log.warning(f"[delete mirror skipped] missing chat_id deleted_ids={deleted_ids}")
-            return
-
-        for msg_id in deleted_ids:
-            try:
-                await delete_mapped_destination_for_source(chat_id, msg_id)
-            except Exception as exc:
-                log.warning(f"[delete mirror item failed] chat={chat_id} msg={msg_id}: {exc}")
-
+        deleted_ids = list(getattr(event, "deleted_ids", []) or []) or [
+            i for i in [getattr(event, "deleted_id", None)] if i
+        ]
+        await MIRROR.on_delete(getattr(event, "chat_id", None), deleted_ids)
     except Exception as exc:
         log.exception(f"[handler crash:on_message_deleted] chat={getattr(event, 'chat_id', None)}: {exc}")
         alert_crash("imperium-telegram-worker:on_message_deleted", exc)

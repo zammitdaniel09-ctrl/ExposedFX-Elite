@@ -10,6 +10,7 @@
     runtime.py  DeliveryEngine wired into the live VIP routes and the owner routes
     intake.py   how new posts reach delivery on MAIN and ALT: pushes, a
                 checkpointed watchdog, restart gaps in order, stale posts reported
+    mirror.py   edits and deletions mirrored onto copies (MAIN and ALT)
     alt.py      the ALT worker on the engine: translation, ALT reply recovery,
                 checkpoints and ALT log markers; ALT's replay audit
     audit.py    replay audit: re-plans recent posts and compares them with

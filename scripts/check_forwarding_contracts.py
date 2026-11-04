@@ -5,7 +5,7 @@ Never imports Telegram worker modules, opens credentials, or contacts services.
 Run in CI before changing production routes or deploying new worker code.
 """
 
-import ast
+import importlib.util
 import pathlib
 import sys
 
@@ -18,23 +18,6 @@ def require(condition, reason):
         raise AssertionError(reason)
 
 
-def literal_route_dicts(source):
-    tree = ast.parse(source, filename=str(PACKAGE / "routes.py"))
-    result = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Dict):
-            continue
-        try:
-            route = ast.literal_eval(node)
-        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
-            continue
-        if not isinstance(route, dict):
-            continue
-        if {"source_chat", "source_topic", "dest_chat", "dest_topic"} <= route.keys():
-            result.append(route)
-    return result
-
-
 def check_syntax():
     candidates = sorted(PACKAGE.rglob("*.py"))
     require(candidates, "No Python worker sources found")
@@ -44,74 +27,54 @@ def check_syntax():
     print(f"PASS: compiled {len(candidates)} Python worker files")
 
 
+def load_route_table():
+    """route_table.py is plain Python (no Telegram imports); loading it runs validate()."""
+    spec = importlib.util.spec_from_file_location("route_table_check", PACKAGE / "route_table.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses look their module up here
+    spec.loader.exec_module(module)
+    return module
+
+
 def check_routes():
-    content = (PACKAGE / "routes.py").read_text(encoding="utf-8-sig")
-    routes = literal_route_dicts(content)
-    require(len(routes) >= 50, "Suspiciously few literal forwarding routes")
-
-    # Retired topics 2530 and 7250 are not permitted outbound.
-    for route in routes:
-        source = (int(route["source_chat"]), int(route["source_topic"] or 0))
-        dest = (int(route["dest_chat"]), int(route["dest_topic"] or 0))
-        require(source != (-1004367822325, 2530), "Retired 2530 source restored")
-        require(dest != (-1004367822325, 2530), "Retired 2530 destination restored")
-        require(
-            source != (-1004367822325, 7250) or dest == (-1003726286301, 12161),
-            "7250 is authorized only to VIP12161",
-        )
-        require(dest != (-1003726286301, 5), "Retired VIP5 destination restored")
-        require(dest != (-1003885074241, 4663), "Retired partner 4663 restored")
-        require(dest != (-1003885074241, 4665), "Retired partner 4665 restored")
-
-    wanted = [
-        route
-        for route in routes
-        if (
-            int(route["source_chat"]),
-            int(route["source_topic"] or 0),
-            int(route["dest_chat"]),
-            int(route["dest_topic"] or 0),
-        )
-        == (-1004367822325, 7248, -1003726286301, 10877)
-    ]
-    require(len(wanted) == 1, "Exactly one 7248 -> VIP10877 route required")
-    new_contracts = {
-        (-1004367822325, 7250, -1003726286301, 12161),
-        (-1003726286301, 1364, -1003786932333, 28),
-        (-1003726286301, 10877, -1003786932333, 8),
-        (-1003726286301, 12161, -1003786932333, 24),
-    }
-    for contract in new_contracts:
-        require(
-            sum(
-                tuple(r[k] for k in ("source_chat", "source_topic", "dest_chat", "dest_topic")) == contract
-                for r in routes
-            )
-            == 1,
-            f"Owner route missing/duplicate: {contract}",
-        )
-
-    identities = [
-        (
-            int(route["source_chat"]),
-            int(route["source_topic"] or 0),
-            int(route["dest_chat"]),
-            int(route["dest_topic"] or 0),
-        )
-        for route in routes
-    ]
+    table = load_route_table()
+    specs = table.TABLE
+    relay, vip = table.RELAY, table.VIP
+    require({s.worker for s in specs} == {"MAIN", "ALT"}, "Route table must list both workers")
     require(
-        len(set(identities)) == len(identities), "Duplicate source-topic/destination-topic route declared"
+        sum(s.identity == (relay, 7248, vip, 10877) for s in specs) == 1,
+        "Exactly one 7248 -> VIP10877 route required",
     )
-
-    for marker in (
-        "# END RELAY2530 FORCE STOP V1",
-        "# END RELAY7250 PERMANENT OUTBOUND HARD STOP V1",
-        "# END VIP5 DESTINATION RETIRED V1",
-        "# END PARTNER DEAD DESTINATION HARD STOP V1",
+    owner = {s.identity for s in specs if s.path == "owner"}
+    for contract in (
+        (relay, 7250, vip, 12161),
+        (vip, 1364, table.MARKET_MAKERS, 28),
+        (vip, 10877, table.MARKET_MAKERS, 8),
+        (vip, 12161, table.MARKET_MAKERS, 24),
     ):
-        require(marker in content, f"Required route hard stop missing: {marker}")
-    print(f"PASS: checked {len(routes)} routes, retired-topic blocks and VIP10877")
+        require(contract in owner, f"Owner route missing: {contract}")
+
+    # The table's own guard must refuse every retired path.
+    for source, dest in (
+        ((relay, 2530), (vip, 9)),
+        ((relay, 2), (relay, 2530)),
+        ((relay, 7250), (vip, 11)),
+        ((relay, 2), (vip, 5)),
+        ((relay, 2), (-1003885074241, 4663)),
+        ((relay, 2), (-1003885074241, 4665)),
+    ):
+        bad = table.RouteSpec("retired", "MAIN", "intake", source[0], source[1], dest[0], dest[1])
+        try:
+            table.validate((bad,))
+        except ValueError:
+            continue
+        raise AssertionError(f"Route table accepted a retired path: {source} -> {dest}")
+
+    routes_py = (PACKAGE / "routes.py").read_text(encoding="utf-8-sig")
+    require(
+        'routes("MAIN", "intake", "owner")' in routes_py, "routes.py must take MAIN routes from the table"
+    )
+    print(f"PASS: checked {len(specs)} live routes (MAIN and ALT), retired-topic blocks and VIP10877")
 
 
 def check_worker_invariants():

@@ -65,31 +65,7 @@ class MessageMapTests(unittest.TestCase):
         self.assertEqual((len(saves), message_map["-1:12:-2:3"]), (1, 22))
 
 
-class EditReconcileTests(unittest.TestCase):
-    def test_fingerprint_is_stable_across_fetches(self):
-        """repr() of Telethon entities holds a memory address: every fetch looked edited."""
-        from datetime import datetime, timezone
-        from telethon.tl.types import MessageEntityBold
-        from telegram_worker.engine.model import entity_keys
-
-        ns = worker_functions(
-            "mapped_edit_fingerprint",
-            hashlib=__import__("hashlib"),
-            entity_keys=entity_keys,
-            text_of=lambda m: m.message,
-            entities_of=lambda m: m.entities,
-        )
-        edited = datetime(2026, 11, 4, tzinfo=timezone.utc)
-
-        def fetch():
-            return SimpleNamespace(
-                id=8129, edit_date=edited, message="TP1 ✅", entities=[MessageEntityBold(0, 3)]
-            )
-
-        self.assertEqual(ns["mapped_edit_fingerprint"](fetch()), ns["mapped_edit_fingerprint"](fetch()))
-        changed = fetch()
-        changed.message = "TP2 ✅"
-        self.assertNotEqual(ns["mapped_edit_fingerprint"](fetch()), ns["mapped_edit_fingerprint"](changed))
+# Edit fingerprints and reconciliation are covered by tests/test_engine_mirror.py.
 
 
 # The live VIP intake (service messages, ordering, restart gaps) is covered by

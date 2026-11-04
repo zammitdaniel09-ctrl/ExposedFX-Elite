@@ -3,14 +3,15 @@ import json
 import logging
 import os
 import re
-import time
 from pathlib import Path
 
 from telethon import TelegramClient, events, functions
 from telethon.errors import ChannelPrivateError
 from telethon.sessions import StringSession
 from telegram_worker import owner_forwarding_policy as owner_policy
+from telegram_worker import route_table
 from telegram_worker.state_store import SQLiteMap, open_message_map
+from telegram_worker.engine.mirror import Mirror
 from telethon.tl.types import MessageMediaWebPage
 
 # ==============================================================
@@ -105,9 +106,40 @@ def alt_vip5_block(route):
 # END ALT VIP5 DESTINATION PERMANENT STOP V1
 
 
-ROUTES = [
-    route for route in load_routes() if not alt_vip5_block(route) and not owner_policy.is_stopped(route)
-]
+def live_routes(routes):
+    return [route for route in routes if not alt_vip5_block(route) and not owner_policy.is_stopped(route)]
+
+
+def select_routes():
+    """ALT's routes come from route_table.py.
+
+    While Railway still has ALT_ROUTES_JSON, its live routes are compared with
+    the table; if they differ, ALT keeps using ALT_ROUTES_JSON (the routes it
+    ran with until now) and reports [ROUTE TABLE MISMATCH] to the owner.
+    """
+    table = live_routes(route_table.routes("ALT"))
+    if not os.environ.get("ALT_ROUTES_JSON", "").strip():
+        return table
+    configured = live_routes(load_routes())
+
+    def keys(routes):
+        return sorted(
+            (r["name"], r["source_chat"], r["source_topic"] or 0, r["dest_chat"], r["dest_topic"])
+            for r in routes
+        )
+
+    if keys(table) == keys(configured):
+        log.warning("[ROUTE TABLE CHECK] worker=ALT routes=%s matches_ALT_ROUTES_JSON=True", len(table))
+        return table
+    log.error(
+        "[ROUTE TABLE MISMATCH] worker=ALT table=%s ALT_ROUTES_JSON=%s USING=ALT_ROUTES_JSON",
+        keys(table),
+        keys(configured),
+    )
+    return configured
+
+
+ROUTES = select_routes()
 log.warning(
     "[OWNER ALT STOP POLICY] stopped_source_chats=%s remaining_routes=%s",
     sorted(owner_policy.STOPPED_SOURCE_CHATS),
@@ -538,7 +570,6 @@ def matching_routes(chat_id, message):
 # ==============================================================
 
 COPY_LOCKS = {}
-EDIT_LOCKS = {}
 
 
 def copy_lock(route, messages):
@@ -553,18 +584,6 @@ def copy_lock(route, messages):
     if lock is None:
         lock = asyncio.Lock()
         COPY_LOCKS[key] = lock
-    return lock
-
-
-def edit_lock(route, source_message_id):
-    key = map_key(route, source_message_id)
-
-    lock = EDIT_LOCKS.get(key)
-
-    if lock is None:
-        lock = asyncio.Lock()
-        EDIT_LOCKS[key] = lock
-
     return lock
 
 
@@ -624,103 +643,24 @@ async def copy_unit(*args, **kwargs):
 # ==============================================================
 
 
-async def edit_existing(route, source_message):
-    await wait_dialogs_ready()
-    if has_username_mention(source_message):
+# Edits are mirrored by engine/mirror.py (shared with MAIN): the copy is edited
+# in place, translated like new posts; its media structure is never changed.
+def edit_blocked(chat_id, message):
+    if has_username_mention(message):
+        log_username_filter_alt([message], "edit_existing")
+        return True
+    return False
 
-        log_username_filter_alt([source_message], "edit_existing", route=route)
 
-        return False
-
-    async with edit_lock(route, source_message.id):
-        # The source may edit almost immediately after sending.
-        # Give NewMessage forwarding time to create its mapping.
-        deadline = time.monotonic() + 10.0
-
-        ids = []
-
-        while time.monotonic() < deadline:
-            ids = mapped_ids(route, source_message.id)
-
-            if ids:
-                break
-
-            await asyncio.sleep(0.1)
-
-        # Never import an old edit.
-        if not ids:
-            log.warning("[ALT EDIT SKIPPED - NO MAP] " f"source_msg={source_message.id}")
-            return False
-
-        if len(ids) != 1:
-            log.warning(
-                "[ALT EDIT SKIPPED - " "AMBIGUOUS MAP] " f"source_msg={source_message.id} " f"dest_ids={ids}"
-            )
-            return False
-
-        destination_id = int(ids[0])
-
-        try:
-            destination_message = await client.get_messages(route["dest_chat"], ids=destination_id)
-
-            if not destination_message:
-                log.warning("[ALT EDIT DESTINATION MISSING] " f"dest_msg={destination_id}")
-                return False
-
-            # Text -> text and caption -> caption are okay.
-            # We deliberately never delete/resend to change
-            # the media structure.
-            if real_media(source_message) != real_media(destination_message):
-                log.warning(
-                    "[ALT EDIT MEDIA STRUCTURE "
-                    "CHANGE SKIPPED] "
-                    f"source_msg="
-                    f"{source_message.id} "
-                    "NO_DELETE=True "
-                    "NO_RESEND=True"
-                )
-                return False
-
-            new_text, new_entities = await translated_payload(route, source_message)
-
-            if not real_media(source_message) and not new_text:
-                return False
-
-            try:
-                await client.edit_message(
-                    route["dest_chat"],
-                    destination_id,
-                    new_text or "",
-                    formatting_entities=(new_entities if new_text else None),
-                    parse_mode=None,
-                    link_preview=True,
-                )
-
-            except Exception as exc:
-                if type(exc).__name__ == "MessageNotModifiedError":
-                    return True
-
-                raise
-
-            log.warning(
-                "[ALT EDITED IN PLACE] "
-                f"route={route['name']} "
-                f"source_msg="
-                f"{source_message.id} "
-                f"dest_msg={destination_id} "
-                "SAME_MESSAGE_ID=True "
-                "DELETED=False "
-                "RESENT=False"
-            )
-
-            return True
-
-        except Exception as exc:
-            log.exception(
-                "[ALT EDIT FAILED] " f"source_msg=" f"{source_message.id} " f"{type(exc).__name__}: {exc}"
-            )
-
-            return False
+MIRROR = Mirror(
+    "ALT",
+    client,
+    message_map,
+    translated_payload,
+    blocked=edit_blocked,
+    wait_for_map=10.0,
+    same_media_only=True,
+)
 
 
 # ==============================================================
@@ -731,10 +671,8 @@ async def edit_existing(route, source_message):
 @client.on(events.MessageEdited(chats=SOURCE_CHATS))
 async def edited_handler(event):
     try:
-        routes = matching_routes(event.chat_id, event.message)
-        if not routes:
-            return
-        await asyncio.gather(*[edit_existing(route, event.message) for route in routes])
+        await wait_dialogs_ready()
+        await MIRROR.on_edit(event.chat_id, event.message, matching_routes(event.chat_id, event.message))
     except Exception as exc:
         log.exception(f"[ALT EDIT HANDLER ERROR] {type(exc).__name__}: {exc}")
 

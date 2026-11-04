@@ -57,11 +57,6 @@ NEW_MIRROR_DEBUG_CHATS = {
 }
 
 
-# Cadence of private_live_route_poll_loop, the ordered single writer for
-# live_only routes. It re-reads this many messages per route per cycle, so the
-# numbers here set a large share of the account's steady API load. The window
-# only has to cover what one cycle can miss, not a long backlog.
-
 NEW_MIRROR_BACKFILL_ONLY_CHATS_RAW = os.environ.get("NEW_MIRROR_BACKFILL_ONLY_CHATS", "").strip()
 NEW_MIRROR_BACKFILL_ONLY_CHATS = {
     int(x)
@@ -126,8 +121,6 @@ VIP_TOPIC_MOVE_ACTIVE_TOPICS = (
 VIP_TOPIC_MOVE_SUPPRESS_IDS = set()
 
 # END VIP_TOPIC_MOVE_STATE_V1
-
-
 
 
 MIRROR_STRUCTURE_REPAIR = os.environ.get("MIRROR_STRUCTURE_REPAIR", "1").strip() == "1"
@@ -256,7 +249,6 @@ def save_map():
     tmp.replace(MESSAGE_MAP_FILE)
 
 
-
 def load_dedupe():
     if not DEDUP_FILE.exists():
         return {}
@@ -377,8 +369,6 @@ def mapped_ids_from_value(value):
         return []
 
 
-
-
 def existing_destination_ids(message, route):
     key = map_key(route["source_chat"], message.id, route["dest_chat"], route["dest_topic"])
     return mapped_ids_from_value(message_map.get(key))
@@ -454,7 +444,6 @@ async def delete_existing_destination(message, route):
             f"dest_msgs={ids}: {exc}"
         )
         return False
-
 
 
 write_login_file()
@@ -546,8 +535,6 @@ def has_username_mention(
             text
         )
     )
-
-
 
 
 def log_username_filter_main(
@@ -657,15 +644,6 @@ def unit_has_username_mention(messages):
 # END GLOBAL_CONTENT_FILTER_V1
 
 
-
-
-
-
-
-
-
-
-
 def sender_ids_for_message(message):
     ids = set()
 
@@ -698,7 +676,6 @@ def sender_ids_for_message(message):
                             pass
 
     return ids
-
 
 
 # BEGIN PRIVATE_LOOP_GUARD_V1
@@ -847,7 +824,6 @@ def should_block_private_peer_loop(
 # END PRIVATE_LOOP_GUARD_V1
 
 
-
 # BEGIN HARD_BLOCK_2521699926_FROM_VIP_V1
 
 VIP_HARD_BLOCK_CHAT = -1003726286301
@@ -977,7 +953,6 @@ def unique_routes_for_source_chat(chat_id):
     return [first]
 
 
-
 def topic_of(message, chat_id=None):
     """
     Robust Telegram forum topic detection.
@@ -1029,14 +1004,12 @@ def topic_of(message, chat_id=None):
     return None
 
 
-
 def same_source_and_destination(route, topic_id):
     return (
         route["source_chat"] == route["dest_chat"]
         and route.get("source_topic") == route.get("dest_topic")
         and topic_id == route.get("dest_topic")
     )
-
 
 
 # BEGIN VIP5 COPY HARD GUARD V1
@@ -1278,25 +1251,10 @@ async def delete_mapped_destination_for_source(source_chat, source_msg_id):
     return deleted_any
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 def log_stats(route, message, text):
     result = stats.log_message(route, message, text)
     if result:
         log.info(f"[stats logged] {route['name']} {result['status']} {result['pips']} pips")
-
-
 
 
 def safe_maybe_post_signal(route, message, text, context=""):
@@ -1316,8 +1274,6 @@ def safe_log_stats(route, message, text, context=""):
             f"[stats sidecar skipped] route={route.get('name')} "
             f"msg={getattr(message, 'id', None)} context={context}: {type(exc).__name__}: {exc}"
         )
-
-
 
 
 def route_send_as_peer(route):
@@ -1612,7 +1568,6 @@ async def repair_bad_mirror_structure(message, route, target_reply, text, entiti
         "mirror structure mismatch after repair: "
         + str(reason2)
     )
-
 
 
 # BEGIN MAIN_MAPPED_IN_PLACE_EDITS_V1
@@ -2333,13 +2288,6 @@ def route_debug_names(routes):
         return []
 
 
-
-
-
-
-
-
-
 async def get_route_poll_messages(route, limit):
     if owner_policy.is_stopped(route):
         return []
@@ -2391,22 +2339,6 @@ async def get_route_poll_messages(route, limit):
         raise
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # BEGIN FAST_VIP_ROUTER_CONFIG_V1
 
 FAST_VIP_CHAT = -1003726286301
@@ -2427,7 +2359,6 @@ FAST_VIP_FETCH_CONCURRENCY = max(
 FAST_VIP_FETCH_SEMAPHORE = asyncio.Semaphore(
     FAST_VIP_FETCH_CONCURRENCY
 )
-
 
 
 def is_fast_vip_route(route):
@@ -2514,8 +2445,6 @@ def fast_vip_route_groups():
         )
 
     return groups
-
-
 
 
 # ============================================================
@@ -2733,30 +2662,6 @@ def fast_vip_effective_route(
 
 
 # END FAST_VIP_ROUTER_CONFIG_V1
-
-
-
-
-
-
-# BEGIN MAIN STRICT TOPIC POLL COALESCING V1
-# Reuse responses when multiple destinations poll the SAME strict source
-# within a fraction of a second. Do not share data with snapshots, history
-# importers, whole-chat routes or non-strict fallback routes. Route-specific
-# checkpoints, mapping, ordering and delivery remain unchanged.
-
-
-
-
-# END MAIN STRICT TOPIC POLL COALESCING V1
-
-
-
-
-
-
-
-
 
 
 # BEGIN FAST_VIP_ROUTER_V1
@@ -3190,9 +3095,6 @@ async def fast_vip_deliver_route(
         )
 
         return False
-
-
-
 
 
 # END FAST_VIP_ROUTER_V1
@@ -4283,9 +4185,6 @@ async def fast_vip_event_router_v2():
 # END FAST_VIP_EVENT_ROUTER_V2
 
 
-
-
-
 async def handle_single_message(event, edited=False):
     message = event.message
     chat_id = event.chat_id
@@ -4536,25 +4435,14 @@ async def on_album(event):
         alert_crash("imperium-telegram-worker:on_album", exc)
 
 
-
-
-
 def channel_function(name):
     return getattr(functions.channels, name, None)
-
-
 
 
 # STRICT EXACT MIRROR TITLE CHECKER V2
 
 def route_identity(route):
     return f"{route.get('source_chat')}:{route.get('source_topic')}:{route.get('dest_chat')}:{route.get('dest_topic')}"
-
-
-
-
-
-
 
 
 def title_from_entity(entity):
@@ -4604,126 +4492,6 @@ async def get_forum_topic_title(chat_id, topic_id):
         log.warning(f"[topic title fetch failed] chat={chat_id} topic={topic_id}: {exc}")
 
     return ""
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# BEGIN MARKET_SLAYERS_LAST50_V2
-
-
-# END MARKET_SLAYERS_LAST50_V2
-
-
-
-# BEGIN VIP_TOPIC_MOVE_LAST50_V1
-
-
-# END VIP_TOPIC_MOVE_LAST50_V1
-
-
-
-# BEGIN RELAY2_TO_VIP1364_LAST50_V3
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# END RELAY2_TO_VIP1364_LAST50_V3
-
-
-
-# BEGIN RELAY115_VIP1375_LAST50_V1
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# END RELAY115_VIP1375_LAST50_V1
-
 
 
 # BEGIN VIP7_REBUILD_FROM_RELAY508_V1
@@ -4840,10 +4608,6 @@ def vip7_rebuild_should_hold_or_suppress(
     return None
 
 
-
-
-
-
 # END VIP7_REBUILD_FROM_RELAY508_V1
 
 
@@ -4925,30 +4689,6 @@ async def warm_entity_cache_once():
 # start before trusting it.
 
 
-
-
-# BEGIN EMPTY_TOPIC_LAST50_V1
-
-# Seeds a destination topic that has never received anything with the last N
-# messages from its source, so a newly created topic is not left blank.
-#
-# Off by default, and dry run by default even once enabled. Turning it on only
-# makes it REPORT what it would send; a second, separate flag lets it actually
-# send. That two-step exists because a detection bug here posts real messages
-# into real groups, which cannot be taken back.
-
-
-
-
-
-
-
-
-
-# END EMPTY_TOPIC_LAST50_V1
-
-
-
 async def main():
     await start_runtime_guard("imperium-telegram-worker", log)
     liveness.LoopWatchdog("ExposedFX MAIN", DATA_DIR, log).start()
@@ -4993,6 +4733,5 @@ if __name__ == "__main__":
         log.exception(f"[worker fatal crash] {type(exc).__name__}: {exc}")
         alert_crash("imperium-telegram-worker:fatal", exc)
         raise
-
 
 

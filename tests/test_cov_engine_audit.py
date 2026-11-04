@@ -175,29 +175,43 @@ class AuditRouteTests(unittest.TestCase):
 
 
 class EditedAfterCopyTests(unittest.TestCase):
-    """A post edited after it was copied (4 Nov 2026: Arabic VIP posts 33400/33405 had media changed)."""
+    """Edits never swap media on a copy (4 Nov 2026: Arabic VIP posts 33400/33405 had media changed)."""
 
-    def test_posts_edited_after_the_copy_are_left_to_the_edit_path(self):
+    def run_audit(self, edited_text, edited_media, copy_text):
         sent = datetime(2026, 11, 4, 15, 1, tzinfo=timezone.utc)
-        mapping = {f"{RELAY}:{i}:{VIP}:1364": 9000 + i for i in (1, 2)}
-        edited = msg(1, "TP1 with chart", media=PHOTO)
+        mapping = {f"{RELAY}:1:{VIP}:1364": 9001, f"{RELAY}:2:{VIP}:1364": 9002}
+        edited = msg(1, edited_text, media=edited_media)
         edited.edit_date = sent + timedelta(minutes=9)
         unchanged = msg(2, "TP2")
-        unchanged.edit_date = None
-        copies = {9001: msg(9001, "TP1", reply_to=1364), 9002: msg(9002, "TP2", reply_to=1364)}
+        copies = {9001: msg(9001, copy_text, reply_to=1364), 9002: msg(9002, "TP2", reply_to=1364)}
         for copy in copies.values():
             copy.date = sent
         stored = {(RELAY, 1): edited, (RELAY, 2): unchanged, **{(VIP, i): m for i, m in copies.items()}}
         planner = Planner(rules=Rules(), maps=MessageMap(mapping))
-        result = asyncio.run(audit.audit_route(Reader(stored), planner, ROUTE, "copy"))
-        self.assertEqual((result["edited_after_copy"], result["checked"], result["match"]), (1, 1, 1))
+        return asyncio.run(audit.audit_route(Reader(stored), planner, ROUTE, "copy"))
+
+    def test_media_added_by_a_later_edit_is_expected_not_a_mismatch(self):
+        result = self.run_audit("TP1 hit", PHOTO, "TP1 hit")
+        self.assertEqual((result["media_changed_by_edit"], result["checked"], result["match"]), (1, 1, 1))
         self.assertNotIn("mismatch", result)
 
-    def test_edit_before_the_copy_is_still_audited(self):
+    def test_other_differences_on_edited_posts_are_still_reported(self):
+        result = self.run_audit("TP1 hit", None, "TP1")
+        self.assertEqual((result["checked"], result["mismatch"]), (2, 1))
+        self.assertEqual(result["examples"][0]["fields"], ["text"])
+
+    def test_media_difference_without_a_later_edit_is_reported(self):
+        self.assertFalse(
+            audit.media_changed_by_edit(["media"], SimpleNamespace(), SimpleNamespace(date=None))
+        )
         sent = datetime(2026, 11, 4, 15, 1, tzinfo=timezone.utc)
-        source = SimpleNamespace(edit_date=sent - timedelta(seconds=5))
-        self.assertFalse(audit.edited_after_copy(source, SimpleNamespace(date=sent)))
-        self.assertFalse(audit.edited_after_copy(SimpleNamespace(), SimpleNamespace(date=sent)))
+        early_edit = SimpleNamespace(edit_date=sent - timedelta(seconds=5))
+        self.assertFalse(audit.media_changed_by_edit(["media"], early_edit, SimpleNamespace(date=sent)))
+        self.assertFalse(
+            audit.media_changed_by_edit(
+                ["media", "text"], SimpleNamespace(edit_date=sent), SimpleNamespace(date=sent - timedelta(1))
+            )
+        )
 
 
 class RunReplayAuditTests(unittest.TestCase):

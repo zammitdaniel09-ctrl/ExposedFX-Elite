@@ -46,14 +46,15 @@ def _reply_to(message: Any) -> int:
     return int(getattr(reply, "reply_to_msg_id", 0) or 0)
 
 
-def edited_after_copy(source: Any, dest: Any) -> bool:
-    """The source changed after it was copied: the edit path owns it, not the send path audited here.
+def media_changed_by_edit(fields: List[str], source: Any, dest: Any) -> bool:
+    """Only the media differs, and the source was edited after it was copied.
 
-    (An edit that adds or removes media is never applied to the copy, so such
-    a post would always look different.)
+    Edits are applied to copies in place, but an edit that adds, removes or
+    swaps media never is (no delete, no resend), so such a post is expected
+    to differ there. Every other difference on an edited post is still reported.
     """
     edited, sent = getattr(source, "edit_date", None), getattr(dest, "date", None)
-    return bool(edited and sent and edited > sent)
+    return fields == ["media"] and bool(edited and sent and edited > sent)
 
 
 def compare(plan: Plan, source: Any, dest: Any) -> List[str]:
@@ -103,11 +104,11 @@ async def audit_route(
         if source is None or dest is None or getattr(source, "grouped_id", None):
             result["unavailable_or_album"] += 1
             continue
-        if edited_after_copy(source, dest):
-            result["edited_after_copy"] += 1
-            continue
         plan = planner.plan(route, [source], legacy_route, facts=Facts(all_mapped=False, any_mapped=False))
         fields = compare(plan, source, dest)
+        if media_changed_by_edit(fields, source, dest):
+            result["media_changed_by_edit"] += 1
+            continue
         result["checked"] += 1
         if fields:
             result["mismatch"] += 1

@@ -176,7 +176,7 @@ async def run_alt_replay_audit(
     import json
     from pathlib import Path
 
-    from .audit import audit_key, compare, edited_after_copy, newest_mapped
+    from .audit import audit_key, compare, media_changed_by_edit, newest_mapped
     from .plan import Facts
 
     path = Path(legacy.DATA_DIR) / AUDIT_STATE_FILE
@@ -207,11 +207,11 @@ async def run_alt_replay_audit(
                     if source is None or dest is None or getattr(source, "grouped_id", None):
                         outcome["unavailable_or_album"] += 1
                         continue
-                    if edited_after_copy(source, dest):
-                        outcome["edited_after_copy"] = outcome.get("edited_after_copy", 0) + 1
-                        continue
                     _, plan = await engine.plan_unit(legacy_route, [source], facts=Facts(False, False))
                     fields = compare(plan, source, dest)
+                    if media_changed_by_edit(fields, source, dest):
+                        outcome["media_changed_by_edit"] = outcome.get("media_changed_by_edit", 0) + 1
+                        continue
                     outcome["checked"] += 1
                     outcome["mismatch" if fields else "match"] += 1
                     if fields and len(outcome["examples"]) < 3:

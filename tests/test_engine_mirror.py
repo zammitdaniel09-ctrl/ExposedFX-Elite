@@ -216,6 +216,14 @@ class DeleteTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_deletion_follows_copies_of_copies_like_edits(self):
+        mapping = {f"{RELAY}:10:{VIP}:1364": 900, f"{VIP}:900:{MM}:28": 5000, f"{MM}:5000:{MM}:99": 7000}
+        client = Client()
+        sync, _ = build(mapping, client, cascade_depth=1)
+        self.assertTrue(asyncio.run(sync.delete(RELAY, 10)))
+        self.assertEqual(client.deleted, [(VIP, [900]), (MM, [5000])], "one level deep, as configured")
+        self.assertEqual(list(mapping), [f"{MM}:5000:{MM}:99"])
+
     def test_failed_deletion_keeps_the_map_and_nothing_mapped_is_a_no_op(self):
         mapping = {f"{RELAY}:10:{VIP}:1364": 900, "bad-key": 1}
         sync, _ = build(mapping, Client(fail=RuntimeError("no rights")))

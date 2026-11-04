@@ -10,7 +10,7 @@ from telethon.errors import ChannelPrivateError
 from telethon.sessions import StringSession
 from telegram_worker import owner_forwarding_policy as owner_policy
 from telegram_worker import route_table
-from telegram_worker.state_store import SQLiteMap, open_message_map
+from telegram_worker.state_store import SQLiteMap, open_message_map, register_shutdown_hook
 from telegram_worker.engine.mirror import Mirror
 from telethon.tl.types import MessageMediaWebPage
 
@@ -57,36 +57,6 @@ WATCHDOG_SECONDS = max(2.0, float(os.environ.get("ALT_WATCHDOG_SECONDS", "5")))
 # ==============================================================
 
 
-def load_routes():
-    raw = os.environ.get("ALT_ROUTES_JSON", "").strip()
-    if not raw:
-        raise RuntimeError("ALT_ROUTES_JSON is empty")
-    parsed = json.loads(raw)
-    if isinstance(parsed, dict):
-        parsed = [parsed]
-    if not isinstance(parsed, list):
-        raise RuntimeError("ALT_ROUTES_JSON must be a JSON list")
-    routes = []
-    for index, item in enumerate(parsed, start=1):
-        source_topic = item.get("source_topic")
-        if source_topic not in (None, ""):
-            source_topic = int(source_topic)
-        else:
-            source_topic = None
-        routes.append(
-            {
-                "name": str(item.get("name") or f"ALT RELAY {index}"),
-                "source_chat": int(item["source_chat"]),
-                "source_topic": source_topic,
-                "dest_chat": int(item["dest_chat"]),
-                "dest_topic": int(item["dest_topic"]),
-            }
-        )
-    if not routes:
-        raise RuntimeError("No ALT routes configured")
-    return routes
-
-
 # BEGIN ALT VIP5 DESTINATION PERMANENT STOP V1
 # This topic is retired for ALL providers, even if ALT_ROUTES_JSON is changed.
 ALT_RETIRED_DEST_CHAT = -1003726286301
@@ -111,32 +81,11 @@ def live_routes(routes):
 
 
 def select_routes():
-    """ALT's routes come from route_table.py.
-
-    While Railway still has ALT_ROUTES_JSON, its live routes are compared with
-    the table; if they differ, ALT keeps using ALT_ROUTES_JSON (the routes it
-    ran with until now) and reports [ROUTE TABLE MISMATCH] to the owner.
-    """
-    table = live_routes(route_table.routes("ALT"))
-    if not os.environ.get("ALT_ROUTES_JSON", "").strip():
-        return table
-    configured = live_routes(load_routes())
-
-    def keys(routes):
-        return sorted(
-            (r["name"], r["source_chat"], r["source_topic"] or 0, r["dest_chat"], r["dest_topic"])
-            for r in routes
-        )
-
-    if keys(table) == keys(configured):
-        log.warning("[ROUTE TABLE CHECK] worker=ALT routes=%s matches_ALT_ROUTES_JSON=True", len(table))
-        return table
-    log.error(
-        "[ROUTE TABLE MISMATCH] worker=ALT table=%s ALT_ROUTES_JSON=%s USING=ALT_ROUTES_JSON",
-        keys(table),
-        keys(configured),
-    )
-    return configured
+    """ALT's routes: route_table.py relay(...) lines (ALT_ROUTES_JSON is no longer read)."""
+    routes = live_routes(route_table.routes("ALT"))
+    if os.environ.get("ALT_ROUTES_JSON", "").strip():
+        log.warning("[ALT ROUTES] from route_table.py; ALT_ROUTES_JSON is ignored and can be deleted")
+    return routes
 
 
 ROUTES = select_routes()
@@ -762,6 +711,7 @@ def start_engine_intake():
         first_checkpoint,
         watchdog_seconds=WATCHDOG_SECONDS,
     )
+    register_shutdown_hook(INTAKE.drain)
     return INTAKE.start()
 
 

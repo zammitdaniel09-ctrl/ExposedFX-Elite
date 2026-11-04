@@ -1,17 +1,26 @@
 """Every live forwarding route of both workers, in one typed table.
 
-worker  the Telegram account that sends: MAIN or ALT
-path    how new posts reach the route:
-          intake     engine/intake.py, live VIP routes            (MAIN)
-          owner      owner_routes.py contracts                    (MAIN)
-          formatted  owner_formatted_route.py, library format     (MAIN)
-          wholechat  samgtrades_relay.py, whole chat, house style (MAIN)
-          relay      engine/intake.py, providers -> relay group   (ALT)
+ADD A ROUTE: add one line to TABLE and push to main; both workers pick it up
+on their next start. REMOVE A ROUTE: delete (or comment out) its line.
 
-Retired and paused routes are not listed; their old definitions are in
-archive/routes_before_table_20261104.py. validate() runs on import and refuses
-a table that writes into a retired topic, so a mistake fails at start-up, not
-in a destination.
+    live("Name", (source_chat, source_topic), (dest_chat, dest_topic))
+        MAIN copies new posts as they arrive (engine/intake.py). No history.
+        source_topic None = the whole chat.
+    history("Name", (source_chat, source_topic), (dest_chat, dest_topic), last=20)
+        MAIN imports the last N posts once, then copies new ones (owner_routes.py).
+    relay("Name", (source_chat, source_topic), relay_topic)
+        ALT copies a provider into a VIP RELAY GROUP topic (engine/intake.py).
+
+A new route starts at the newest post (nothing old is sent, except history's
+last N); the account must already be a member of both chats. Edits, replies,
+filters, formatting, recovery after restarts and the replay audit apply to every
+route automatically. validate() runs on import and refuses a table that writes
+into a retired topic or repeats a route, so a mistake fails at start-up, not in
+a destination. Old paused definitions: archive/telegram_worker/routes_before_table_20261104.py.
+
+worker  the Telegram account that sends: MAIN or ALT
+path    intake (live), owner (history), formatted (8323 library format),
+        wholechat (SamGtrades house style), relay (ALT)
 """
 
 from __future__ import annotations
@@ -29,6 +38,8 @@ RETIRED_DESTINATIONS = {(VIP, 5), (RELAY, 2530), (-1003885074241, 4663), (-10038
 RETIRED_SOURCES = {(RELAY, 2530)}
 RELAY_7250_ONLY_DESTINATION = (VIP, 12161)
 
+Chat = Tuple[int, Optional[int]]
+
 
 @dataclass(frozen=True)
 class RouteSpec:
@@ -45,8 +56,11 @@ class RouteSpec:
     def identity(self) -> Tuple[int, Optional[int], int, Optional[int]]:
         return (self.source_chat, self.source_topic, self.dest_chat, self.dest_topic)
 
+    def option(self, key: str, default: Any = None) -> Any:
+        return dict(self.options).get(key, default)
+
     def as_dict(self) -> Dict[str, Any]:
-        """The route dict the workers have always used."""
+        """The route dict the workers use."""
         route: Dict[str, Any] = {
             "name": self.name,
             "source_chat": self.source_chat,
@@ -55,12 +69,13 @@ class RouteSpec:
             "dest_topic": self.dest_topic,
         }
         route.update((key, list(value) if isinstance(value, tuple) else value) for key, value in self.options)
+        route["path"] = self.path
         return route
 
 
-def _intake(
-    name: str, source_chat: int, source_topic: Optional[int], dest_topic: int, loop_guard: Tuple[int, ...]
-) -> RouteSpec:
+def live(name: str, source: Chat, dest: Chat, loop_guard: Optional[Tuple[int, ...]] = None) -> RouteSpec:
+    """MAIN: copy new posts as they arrive. loop_guard: chats whose forwards are never copied back."""
+    (source_chat, source_topic), (dest_chat, dest_topic) = source, dest
     options: List[Tuple[str, Any]] = [
         ("verify_title", False),
         ("anonymous_send_as", False),
@@ -69,44 +84,49 @@ def _intake(
     ]
     if source_topic is not None:
         options.append(("strict_source_topic", True))
-    options += [("ordered_private", True), ("loop_guard_peers", loop_guard)]
-    return RouteSpec(name, "MAIN", "intake", source_chat, source_topic, VIP, dest_topic, tuple(options))
+    guard = loop_guard if loop_guard is not None else tuple(dict.fromkeys((source_chat, dest_chat)))
+    options += [("ordered_private", True), ("loop_guard_peers", guard)]
+    return RouteSpec(name, "MAIN", "intake", source_chat, source_topic, dest_chat, dest_topic, tuple(options))
 
 
-def _owner(name: str, source_chat: int, source_topic: int, dest_chat: int, dest_topic: int) -> RouteSpec:
+def history(name: str, source: Chat, dest: Chat, last: int = 20) -> RouteSpec:
+    """MAIN: import the last `last` posts once, then copy new posts."""
+    (source_chat, source_topic), (dest_chat, dest_topic) = source, dest
     options = (
         ("live_only", True),
         ("strict_source_topic", True),
         ("copy_reply_parent", False),
         ("anonymous_send_as", False),
         ("owner_managed", True),
+        ("backfill", int(last)),
     )
     return RouteSpec(name, "MAIN", "owner", source_chat, source_topic, dest_chat, dest_topic, options)
 
 
-def _relay(name: str, source_chat: int, source_topic: Optional[int], relay_topic: int) -> RouteSpec:
-    return RouteSpec(name, "ALT", "relay", source_chat, source_topic, RELAY, relay_topic)
+def relay(name: str, source: Chat, relay_topic: int) -> RouteSpec:
+    """ALT: copy a provider into a VIP RELAY GROUP topic."""
+    return RouteSpec(name, "ALT", "relay", source[0], source[1], RELAY, relay_topic)
 
 
 TABLE: Tuple[RouteSpec, ...] = (
     # ALT: providers -> VIP RELAY GROUP topics
-    _relay("ALT RELAY 1", -1003364661276, None, 2),  # Private Circle G Trades
-    _relay("ARABIC VIP EN -> RELAY115", -1002211486103, None, 115),  # T4T AE Scalping VIP, translated
-    _relay("NewAccount Topic5246 To Relay7248", -1004349952583, 5246, 7248),  # Blackline B+SCALPING
-    _relay("NewAccount Topic5247 To Relay7250", -1004349952583, 5247, 7250),  # Blackline B+XAU
-    _relay("NewAccount Select7194 To Relay8323", -1004410975295, 7194, 8323),  # SELECT SIGNALS
-    # MAIN: relay topics and Market Slayers -> VIP
-    _intake("Private Live 3838973021 To 9", -1003838973021, None, 9, (VIP,)),
-    _intake("VIP RELAY Topic106 To VIP11", RELAY, 106, 11, (RELAY, VIP)),
-    _intake("VIP RELAY Topic2 To VIP1364", RELAY, 2, 1364, (RELAY, VIP)),
-    _intake("Relay508 To VIP7", RELAY, 508, 7, (RELAY, VIP)),  # restyled in the Imperium VIP format
-    _intake("Relay7248 To VIP10877", RELAY, 7248, 10877, (RELAY, VIP)),
-    # MAIN: owner contracts (relay 7250 and VIP partner topics -> Market Makers)
-    _owner("Owner Relay7250 To VIP12161", RELAY, 7250, VIP, 12161),
-    _owner("Owner VIP1364 To Partner28", VIP, 1364, MARKET_MAKERS, 28),
-    _owner("Owner VIP10877 To Partner8", VIP, 10877, MARKET_MAKERS, 8),
-    _owner("Owner VIP12161 To Partner24", VIP, 12161, MARKET_MAKERS, 24),
-    # MAIN: formatted and whole-chat relays
+    relay("ALT RELAY 1", (-1003364661276, None), 2),  # Private Circle G Trades
+    relay("ARABIC VIP EN -> RELAY115", (-1002211486103, None), 115),  # T4T AE Scalping VIP, translated
+    relay("NewAccount Topic5246 To Relay7248", (-1004349952583, 5246), 7248),  # Blackline B+SCALPING
+    relay("NewAccount Topic5247 To Relay7250", (-1004349952583, 5247), 7250),  # Blackline B+XAU
+    relay("NewAccount Select7194 To Relay8323", (-1004410975295, 7194), 8323),  # SELECT SIGNALS
+    # MAIN: live copies (relay topics and Market Slayers -> VIP)
+    live("Private Live 3838973021 To 9", (-1003838973021, None), (VIP, 9), loop_guard=(VIP,)),
+    live("VIP RELAY Topic106 To VIP11", (RELAY, 106), (VIP, 11)),
+    live("VIP RELAY Topic2 To VIP1364", (RELAY, 2), (VIP, 1364)),
+    live("Relay508 To VIP7", (RELAY, 508), (VIP, 7)),  # restyled in the Imperium VIP format
+    live("Relay7248 To VIP10877", (RELAY, 7248), (VIP, 10877)),
+    # MAIN: live copies with a one-time history import
+    history("Owner Relay7250 To VIP12161", (RELAY, 7250), (VIP, 12161), last=50),
+    history("Owner VIP1364 To Partner28", (VIP, 1364), (MARKET_MAKERS, 28), last=20),
+    history("Owner VIP10877 To Partner8", (VIP, 10877), (MARKET_MAKERS, 8), last=20),
+    history("Owner VIP12161 To Partner24", (VIP, 12161), (MARKET_MAKERS, 24), last=20),
+    # MAIN: formatted and whole-chat relays (each has its own module)
     RouteSpec("Owner Relay8323 To VIP12289 Formatted", "MAIN", "formatted", RELAY, 8323, VIP, 12289),
     RouteSpec("SamGtrades To Exposed VIP", "MAIN", "wholechat", -1004281603170, None, -1003743381585, None),
 )
@@ -136,6 +156,8 @@ def validate(table: Tuple[RouteSpec, ...] = TABLE) -> Tuple[RouteSpec, ...]:
                 if spec.worker == "ALT" and spec.dest_chat != RELAY
                 else ""
             ),
+            "source and destination are the same" if source == dest else "",
+            "destination topic required" if spec.dest_topic is None and spec.path != "wholechat" else "",
         ]
         problems = [p for p in problems if p]
         if problems:

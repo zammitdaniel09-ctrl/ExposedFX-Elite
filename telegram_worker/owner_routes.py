@@ -14,13 +14,12 @@ from pathlib import Path
 from telethon import events
 from telethon.errors import FloodWaitError
 from telegram_worker import owner_forwarding_policy as policy
+from telegram_worker import route_table
 
 log = logging.getLogger("owner-routes-20261102")
-TARGETS = (
-    (-1004367822325, 7250, -1003726286301, 12161, 50),
-    (-1003726286301, 1364, -1003786932333, 28, 20),
-    (-1003726286301, 10877, -1003786932333, 8, 20),
-    (-1003726286301, 12161, -1003786932333, 24, 20),
+# route_table.py history(...) lines: (source chat, topic, dest chat, topic, posts imported once)
+TARGETS = tuple(
+    (*spec.identity, int(spec.option("backfill", 0))) for spec in route_table.TABLE if spec.path == "owner"
 )
 STATE_FILE = "owner_requested_routes_20261102_v1.json"
 LIVE_POLL_SECONDS = 5

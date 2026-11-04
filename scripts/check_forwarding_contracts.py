@@ -41,19 +41,6 @@ def check_routes():
     specs = table.TABLE
     relay, vip = table.RELAY, table.VIP
     require({s.worker for s in specs} == {"MAIN", "ALT"}, "Route table must list both workers")
-    require(
-        sum(s.identity == (relay, 7248, vip, 10877) for s in specs) == 1,
-        "Exactly one 7248 -> VIP10877 route required",
-    )
-    owner = {s.identity for s in specs if s.path == "owner"}
-    for contract in (
-        (relay, 7250, vip, 12161),
-        (vip, 1364, table.MARKET_MAKERS, 28),
-        (vip, 10877, table.MARKET_MAKERS, 8),
-        (vip, 12161, table.MARKET_MAKERS, 24),
-    ):
-        require(contract in owner, f"Owner route missing: {contract}")
-
     # The table's own guard must refuse every retired path.
     for source, dest in (
         ((relay, 2530), (vip, 9)),
@@ -74,7 +61,7 @@ def check_routes():
     require(
         'routes("MAIN", "intake", "owner")' in routes_py, "routes.py must take MAIN routes from the table"
     )
-    print(f"PASS: checked {len(specs)} live routes (MAIN and ALT), retired-topic blocks and VIP10877")
+    print(f"PASS: checked {len(specs)} live routes (MAIN and ALT) and the retired-topic guard")
 
 
 def check_worker_invariants():

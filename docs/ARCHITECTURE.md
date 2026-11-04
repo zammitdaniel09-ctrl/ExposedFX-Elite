@@ -43,7 +43,20 @@ Market Slayers VIP (-1003838973021) ──MAIN──▶ IMPERIUM FX VIP topic 9
 
 Every live route of both workers is defined once, in
 `telegram_worker/route_table.py` (typed, validated at start-up: no route can
-write into a retired topic). The tables below mirror it.
+write into a retired topic or repeat another). The tables below mirror it.
+
+**Add a route: one line in `route_table.py`, then push to `main`.**
+
+| Want | Line to add |
+|---|---|
+| MAIN copies new posts live | `live("Name", (source_chat, source_topic), (dest_chat, dest_topic)),` |
+| MAIN imports the last N posts once, then live | `history("Name", (source_chat, source_topic), (dest_chat, dest_topic), last=20),` |
+| ALT copies a provider into a relay topic | `relay("Name", (source_chat, source_topic), relay_topic),` |
+
+`source_topic` `None` means the whole chat. A new route starts at the newest
+post (nothing old is sent, except `history`'s last N); the account must already
+be in both chats. Filters, formatting, replies, edits, restart recovery and the
+replay audit apply automatically. **Remove a route:** delete its line.
 
 ### ALT routes (5)
 | Route | Source | Relay topic |
@@ -193,11 +206,11 @@ ALT `/data-alt`: session, `message_map.sqlite3` + JSON snapshot, route checkpoin
 
 ## Runbook
 
-- **Add or restore a route:** add one line to `route_table.py` (old paused
-  definitions are in `archive/telegram_worker/routes_before_table_20261104.py`);
-  for a paused destination also remove its id from `STOPPED_DEST_CHATS` in
-  `owner_forwarding_policy.py`. Update `tests/test_live_route_contract.py`
-  (and the frozen MAIN fixture if MAIN changes), push to `main`.
+- **Add, remove or restore a route:** one line in `route_table.py` (see
+  "Add a route"; old paused definitions are in
+  `archive/telegram_worker/routes_before_table_20261104.py`), push to `main`.
+  For a paused destination also remove its id from `STOPPED_DEST_CHATS` in
+  `owner_forwarding_policy.py`.
 - **Resume a route stopped at runtime:** delete its entry from
   `owner_stopped_forwarding_20261102.json` on the volume, then restart.
 - **Roll back a deploy:** Railway → service → Deployments → previous → Redeploy.
@@ -243,4 +256,5 @@ Retired one-time imports and the old watchdog's page size:
 `ALT_FORCE_HISTORY_ONCE`, `ALT_HISTORY_COUNT`, `ALT_HISTORY_FETCH_LIMIT`,
 `ALT_HISTORY_ONCE`, `ALT_HISTORY_REQUIRE_PREMIUM`, `ALT_HISTORY_RUN_ID`,
 `ALT_LAST50_COUNT`, `ALT_LAST50_FETCH_LIMIT`, `ALT_LAST50_ONCE`,
-`ALT_ROUTE508_FETCH_LIMIT`, `ALT_ROUTE508_LAST50_ONCE`, `ALT_WATCHDOG_LIMIT`.
+`ALT_ROUTE508_FETCH_LIMIT`, `ALT_ROUTE508_LAST50_ONCE`, `ALT_WATCHDOG_LIMIT`,
+`ALT_ROUTES_JSON` (routes now come from `route_table.py`).

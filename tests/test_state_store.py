@@ -124,6 +124,47 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(installed[1], state_store.signal.SIG_DFL, "the default action is restored")
         self.assertEqual(killed, [state_store.signal.SIGTERM])
 
+    def test_shutdown_waits_for_in_flight_sends_before_the_snapshot(self):
+        import asyncio
+
+        store = self.open()
+        store["-100:1:-200:5"] = 900
+        installed, killed, drained = [], [], []
+
+        async def hook():
+            await asyncio.sleep(0)
+            store["-100:2:-200:5"] = 901  # a send in flight records its copy
+            drained.append(1)
+
+        async def scenario():
+            installed[0](state_store.signal.SIGTERM, None)
+            for _ in range(20):
+                await asyncio.sleep(0.01)
+                if killed:
+                    break
+
+        with patch.object(
+            state_store.signal, "signal", lambda sig, handler: installed.append(handler)
+        ), patch.object(state_store.signal, "getsignal", lambda sig: None), patch.object(
+            state_store.os, "kill", lambda pid, sig: killed.append(sig)
+        ), patch.object(
+            state_store, "SHUTDOWN_HOOKS", [hook]
+        ):
+            self.assertTrue(store.snapshot_on_exit())
+            asyncio.run(scenario())
+        self.assertEqual((drained, killed), ([1], [state_store.signal.SIGTERM]))
+        self.assertEqual(
+            json.loads(self.json.read_text(encoding="utf-8")), {"-100:1:-200:5": 900, "-100:2:-200:5": 901}
+        )
+
+    def test_register_shutdown_hook(self):
+        async def hook():
+            return None
+
+        with patch.object(state_store, "SHUTDOWN_HOOKS", []):
+            state_store.register_shutdown_hook(hook)
+            self.assertEqual(state_store.SHUTDOWN_HOOKS, [hook])
+
     def test_shutdown_snapshot_needs_a_target_and_the_main_thread(self):
         store = SQLiteMap(self.dir / "other.sqlite3")
         self.stores.append(store)

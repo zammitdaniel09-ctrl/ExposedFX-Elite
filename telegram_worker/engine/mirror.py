@@ -9,7 +9,8 @@
   watches ALT's relay copies itself.
 - ALT never changes a copy's media structure (`same_media_only`): an edit that
   adds or removes media is reported and skipped.
-- A deleted source post deletes every mapped copy and its map entries (MAIN).
+- A deleted source post deletes every mapped copy and its map entries, and the
+  copies of those copies like edits (MAIN).
 - EditReconciler is a backup for missed edit events on one route: every
   interval it re-checks the newest posts and fixes copies that differ.
 """
@@ -208,8 +209,9 @@ class Mirror:
                 await self.edit(next_route, copy, depth=depth + 1, visited=visited)
 
     # -- deletions ---------------------------------------------------------------
-    async def delete(self, source_chat: int, source_id: int) -> bool:
-        """Delete every mapped copy of a deleted source post, then its map entries."""
+    async def delete(self, source_chat: int, source_id: int, depth: int = 0) -> bool:
+        """Delete every mapped copy of a deleted source post (and, like edits, the copies
+        of those copies up to `cascade_depth` levels), then their map entries."""
         prefix = f"{int(source_chat)}:{int(source_id)}:"
         keys_with_prefix = getattr(self.message_map, "keys_with_prefix", None)
         keys = (
@@ -228,9 +230,11 @@ class Mirror:
             chat_ids.extend(i for i in ids if i not in chat_ids)
             found.append(key)
         if not targets:
-            log.info("[delete mirror] no mapped destination for source=%s:%s", source_chat, source_id)
+            if depth == 0:
+                log.info("[delete mirror] no mapped destination for source=%s:%s", source_chat, source_id)
             return False
         deleted = False
+        removed: List[Tuple[int, int]] = []
         for dest_chat, ids in targets.items():
             try:
                 await self.client.delete_messages(dest_chat, ids)
@@ -242,6 +246,7 @@ class Mirror:
                     source_id,
                 )
                 deleted = True
+                removed.extend((dest_chat, i) for i in ids)
             except Exception as exc:
                 log.warning(
                     "[delete mirror failed] dest=%s ids=%s source=%s:%s: %s",
@@ -255,6 +260,9 @@ class Mirror:
             for key in found:
                 self.message_map.pop(key, None)
             self.save()
+        if depth < self.cascade_depth:
+            for chat, copy_id in removed:
+                await self.delete(chat, copy_id, depth + 1)
         return deleted
 
     async def on_delete(self, chat_id: Optional[int], deleted_ids: Sequence[int]) -> None:

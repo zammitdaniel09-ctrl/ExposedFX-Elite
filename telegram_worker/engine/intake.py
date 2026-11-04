@@ -65,7 +65,7 @@ class Checkpoints:
 @dataclass
 class _Source:
     checkpoint: int
-    handled: Set[int] = field(default_factory=set)  # first ids above the checkpoint
+    handled: Set[int] = field(default_factory=set)  # message ids above the checkpoint
     queued: Set[int] = field(default_factory=set)
     attempts: Dict[int, int] = field(default_factory=dict)
     queue: "asyncio.PriorityQueue[Tuple[int, int, List[Any], str, float]]" = field(
@@ -132,6 +132,8 @@ class Intake:
         self.sources: Dict[SourceKey, _Source] = {}
         self.order = itertools.count()
         self.tasks: List["asyncio.Task[None]"] = []
+        self.closing = False  # set on shutdown: no new deliveries start
+        self.inflight = 0
 
     # -- routing -------------------------------------------------------------
     def sources_for(self, chat_id: int, message: Any) -> List[SourceKey]:
@@ -150,10 +152,26 @@ class Intake:
         """Queue a post unless it is handled, queued or not ready to be read yet."""
         state = self.sources.get(source)
         unit = sorted(unit, key=lambda m: int(m.id))
-        if state is None or not unit:
-            return False  # not started: the first sweep reads it from the checkpoint
+        if state is None or not unit or self.closing:
+            return False  # not started (or stopping): the next sweep reads it from the checkpoint
+        if max(_ids(unit)) <= state.checkpoint:
+            return False
+        remainder = [m for m in unit if int(m.id) not in state.handled]
+        if not remainder:
+            return False
+        if len(remainder) < len(unit):
+            # Items Telegram added to an album after it was delivered: send them on their own.
+            log.warning(
+                "[INTAKE ALBUM REMAINDER] %s source=%s_%s ids=%s delivered=%s",
+                self.name,
+                source[0],
+                source[1],
+                _ids(remainder),
+                [i for i in _ids(unit) if i in state.handled],
+            )
+            unit = remainder
         first = int(unit[0].id)
-        if max(_ids(unit)) <= state.checkpoint or first in state.handled or first in state.queued:
+        if first in state.queued:
             return False
         state.queued.add(first)
         await state.queue.put((first, next(self.order), unit, reason, time.monotonic()))
@@ -177,7 +195,17 @@ class Intake:
         while True:
             first, _, unit, reason, queued_at = await state.queue.get()
             try:
-                ok = await self.deliver_unit(source, unit, reason)
+                if self.closing:
+                    continue  # left for the next start's first sweep
+                if self._stale(source, unit, _age(unit, self.clock())):
+                    state.handled.update(_ids(unit))  # waited too long in the queue (flood wait, outage)
+                    state.attempts.pop(first, None)
+                    continue
+                self.inflight += 1
+                try:
+                    ok = await self.deliver_unit(source, unit, reason)
+                finally:
+                    self.inflight -= 1
                 self.settle(source, unit, ok)
                 if ok:
                     age = _age(unit, self.clock())
@@ -219,7 +247,7 @@ class Intake:
         first = int(unit[0].id)
         if ok:
             state.attempts.pop(first, None)
-            state.handled.add(first)
+            state.handled.update(_ids(unit))
             return
         state.attempts[first] = state.attempts.get(first, 0) + 1
         if state.attempts[first] >= self.max_attempts:
@@ -229,7 +257,7 @@ class Intake:
                 _ids(unit),
                 state.attempts.pop(first),
             )
-            state.handled.add(first)
+            state.handled.update(_ids(unit))
 
     # -- watchdog ----------------------------------------------------------------
     async def fetch_after(self, source: SourceKey, after_id: int) -> List[Any]:
@@ -264,9 +292,11 @@ class Intake:
             age = _age(unit, now)
             if getattr(unit[0], "grouped_id", None) and age is not None and age < ALBUM_SETTLE_SECONDS:
                 break  # Telegram may still be adding items to this album
-            if first not in state.handled and first not in state.queued and self._stale(source, unit, age):
-                state.handled.add(first)
-            if first in state.handled:
+            done = all(i in state.handled for i in ids)
+            if not done and first not in state.queued and self._stale(source, unit, age):
+                state.handled.update(ids)
+                done = True
+            if done:
                 if contiguous:
                     advance = max(advance, max(ids))
                 continue
@@ -283,7 +313,7 @@ class Intake:
         """Too old to send (MAIN). Reported when a route would still have sent it."""
         if self.stale_after is None or age is None or age <= self.stale_after:
             return False
-        routes = [r for r in self.groups[source] if self.pending is None or self.pending(r, unit)]
+        routes = [r for r in self.groups[source] if self._would_send(r, unit)]
         if routes:
             log.warning(
                 "[GAP STALE NOT SENT] route=%s ids=%s age=%ss max=%ss",
@@ -293,6 +323,22 @@ class Intake:
                 int(self.stale_after),
             )
         return True
+
+    def _would_send(self, route: Dict[str, Any], unit: List[Any]) -> bool:
+        if self.pending is None:
+            return True
+        try:
+            return bool(self.pending(route, unit))
+        except Exception:
+            return True  # cannot tell: report it rather than stall the source
+
+    async def drain(self, timeout: float = 2.0) -> None:
+        """Shutdown: start no new delivery and let the ones in flight record their copies."""
+        self.closing = True
+        deadline = time.monotonic() + timeout
+        while self.inflight and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        log.warning("[INTAKE DRAINED] %s in_flight=%s", self.name, self.inflight)
 
     async def run_source(self, source: SourceKey) -> None:
         stored = self.checkpoints.get(source)

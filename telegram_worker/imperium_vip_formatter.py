@@ -5,7 +5,7 @@ import unicodedata
 from typing import Optional, Tuple, List, Dict, Any
 
 from telethon import events
-from telethon.tl.types import MessageEntityBold, MessageEntityCustomEmoji
+from telethon.tl.types import MessageEntityBold
 
 log = logging.getLogger("imperium-vip-formatter")
 

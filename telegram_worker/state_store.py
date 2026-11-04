@@ -15,6 +15,7 @@ reader keeps working, but:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -24,10 +25,18 @@ import threading
 import time
 from collections.abc import MutableMapping
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Tuple
 
 log = logging.getLogger("state-store")
 SNAPSHOT_SECONDS = 300
+DRAIN_SECONDS = 2.0
+SHUTDOWN_HOOKS: List[Callable[[], Awaitable[Any]]] = []  # awaited (bounded) before the shutdown snapshot
+
+
+def register_shutdown_hook(hook: Callable[[], Awaitable[Any]]) -> None:
+    SHUTDOWN_HOOKS.append(hook)
+
+
 _MISSING = object()
 
 
@@ -161,7 +170,7 @@ class SQLiteMap(MutableMapping):
                 data = {k: json.loads(v) for k, v in reader.execute("SELECT key, value FROM message_map")}
             finally:
                 reader.close()
-            tmp = target.with_name(target.name + ".snapshot.tmp")
+            tmp = target.with_name(f"{target.name}.{threading.get_ident()}.snapshot.tmp")
             tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
             tmp.replace(target)
         except Exception as exc:
@@ -177,12 +186,34 @@ class SQLiteMap(MutableMapping):
         if target is None:
             return False
         previous = signal.getsignal(signal.SIGTERM)
+        draining: List[bool] = []
 
-        def handler(signum: int, frame: Any) -> None:
+        def finish() -> None:
             self.wait_snapshot(5.0)
             self._write_snapshot(target)
             signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
             os.kill(os.getpid(), signal.SIGTERM)
+
+        async def drain_then_finish() -> None:
+            # Let deliveries already sent to Telegram record their copy, so the
+            # next start does not send them again; Railway kills after 3 s anyway.
+            hooks = [hook() for hook in SHUTDOWN_HOOKS]
+            try:
+                await asyncio.wait_for(asyncio.gather(*hooks, return_exceptions=True), DRAIN_SECONDS)
+            except Exception:
+                pass
+            finish()
+
+        def handler(signum: int, frame: Any) -> None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is None or not SHUTDOWN_HOOKS or draining:
+                finish()  # no event loop, nothing to drain, or a second SIGTERM
+                return
+            draining.append(True)
+            loop.call_soon_threadsafe(lambda: loop.create_task(drain_then_finish()))
 
         try:
             signal.signal(signal.SIGTERM, handler)

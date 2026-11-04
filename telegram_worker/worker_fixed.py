@@ -19,7 +19,7 @@ from telegram_worker.provider_profiles import is_promo_text
 from telegram_worker.routes import ROUTES
 from telegram_worker import owner_forwarding_policy as owner_policy
 from telegram_worker.stats_reporter import WeeklyStats
-from telegram_worker.state_store import open_message_map
+from telegram_worker.state_store import open_message_map, register_shutdown_hook
 from telegram_worker.engine.runtime import restyle_for_route
 from telegram_worker.engine.mirror import EditReconciler, Mirror
 
@@ -734,6 +734,7 @@ MIRROR = Mirror(
     blocked=edit_blocked,
     routes_from=exact_downstream_routes,
     save=save_map,
+    wait_for_map=30.0,  # an edit can arrive while its copy is still queued or being sent
     cascade_depth=4,
 )
 
@@ -815,37 +816,9 @@ async def get_route_poll_messages(route, limit):
         raise
 
 
-# BEGIN FAST_VIP_ROUTER_CONFIG_V1
-
-FAST_VIP_CHAT = -1003726286301
-
-
-def is_fast_vip_route(route):
-    """
-    Every live-only route whose source OR destination is
-    the VIP belongs to the dedicated priority router.
-    """
-    if not isinstance(route, dict):
-        return False
-    if not route.get("live_only") or route.get("owner_managed"):
-        return False
-    try:
-        source_chat = int(route.get("source_chat", 0))
-    except Exception:
-        source_chat = 0
-    try:
-        dest_chat = int(route.get("dest_chat", 0))
-    except Exception:
-        dest_chat = 0
-    return source_chat == FAST_VIP_CHAT or dest_chat == FAST_VIP_CHAT
-
-
 def fast_vip_routes():
-
-    return [route for route in ROUTES if is_fast_vip_route(route)]
-
-
-# END FAST_VIP_ROUTER_CONFIG_V1
+    """MAIN's live routes (route_table.py live(...) lines) that the engine intake delivers."""
+    return [route for route in ROUTES if route.get("path") == "intake"]
 
 
 # BEGIN FASTVIP PERMANENT DESTINATION ERRORS V1
@@ -921,6 +894,7 @@ async def start_engine_intake():
         watchdog_seconds=FASTVIP_WATCHDOG_SECONDS,
         stale_after=FASTVIP_STALE_SECONDS,
     )
+    register_shutdown_hook(INTAKE.drain)
     return INTAKE.start()
 
 

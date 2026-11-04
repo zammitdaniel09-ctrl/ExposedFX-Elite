@@ -1,5 +1,4 @@
 import ast
-import asyncio
 import importlib.util
 import json
 import logging
@@ -7,7 +6,6 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 from telethon.errors import ChannelPrivateError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +35,7 @@ class AltStopTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    async def test_current_nine_routes_keep_four_accessible_routes(self):
+    async def test_stopped_sources_and_vip5_are_dropped_from_alt_routes(self):
         samples = [
             (1, -1002211486103),
             (2, -1003252087470),
@@ -53,10 +51,19 @@ class AltStopTests(unittest.IsolatedAsyncioTestCase):
             dict(name=str(i), source_chat=source, source_topic=None, dest_chat=-1004367822325, dest_topic=i)
             for i, source in samples
         ]
-        ns = load_functions("load_routes")
-        with patch.dict(os.environ, {"ALT_ROUTES_JSON": json.dumps(data)}):
-            result = [r for r in ns["load_routes"]() if not policy.is_stopped(r)]
-        self.assertEqual([r["name"] for r in result], ["1", "4", "8", "9"])
+        data.append(
+            dict(
+                name="vip5",
+                source_chat=-1004349952583,
+                source_topic=1,
+                dest_chat=-1003726286301,
+                dest_topic=5,
+            )
+        )
+        ns = load_functions(
+            "live_routes", "alt_vip5_block", ALT_RETIRED_DEST_CHAT=-1003726286301, ALT_RETIRED_DEST_TOPIC=5
+        )
+        self.assertEqual([r["name"] for r in ns["live_routes"](data)], ["1", "4", "8", "9"])
 
     async def test_inaccessible_fetch_is_attempted_once_and_then_stopped(self):
         route = dict(source_chat=-1004349952583, source_topic=5246, dest_chat=-1004367822325, dest_topic=7248)

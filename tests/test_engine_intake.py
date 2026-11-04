@@ -401,6 +401,105 @@ class RestartGapTests(unittest.TestCase):
             self.assertIn("[2290]", monitor.outbox[1])
 
 
+class ReviewFixTests(unittest.TestCase):
+    """Fixes from the 4 Nov 2026 independent review."""
+
+    def test_album_item_added_after_delivery_is_sent_on_its_own(self):
+        h = Harness([post(11, grouped_id=7, seconds_ago=30), post(12, grouped_id=7, seconds_ago=30)])
+
+        async def go():
+            await h.ready()
+            await h.intake.submit(SOURCE, [post(11, grouped_id=7), post(12, grouped_id=7)], "telegram_album")
+            await h.drain()
+            h.client.posts.append(post(13, grouped_id=7, seconds_ago=30))  # Telegram added a third item late
+            with self.assertLogs("engine-intake", "WARNING") as logs:
+                await h.tick()
+            await h.tick()
+            return logs.output, h.checkpoints.get(SOURCE)
+
+        output, checkpoint = h.run(go())
+        self.assertEqual([d[1] for d in h.delivered], [[11, 12], [13]])
+        self.assertTrue(any("[INTAKE ALBUM REMAINDER]" in line and "ids=[13]" in line for line in output))
+        self.assertEqual(checkpoint, 13)
+
+    def test_post_that_waited_too_long_in_the_queue_is_reported_not_sent(self):
+        h = Harness([], stale_after=600, pending=lambda route, unit: True)
+
+        async def go():
+            await h.ready()
+            await h.intake.submit(
+                SOURCE, [post(20, minutes_ago=15)], "telegram_push"
+            )  # queued, then a long flood wait
+            with self.assertLogs("engine-intake", "WARNING") as logs:
+                await h.drain()
+            return logs.output
+
+        output = h.run(go())
+        self.assertEqual(h.delivered, [])
+        self.assertTrue(any("[GAP STALE NOT SENT]" in line and "ids=[20]" in line for line in output))
+        self.assertIn(20, h.intake.sources[SOURCE].handled)
+
+    def test_a_failing_stale_check_reports_the_post_instead_of_stalling_the_source(self):
+        def broken(route, unit):
+            raise ValueError("planner failed")
+
+        h = Harness([post(30, minutes_ago=20), post(31)], stale_after=600, pending=broken)
+
+        async def go():
+            await h.ready()
+            with self.assertLogs("engine-intake", "WARNING"):
+                await h.tick()
+            await h.tick()
+            return h.checkpoints.get(SOURCE)
+
+        self.assertEqual(h.run(go()), 31)
+        self.assertEqual([d[1] for d in h.delivered], [[31]])
+
+    def test_shutdown_drain_starts_nothing_new_and_waits_for_sends_in_flight(self):
+        h = Harness([])
+        release = asyncio.Event()
+
+        async def slow(route, unit, reason):
+            await release.wait()
+            h.delivered.append((route["name"], [m.id for m in unit], reason))
+            return True
+
+        h.intake.deliver = slow
+
+        async def go():
+            await h.ready()
+            worker = asyncio.create_task(h.intake.worker(SOURCE))
+            await h.intake.submit(SOURCE, [post(40)], "telegram_push")
+            await asyncio.sleep(0.01)
+            self.assertEqual(h.intake.inflight, 1)
+            draining = asyncio.create_task(h.intake.drain(timeout=2.0))
+            await asyncio.sleep(0.01)
+            self.assertFalse(
+                await h.intake.submit(SOURCE, [post(41)], "telegram_push"), "closing: no new work"
+            )
+            release.set()
+            with self.assertLogs("engine-intake", "WARNING"):
+                await draining
+            worker.cancel()
+
+        h.run(go())
+        self.assertEqual([d[1] for d in h.delivered], [[40]])
+        self.assertEqual(h.intake.inflight, 0)
+
+    def test_queued_work_is_left_for_the_next_start_once_closing(self):
+        h = Harness([])
+
+        async def go():
+            await h.ready()
+            await h.intake.submit(SOURCE, [post(50)], "telegram_push")
+            h.intake.closing = True
+            await h.drain()
+
+        h.run(go())
+        self.assertEqual(h.delivered, [])
+        self.assertNotIn(50, h.intake.sources[SOURCE].handled)
+
+
 class StartTests(unittest.TestCase):
     def test_start_attaches_push_handlers_and_runs_each_source(self):
         h = Harness([post(10)], start=9)

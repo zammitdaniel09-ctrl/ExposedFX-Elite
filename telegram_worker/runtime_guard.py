@@ -215,7 +215,6 @@ async def _auto_install_vip_emoji_registry(log=None):
 
                 if main_module is not None:
                     setattr(main_module, "IMPERIUM_VIP_FORMATTER", inline_state)
-                    setattr(main_module, "IMPERIUM_VIP_DESTINATION_POLLER", None)
 
                 if log:
                     log.warning(
@@ -227,34 +226,6 @@ async def _auto_install_vip_emoji_registry(log=None):
             except Exception as exc:
                 if log:
                     log.exception("[IMPERIUM VIP INLINE HOOK INSTALL FAILED] %s: %s", type(exc).__name__, exc)
-
-            # Emergency formatter fallback only. Reply hardening does not depend
-            # on this path and remains installed regardless.
-            if inline_state is None:
-                try:
-                    from telegram_worker.imperium_vip_destination_poller import (
-                        install_imperium_vip_destination_poller,
-                    )
-
-                    destination_poller_state = await install_imperium_vip_destination_poller(
-                        client, registry, logger=log
-                    )
-
-                    if main_module is not None:
-                        setattr(main_module, "IMPERIUM_VIP_DESTINATION_POLLER", destination_poller_state)
-
-                    if log:
-                        log.warning(
-                            "[IMPERIUM VIP FORMATTER FALLBACK ACTIVE] "
-                            "source=-1004367822325_508 dest=-1003726286301_7 "
-                            "writer=destination_poller reason=inline_hook_unavailable"
-                        )
-
-                except Exception as exc:
-                    if log:
-                        log.exception(
-                            "[IMPERIUM VIP FORMATTER FALLBACK FAILED] %s: %s", type(exc).__name__, exc
-                        )
 
             return
 

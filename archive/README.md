@@ -50,3 +50,12 @@ the old file is kept verbatim as `telegram_worker/routes_before_table_20261104.p
 so a paused route can be copied back into the table when its destination
 returns. The derived MAIN route list was checked equal to the old one, field
 by field (`tests/fixtures/main_live_routes_20261104.json`).
+
+## VIP7 destination poller (4 Nov 2026)
+
+`imperium_vip_destination_poller.py` restyled VIP topic 7 by polling it every
+second, and started on its own whenever the VIP7 inline hook failed to install.
+The delivery engine restyles new VIP7 posts and the edit mirror restyles edits,
+so the poller was never needed; when the hook check failed after the mirror
+move (15:58–17:56 that day) the poller's polling caused continuous Telegram
+flood waits on topic reads. It was removed; a hook failure now only alerts.

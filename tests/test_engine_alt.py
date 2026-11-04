@@ -204,12 +204,12 @@ if __name__ == "__main__":
 
 
 class AltDifferentialTests(unittest.TestCase):
-    """The engine makes exactly the Telegram call ALT's legacy send_single made."""
+    """The engine makes exactly the Telegram call ALT's legacy send_single made (frozen oracle)."""
 
     def legacy_send_single(self, client, translated_payload):
         import ast as _ast
 
-        tree = _ast.parse((ROOT / "telegram_worker/alt_worker_legacy.py").read_text(encoding="utf-8"))
+        tree = _ast.parse((ROOT / "tests/fixtures/legacy_alt_send_20261104.py").read_text(encoding="utf-8"))
         node = next(n for n in tree.body if isinstance(n, _ast.AsyncFunctionDef) and n.name == "send_single")
         from telegram_worker.alt_reply_hardening import _reply_target_invalid, _reupload_cannot_help
 
@@ -250,10 +250,10 @@ class AltDifferentialTests(unittest.TestCase):
                     harness.setUp()
                     try:
                         harness.legacy.client = legacy_client
-                        send_single = self.legacy_send_single(
+                        legacy_single = self.legacy_send_single(
                             legacy_client, harness.legacy.translated_payload
                         )
-                        asyncio.run(send_single(route, case))
+                        asyncio.run(legacy_single(route, case))
                         harness.client = engine_client
                         harness.legacy.client = engine_client
                         harness.engine = alt_engine.AltDeliverer(harness.legacy)

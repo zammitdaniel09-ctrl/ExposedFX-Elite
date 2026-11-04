@@ -77,12 +77,6 @@ class AltStopTests(unittest.IsolatedAsyncioTestCase):
         await ns["watchdog"](dict(source_chat=-1003252087470, dest_chat=-1004367822325, dest_topic=2585))
         # No checkpoint helper is provided: touching it would fail the test.
 
-    async def test_stopped_send_paths_never_contact_telegram(self):
-        route = dict(source_chat=-1003252087470, dest_chat=-1004367822325, dest_topic=2585)
-        ns = load_functions("send_single", "send_album")
-        self.assertIsNone(await ns["send_single"](route, None))
-        self.assertIsNone(await ns["send_album"](route, []))
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,7 +2,6 @@ import asyncio
 import logging
 import re
 import unicodedata
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
@@ -306,8 +305,8 @@ async def resolve_reply_target(worker, route, message, logger=None) -> int:
 def install_alt_reply_hardening(worker, logger=None):
     """Self-test the reply readers and mark ALT reply recovery ready.
 
-    The reply-preserving send_single/send_album live in alt_worker_legacy.py
-    and call resolve_reply_target directly; nothing is patched.
+    ALT posts are sent by the delivery engine (engine/alt.py), which calls
+    resolve_reply_target directly; nothing is patched.
     """
     logger = logger or getattr(worker, "log", None) or log
 
@@ -360,8 +359,7 @@ def install_alt_reply_hardening(worker, logger=None):
         "media_recovery": True,
         "gethistory_first": True,
         "getreplies_last": True,
-        "send_single": True,
-        "send_album": True,
+        "used_by": "engine.alt (resolve_reply_target)",
     }
     worker._ALT_REPLY_HARDENING_STATE = state
 

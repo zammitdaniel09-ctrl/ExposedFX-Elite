@@ -61,4 +61,5 @@ class Planner:
             text=rendered.text,
             entities=entity_keys(rendered.entities if rendered.text else ()),
             media=tuple(media_key(m) for m in rendered.media),
+            payload=rendered,
         )

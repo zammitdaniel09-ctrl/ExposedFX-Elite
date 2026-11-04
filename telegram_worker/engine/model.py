@@ -1,7 +1,7 @@
 """Typed values the delivery engine works with."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Tuple, Union
 
 # (type name, offset, length, extra) - comparable and hashable.
@@ -55,6 +55,8 @@ class Send:
     text: str
     entities: Tuple[EntityKey, ...]
     media: Tuple[Any, ...] = ()  # media identity keys, in send order
+    # What the executor sends (render.Rendered); not part of the comparison.
+    payload: Any = field(default=None, compare=False, repr=False)
 
 
 Plan = Union[Skip, Send]

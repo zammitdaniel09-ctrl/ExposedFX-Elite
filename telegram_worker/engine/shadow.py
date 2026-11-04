@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+import os
 import logging
 import time
 from dataclasses import dataclass, field
@@ -212,10 +213,30 @@ def _brief(value) -> str:
             f"text={text[:60]!r} entities={len(value.entities)} media={len(value.media)}")
 
 
-def install_shadow(worker, owner_routes_module=None, data_dir=None) -> Shadow:
-    """Wrap the legacy delivery entry points and the client's send methods."""
+def engine_routes_from_env() -> frozenset:
+    """Route names the engine delivers (ENGINE_ROUTES, comma separated)."""
+    raw = os.environ.get("ENGINE_ROUTES", "")
+    return frozenset(name.strip() for name in raw.split(",") if name.strip())
+
+
+def install_shadow(worker, owner_routes_module=None, data_dir=None, engine_routes=None) -> Shadow:
+    """Wrap the legacy delivery entry points and the client's send methods.
+
+    Routes named in engine_routes are delivered by the engine (deliver.py);
+    every other route stays on the legacy pipeline under shadow comparison.
+    """
+    from .deliver import Deliverer
+
     shadow = Shadow(worker, data_dir or worker.DATA_DIR)
+    engine_routes = engine_routes_from_env() if engine_routes is None else frozenset(engine_routes)
+    shadow.deliverer = Deliverer(worker, shadow.planner,
+                                 attempts=int(getattr(worker, "COPY_RETRY_ATTEMPTS", 3) or 3),
+                                 sleep_cap=int(getattr(worker, "COPY_RETRY_SLEEP_CAP_SECONDS", 120) or 120))
     client = worker.client
+
+    def engine_route(route):
+        parsed = Route.from_legacy(route)
+        return Route(**{**parsed.__dict__, "formatter": formatter_for(parsed)})
 
     for method in ("send_message", "send_file"):
         original = getattr(client, method)
@@ -229,6 +250,8 @@ def install_shadow(worker, owner_routes_module=None, data_dir=None) -> Shadow:
     original_deliver = worker.fast_vip_deliver_route
 
     async def fast_vip_deliver_route(route, unit, skip_permanent_errors=False):
+        if route.get("name") in engine_routes:
+            return await shadow.deliverer.deliver(route, engine_route(route), unit, live=skip_permanent_errors)
         return await shadow.run_tracked(
             route, unit, skip_permanent_errors,
             lambda: original_deliver(route, unit, skip_permanent_errors=skip_permanent_errors))
@@ -239,11 +262,13 @@ def install_shadow(worker, owner_routes_module=None, data_dir=None) -> Shadow:
         original_copy_unit = owner_routes_module.copy_unit
 
         async def copy_unit(owner_worker, route, unit):
+            if route.get("name") in engine_routes:
+                return await shadow.deliverer.copy_unit(owner_routes_module, route, engine_route(route), unit)
             return await shadow.run_tracked(
                 route, unit, False, lambda: original_copy_unit(owner_worker, route, unit))
 
         owner_routes_module.copy_unit = copy_unit
 
-    log.warning("[ENGINE SHADOW READY] fastvip=True owner_routes=%s sends=0 state=%s",
-                owner_routes_module is not None, STATE_FILE)
+    log.warning("[ENGINE SHADOW READY] fastvip=True owner_routes=%s engine_routes=%s state=%s",
+                owner_routes_module is not None, sorted(engine_routes), STATE_FILE)
     return shadow

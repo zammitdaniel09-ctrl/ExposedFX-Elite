@@ -74,6 +74,17 @@ keeps totals in `engine_shadow_v1.json`. Set `ENGINE_SHADOW=0` on MAIN to
 turn it off. A route moves to the engine only after its shadow totals show
 no mismatch on live traffic.
 
+**Moving a route to the engine:** set `ENGINE_ROUTES` on MAIN to a comma
+separated list of route names (e.g. `VIP RELAY Topic2 To VIP1364`). Those
+routes are then delivered by `engine/deliver.py` (same Telegram calls, same
+map, same log markers with `engine=True lag=…`); all others stay on legacy
+under shadow comparison. Remove the name to roll back; nothing else changes.
+
+Replay audit (4 Nov 2026, `engine/audit.py`): 156/156 recent posts on the 7
+active routes planned identically to the copies in the destinations. Relay
+topics 106 and 508 have no feeding ALT route (dormant), so they had nothing
+to compare.
+
 The rules are tested against the legacy functions themselves
 (`tests/test_engine.py`): content filter, sender block, VIP hard block, loop
 guard, reply targets and the VIP topic 7 formatter on generated corpora.

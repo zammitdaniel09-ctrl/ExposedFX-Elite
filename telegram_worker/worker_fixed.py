@@ -23,6 +23,7 @@ from telegram_worker.provider_profiles import is_promo_text
 from telegram_worker.routes import ROUTES
 from telegram_worker import owner_forwarding_policy as owner_policy
 from telegram_worker.stats_reporter import WeeklyStats
+from telegram_worker.engine.model import entity_keys
 
 from telegram_worker import liveness
 from telegram_worker.log_setup import configure_logging
@@ -1037,7 +1038,7 @@ def mapped_edit_fingerprint(message):
         str(getattr(message, "id", 0) or 0),
         edit_stamp,
         text_of(message),
-        repr(entities_of(message)),
+        repr(entity_keys(entities_of(message))),
     ])
 
     return hashlib.sha256(
@@ -1299,8 +1300,8 @@ async def reconcile_relay508_mapped_edits_once(route):
             source_text = text_of(message)
             destination_text = text_of(destination)
 
-            source_entities = repr(entities_of(message))
-            destination_entities = repr(entities_of(destination))
+            source_entities = entity_keys(entities_of(message))
+            destination_entities = entity_keys(entities_of(destination))
 
             if (
                 source_text != destination_text

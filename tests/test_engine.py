@@ -235,6 +235,44 @@ class ImperiumFormatterTests(unittest.TestCase):
                                  (legacy_message.message, entity_keys(legacy_message.entities)), text)
 
 
+class ReplayAuditTests(unittest.TestCase):
+    """The audit compares the engine with copies already in the destination."""
+
+    def run_audit(self, source, dest, message_map):
+        from telegram_worker.engine import audit
+
+        class Reader:
+            async def get_messages(self, chat, ids):
+                return [source if chat == route["source_chat"] else dest for _ in ids]
+
+        route = ROUTE_DICTS[2]
+        planner = Planner(rules=RULES, maps=MessageMap(message_map))
+        return asyncio.run(audit.audit_route(Reader(), planner, route, "copy"))
+
+    def delivered(self, source, reply_to):
+        dest = reply_message(9000)
+        dest.message, dest.entities = source.message, list(source.entities)
+        dest.reply_to = SimpleNamespace(reply_to_msg_id=reply_to)
+        return dest
+
+    def test_identical_copy_matches(self):
+        source = reply_message(20)
+        source.message = source.raw_text = source.text = "TP1 ✅"
+        source.entities = [MessageEntityBold(0, 3)]
+        mapping = {f"{VIP}:20:-1003786932333:28": 9000}
+        result = self.run_audit(source, self.delivered(source, 28), mapping)
+        self.assertEqual((result["checked"], result["match"]), (1, 1))
+
+    def test_wrong_topic_or_text_is_reported(self):
+        source = reply_message(21)
+        source.message = source.raw_text = source.text = "TP2 ✅"
+        dest = self.delivered(source, 999)
+        dest.message = "TP2"
+        result = self.run_audit(source, dest, {f"{VIP}:21:-1003786932333:28": 9000})
+        self.assertEqual(result["mismatch"], 1)
+        self.assertEqual(sorted(result["examples"][0]["fields"]), ["reply_to", "text"])
+
+
 class FakeClient:
     def __init__(self):
         self.sent = []

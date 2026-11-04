@@ -4714,6 +4714,8 @@ async def main():
             from telegram_worker import owner_requested_routes_20261102 as owner_routes
             from telegram_worker.engine.shadow import install_shadow
             owner_module.ENGINE_SHADOW = install_shadow(owner_module, owner_routes)
+            from telegram_worker.engine.audit import run_replay_audit
+            owner_module.ENGINE_AUDIT_TASK = asyncio.create_task(run_replay_audit(owner_module, owner_module.ENGINE_SHADOW))
         except Exception as exc:
             log.warning(f"[ENGINE SHADOW NOT INSTALLED] {type(exc).__name__}: {exc} LEGACY_UNCHANGED=True")
 

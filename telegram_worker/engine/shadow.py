@@ -49,6 +49,7 @@ class Capture:
     unit: List
     facts: Facts
     calls: List[Send] = field(default_factory=list)
+    finished: float = 0.0
 
 
 def _as_send(method: str, args, kwargs) -> Optional[Send]:
@@ -168,7 +169,8 @@ class Shadow:
                 log.warning("[SHADOW MISMATCH] route=%s ids=%s detail=%s engine=%s legacy=%s",
                             capture.route.name, ids, detail, _brief(plan), _brief(legacy))
             else:
-                log.info("[SHADOW %s] route=%s ids=%s detail=%s", outcome.upper(), capture.route.name, ids, detail)
+                log.info("[SHADOW %s] route=%s ids=%s detail=%s legacy_lag=%s", outcome.upper(), capture.route.name,
+                         ids, detail, _lag(capture.unit[0], capture.finished))
             return outcome
         except Exception as exc:
             log.warning("[SHADOW JUDGE FAILED] route=%s %s: %s", capture.route.name, type(exc).__name__, exc)
@@ -193,7 +195,14 @@ class Shadow:
         finally:
             _ACTIVE.reset(token)
             if capture is not None:
+                capture.finished = self.clock()
                 asyncio.get_running_loop().call_soon(self.judge, capture, result)
+
+
+def _lag(message, finished: float) -> str:
+    """Source post time to the end of the legacy delivery."""
+    date = getattr(message, "date", None)
+    return f"{max(0.0, finished - date.timestamp()):.1f}s" if date and finished else "n/a"
 
 
 def _legacy_completed(result) -> bool:

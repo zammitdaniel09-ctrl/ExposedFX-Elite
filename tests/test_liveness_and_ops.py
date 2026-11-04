@@ -70,6 +70,20 @@ class RestartNoticeTests(unittest.TestCase):
             self.assertIn("event loop stalled for 130s", outbox[0])
 
 
+class DigestTests(unittest.TestCase):
+    def test_engine_lag_and_extra_lines_reach_the_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            monitor = health_monitor.HealthMonitor("ExposedFX TEST", tmp)
+            monitor.observe(logging.WARNING, "[FASTVIP COPIED] route=Relay7248 To VIP10877 source=-1004367822325_7248 "
+                                             "ids=[1] kind=SINGLE dest=-1003726286301_10877 engine=True lag=0.8s")
+            monitor.observe(logging.WARNING, "[FASTVIP COPIED] route=Relay7248 To VIP10877 source=-1004367822325_7248 "
+                                             "ids=[2] kind=SINGLE dest=-1003726286301_10877")
+            monitor.extras.append(lambda: "Engine shadow (match/seen): Relay7248 To VIP10877: 2/2")
+            digest = monitor.digest()
+            self.assertIn("• Relay7248 To VIP10877: 2 · 0.8s", digest)
+            self.assertIn("Engine shadow (match/seen): Relay7248 To VIP10877: 2/2", digest)
+
+
 class JsonLogTests(unittest.TestCase):
     def test_railway_line_has_real_severity_and_original_text(self):
         formatter = log_setup.RailwayJsonFormatter("imperium-telegram-worker")

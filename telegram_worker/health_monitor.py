@@ -33,7 +33,7 @@ SAVE_EVERY_SECONDS = 60
 STATE_FILE = "health_monitor_v1.json"
 
 SUCCESS = (
-    re.compile(r"\[FASTVIP COPIED\] route=(?P<route>.+?) source="),
+    re.compile(r"\[FASTVIP COPIED\] route=(?P<route>.+?) source=\S+ .*?(?:lag=(?P<lag>[\d.]+)s|$)"),
     re.compile(r"\[OWNER LIVE POST\] contract=(?P<route>\S+) outcome=sent"),
     re.compile(r"\[OWNER FORMATTED POST\] contract=(?P<route>\S+) source_id=\S+ "
                r"outcome=(?:signal|update|recap) lag=(?P<lag>[\d.]+)s"),
@@ -73,6 +73,7 @@ class HealthMonitor:
         self.last_alert = {}
         self.outbox = deque(maxlen=50)
         self.last_save = 0.0
+        self.extras = []  # callables adding a line to the daily digest
 
     def _load(self):
         try:
@@ -164,6 +165,11 @@ class HealthMonitor:
             lines.append(f"• {name}: {r['ok']}{lag}{failed}")
         if not routes:
             lines.append("No deliveries recorded.")
+        for extra in self.extras:
+            try:
+                lines.append(str(extra()))
+            except Exception:
+                pass
         return "\n".join(lines)
 
     def reset_after_digest(self, now=None):

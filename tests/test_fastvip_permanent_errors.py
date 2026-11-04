@@ -251,8 +251,10 @@ class CallSiteTests(unittest.TestCase):
         source = WORKER.read_text(encoding="utf-8")
         calls = source.split("fast_vip_deliver_route(")[2:]  # skip the definition
         opted_in = [call[:200].count("skip_permanent_errors=True") for call in calls]
-        self.assertEqual(len(calls), 4)
-        self.assertEqual(sum(opted_in), 2, "only the two live FASTVIP fan-out calls opt in")
+        # Remaining callers (dead v1 router removed 4 Nov 2026): the live FASTVIP2
+        # fan-out opts in; the one-time VIP7 rebuild backfill does not.
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(opted_in, [1, 0], "only the live FASTVIP2 fan-out opts in")
 
 
 if __name__ == "__main__":

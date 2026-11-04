@@ -165,8 +165,9 @@ def install_imperium_vip_inline_hook(main_module, registry, logger=None):
         safe_count,
     )
 
-    if not callable(getattr(main_module, "edit_existing_destination_in_place", None)):
-        raise RuntimeError("worker edit_existing_destination_in_place is unavailable")
+    # Edits are restyled by the worker's engine mirror (engine/mirror.py, render_for_route).
+    if getattr(main_module, "MIRROR", None) is None:
+        raise RuntimeError("worker edit mirror (MIRROR) is unavailable")
 
     state = {
         "source_chat": SOURCE_CHAT,
@@ -179,7 +180,7 @@ def install_imperium_vip_inline_hook(main_module, registry, logger=None):
         "cross_account_reply_recovery": True,
         "missing_signal_parent_recovery": True,
         "missing_signal_parent_max_age_seconds": MAX_REPLY_PARENT_RECOVERY_AGE_SECONDS,
-        "primary": "edit_wrapper",
+        "primary": "engine_mirror",
     }
     setattr(main_module, "_IMPERIUM_VIP_INLINE_HOOK_STATE", state)
 

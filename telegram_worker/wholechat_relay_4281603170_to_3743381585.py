@@ -21,6 +21,7 @@ import logging
 import time
 from pathlib import Path
 
+from telethon.errors import ChannelPrivateError
 from telethon import events
 from telethon.errors import FloodWaitError, MessageNotModifiedError
 
@@ -865,3 +866,28 @@ async def run_wholechat_4281603170_to_3743381585(main_module, logger=None):
         "live": True,
         "last50_complete": state.get("status") == "done",
     }
+
+
+def _is_access_error(exc):
+    text = str(exc)
+    return isinstance(exc, ChannelPrivateError) or (
+        isinstance(exc, ValueError)
+        and ("Could not find the input entity" in text or "Could not find input entity" in text)
+    )
+
+
+async def run_with_retry(main_module, logger=None):
+    """Run the relay for the life of the worker; lost access stops it for good."""
+    logger = logger or log
+    while True:
+        try:
+            await run_wholechat_4281603170_to_3743381585(main_module, logger=logger)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if _is_access_error(exc):
+                logger.warning("[OWNER WHOLECHAT STOPPED] error=%s RETRY=False", type(exc).__name__)
+                return
+            logger.exception("[WHOLECHAT RELAY WAIT/RETRY] %s: %s", type(exc).__name__, exc)
+            await asyncio.sleep(10)

@@ -21,6 +21,7 @@ from telegram_worker.routes import ROUTES
 from telegram_worker import owner_forwarding_policy as owner_policy
 from telegram_worker.stats_reporter import WeeklyStats
 from telegram_worker.engine.model import entity_keys
+from telegram_worker.engine.runtime import restyle_for_route
 
 from telegram_worker import liveness
 from telegram_worker.log_setup import configure_logging
@@ -259,6 +260,7 @@ message_map = load_map()
 content_dedupe_map = load_dedupe()
 client = TelegramClient(str(SESSION_BASE), API_ID, API_HASH)
 DELIVERY_ENGINE = None  # telegram_worker.engine.runtime.DeliveryEngine, set in main()
+EMOJI_REGISTRY = None  # set by runtime_guard once Saved Messages are read
 owner_policy.install_send_guard(client, log)
 
 
@@ -872,6 +874,7 @@ async def edit_existing_destination_in_place(message, route, cascade_depth=0, vi
         return False
 
     destination_id = int(destination_ids[0])
+    message = restyle_for_route(message, route, EMOJI_REGISTRY)
     new_text = text_of(message)
     new_entities = entities_of(message)
 
@@ -2219,6 +2222,11 @@ async def main():
     from telegram_worker.engine.runtime import install_engine
 
     install_engine(owner_module)
+    from telegram_worker.wholechat_relay_4281603170_to_3743381585 import run_with_retry as run_wholechat
+
+    owner_module.WHOLECHAT_4281603170_TO_3743381585_TASK = asyncio.create_task(
+        run_wholechat(owner_module, log)
+    )
     from telegram_worker.owner_requested_routes_20261102 import run_owner_requested_routes
 
     owner_module.OWNER_REQUESTED_ROUTES_TASK = asyncio.create_task(run_owner_requested_routes(owner_module))

@@ -165,26 +165,8 @@ def install_imperium_vip_inline_hook(main_module, registry, logger=None):
         safe_count,
     )
 
-    original_edit = getattr(main_module, "edit_existing_destination_in_place", None)
-
-    if not callable(original_edit):
+    if not callable(getattr(main_module, "edit_existing_destination_in_place", None)):
         raise RuntimeError("worker edit_existing_destination_in_place is unavailable")
-
-    async def edit_wrapper(message, route, cascade_depth=0, visited=None):
-        if not is_imperium_vip_route(route):
-            return await original_edit(message, route, cascade_depth=cascade_depth, visited=visited)
-
-        formatted_message, kind = _clone_message_with_format(message, registry)
-        if kind:
-            logger.warning(
-                "[IMPERIUM VIP INLINE EDIT PREPARED] kind=%s source_msg=%s",
-                kind,
-                getattr(message, "id", None),
-            )
-
-        return await original_edit(formatted_message, route, cascade_depth=cascade_depth, visited=visited)
-
-    main_module.edit_existing_destination_in_place = edit_wrapper
 
     state = {
         "source_chat": SOURCE_CHAT,

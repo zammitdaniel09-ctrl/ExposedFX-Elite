@@ -315,6 +315,30 @@ class ImperiumFormatterTests(unittest.TestCase):
                     text,
                 )
 
+    def test_edits_are_restyled_on_vip7_only(self):
+        from telegram_worker import imperium_vip_inline_hook as hook
+        from telegram_worker.community_emoji_registry import CommunityEmojiRegistry
+        from telegram_worker.engine.runtime import restyle_for_route
+
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = CommunityEmojiRegistry(Path(tmp))
+            registry.entries = {
+                alias: {"type": "custom", "document_id": 5000 + i, "fallback": "✅"}
+                for i, alias in enumerate(("Boom", "GreenTick", "RedCross", "Warning"))
+            }
+            edited = reply_message(800)
+            edited.message = edited.raw_text = edited.text = "Tp1 hit ✅"
+            vip7 = dict(ROUTE_DICTS[0], dest_topic=7, source_topic=508)
+            restyled = restyle_for_route(edited, vip7, registry)
+            expected, _ = hook._clone_message_with_format(edited, registry)
+            self.assertEqual(
+                (restyled.message, entity_keys(restyled.entities)),
+                (expected.message, entity_keys(expected.entities)),
+            )
+            self.assertIs(
+                restyle_for_route(edited, ROUTE_DICTS[2], registry), edited, "copy routes unchanged"
+            )
+
 
 class ReplayAuditTests(unittest.TestCase):
     """The audit compares the engine with copies already in the destination."""

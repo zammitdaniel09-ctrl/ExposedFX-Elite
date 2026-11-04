@@ -16,6 +16,7 @@ from telegram_worker import owner_forwarding_policy as policy
 from .deliver import Deliverer
 from .model import Route
 from .plan import Planner
+from .render import FORMATTERS as FORMATTERS_BY_NAME
 from .replies import MessageMap
 from .rules import Rules
 
@@ -71,3 +72,17 @@ def install_engine(worker) -> DeliveryEngine:
         sorted({formatter_for(Route.from_legacy(r)) for r in getattr(worker, "ROUTES", []) or []}),
     )
     return engine
+
+
+def restyle_for_route(message, legacy_route: Dict, registry):
+    """The message as this route publishes it: restyled for VIP 7, unchanged elsewhere.
+
+    Used for edits, so an edited VIP7 signal or update keeps the house style.
+    """
+    formatter = formatter_for(Route.from_legacy(legacy_route))
+    if formatter == "copy":
+        return message
+    restyled = FORMATTERS_BY_NAME[formatter](message, {"emoji_registry": registry})
+    if restyled is not message:
+        log.warning("[VIP7 EDIT RESTYLED] route=%s source_msg=%s", legacy_route.get("name"), message.id)
+    return restyled

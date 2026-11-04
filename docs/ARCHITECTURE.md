@@ -18,7 +18,8 @@ paths decide who restarts:
 
 - MAIN: `**` except `telegram_worker/alt_*.py`, `tests/test_alt_*.py` and this
   file (`/**` never matched in Railway's matcher; `**` does).
-- ALT: `telegram_worker/alt_*.py`, `owner_forwarding_policy.py`,
+- ALT: `telegram_worker/alt_*.py`, `telegram_worker/engine/**`,
+  `permanent_delivery_errors.py`, `owner_forwarding_policy.py`,
   `health_monitor.py`, `liveness.py`, `log_setup.py`, `__init__.py`,
   `runtime_guard.py`, `requirements.txt` (the only modules ALT imports). Add a
   module here if ALT starts importing it.

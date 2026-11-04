@@ -44,7 +44,28 @@ def _imperium_vip(message, context):
     return cloned
 
 
-FORMATTERS: Dict[str, Callable] = {"copy": _copy, "imperium_vip": _imperium_vip}
+class Restyled:
+    """A message seen with different text and entities; everything else is the original's."""
+
+    def __init__(self, original, text, entities):
+        self._original = original
+        self.message = self.raw_text = self.text = text or ""
+        self.entities = entities
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
+def _translated(message, context):
+    """ALT's T4T route: text and entities pre-translated by Telegram (alt.AltDeliverer)."""
+    translated = context.get("translations", {}).get(message.id)
+    return Restyled(message, *translated) if translated is not None else message
+
+
+FORMATTERS: Dict[str, Callable] = {"copy": _copy, "imperium_vip": _imperium_vip, "translate": _translated}
+# Formatters that write new text, whose output the content rules check again
+# (legacy VIP7 checked the restyled post; ALT never checked translations).
+RECHECKED = frozenset({"imperium_vip"})
 
 
 def render(unit: Sequence, formatter: str, context: Dict) -> Rendered:

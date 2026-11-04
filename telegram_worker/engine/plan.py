@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from .model import Plan, Route, Send, Skip, entity_keys, media_key
-from .render import render
+from .render import RECHECKED, render
 from .replies import MessageMap, reply_target
 from .rules import Rules
 
@@ -60,7 +60,7 @@ class Planner:
         if reason:
             return Skip(reason)
         rendered = render(unit, route.formatter, self.context)
-        if any(self.rules.blocked_content(m) for m in rendered.messages):
+        if route.formatter in RECHECKED and any(self.rules.blocked_content(m) for m in rendered.messages):
             return Skip("mention_or_link")
         if rendered.kind == "album" and not rendered.media:
             return Skip("empty_album")

@@ -270,6 +270,10 @@ async def main():
         __import__("sys").version.split()[0],
     )
     install_health_monitor("ExposedFX ALT", _legacy.client, _legacy.DATA_DIR)
+    from telegram_worker.engine.alt import install_alt_engine, run_alt_replay_audit
+
+    engine = install_alt_engine(_legacy)
+    audit_task = asyncio.create_task(run_alt_replay_audit(_legacy, engine))
     new_topics_last20_task = asyncio.create_task(_run_new_topics_last20_guarded())
     select_last30_task = asyncio.create_task(_run_select_last30_guarded())
     try:

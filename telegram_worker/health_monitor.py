@@ -56,6 +56,7 @@ STOPPED = (
     re.compile(r"\[OWNER FORMATTED STOPPED\] contract=(?P<route>\S+)"),
 )
 FLOOD = (
+    re.compile(r"\[copy retry floodwait\] attempt=\S+ wait=(?P<seconds>\d+)s route=(?P<route>.+?) msg="),
     re.compile(r"Sleeping for (?P<seconds>\d+)s \(.*?\) on (?P<route>\w+) flood wait"),
     re.compile(r"\[ALT FLOODWAIT\] route=(?P<route>.+?) seconds=(?P<seconds>\d+)"),
     re.compile(r"FLOODWAIT\] label=(?P<route>\S+) attempt=\S+ wait=(?P<seconds>\d+)s"),

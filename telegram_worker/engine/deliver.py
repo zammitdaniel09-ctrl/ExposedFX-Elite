@@ -269,6 +269,8 @@ class Deliverer:
                 return await self._send_once(legacy_route, route, unit, plan)
             except FloodWaitError as exc:
                 last_exc = exc
+                if attempt >= self.attempts:
+                    raise  # no point sleeping before giving up; the caller retries later
                 wait = min(int(exc.seconds) + 1, self.sleep_cap)
                 log.warning(
                     "[copy retry floodwait] attempt=%s/%s wait=%ss route=%s msg=%s engine=True",
@@ -325,7 +327,13 @@ class Deliverer:
                     f"sent={len(_as_list(sent))}"
                 )
             items = _as_list(sent)
-            for source, copy_ in zip(rendered.messages, items):
+            # Each media item maps to its copy; an item without media (rare) to
+            # the album's first copy, so a reply to it still lands in the album.
+            media = [m for m in rendered.messages if is_real_media(m)]
+            pairs = list(zip(media, items)) + [
+                (m, items[0]) for m in rendered.messages if not is_real_media(m)
+            ]
+            for source, copy_ in pairs:
                 self.worker.remember_message(_original(unit, source), copy_, legacy_route, save=False)
             self.worker.save_map()
             return sent

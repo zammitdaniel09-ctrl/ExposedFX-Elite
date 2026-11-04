@@ -143,6 +143,11 @@ SOURCE_CHATS = sorted({route["source_chat"] for route in ROUTES})
 # ==============================================================
 
 _WORKER = sys.modules[__name__]  # passed to reply recovery
+# Routes the delivery engine copies (engine/alt.py); "*" means every route.
+ALT_ENGINE_ROUTES = frozenset(
+    name.strip() for name in os.environ.get("ALT_ENGINE_ROUTES", "").split(",") if name.strip()
+)
+DELIVERY_ENGINE = None  # engine.alt.AltDeliverer, installed by alt_worker.main()
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
@@ -766,6 +771,12 @@ def _lag(message):
 
 
 async def _owner_original_copy_unit(route, messages, reason):
+    if "*" in ALT_ENGINE_ROUTES or route.get("name") in ALT_ENGINE_ROUTES:
+        messages = sorted(list(messages), key=lambda message: int(message.id))
+        if not messages:
+            return True
+        async with copy_lock(route, messages):
+            return await DELIVERY_ENGINE.deliver(route, messages, reason)
     if alt_vip5_block(route):
         log.warning("[ALT VIP5 DESTINATION PERMANENT BLOCK] copy_unit")
         return True

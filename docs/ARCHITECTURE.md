@@ -7,14 +7,24 @@ Last verified: 4 Nov 2026. Keep this file in step with `tests/test_live_route_co
 | Service | Branch | Start command | Account | Volume |
 |---|---|---|---|---|
 | `imperium-telegram-worker` (MAIN) | `main` | `python -m telegram_worker.worker_fixed` | KratosFX (premium, custom emoji) | `/app/data` |
-| `imperium-telegram-worker-alt` (ALT) | `alt-worker` | `python -m telegram_worker.alt_worker` | "new account" | `/data-alt` |
+| `imperium-telegram-worker-alt` (ALT) | `main` | `python -m telegram_worker.alt_worker` | "new account" | `/data-alt` |
 | `ExposedFX-Elite` (server) | `main` | `python server/main.py` | none (FastAPI for MT5) | none |
 | `exposedfx-clean-signal-forwarder` | `main` | — | — | offline by owner |
 | `exposedfx-ai-signal-formatter` | `main` | — | — | offline by owner |
 
 Deploys never overlap (`overlapSeconds=0`), so a session is never used by two
-containers at once. The server only redeploys on `server/**` or
-`requirements.txt` changes.
+containers at once. One codebase on `main` serves both accounts; Railway watch
+paths decide who restarts:
+
+- MAIN: everything except `telegram_worker/alt_*.py`, `tests/test_alt_*.py`
+  and this file.
+- ALT: `telegram_worker/alt_*.py`, `owner_forwarding_policy.py`,
+  `health_monitor.py`, `__init__.py`, `runtime_guard.py`, `requirements.txt`
+  (the only modules ALT imports). Add a module here if ALT starts importing it.
+- server: `server/**`, `requirements.txt`.
+
+The old `alt-worker` branch is frozen as a rollback point (Railway → ALT →
+Settings → Source → branch `alt-worker`).
 
 ## Flow
 
@@ -60,8 +70,8 @@ Custom emoji ids come from the owner's Saved Messages (`community_emoji_registry
    written only for real access loss; "entity/topic unavailable" must repeat
    3 times over 10 minutes first.
 3. Paused routes are archived in `docs/paused_routes_20261103.md` (45 routes).
-4. CI: `forwarding-safety.yml` (main) and `alt-tests.yml` (alt-worker) compile
-   the workers, check route contracts and run the unit tests on every push.
+4. CI: `forwarding-safety.yml` compiles both workers, checks route contracts
+   and runs every unit test (MAIN and ALT) on each push.
 
 ## Monitoring
 

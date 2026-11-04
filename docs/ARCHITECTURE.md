@@ -69,8 +69,9 @@ Custom emoji ids come from the owner's Saved Messages (`community_emoji_registry
 
 ## Delivery engine (`telegram_worker/engine/`)
 
-Every new post on every MAIN route is delivered by the engine (see the package
-docstring): FASTVIP2 calls `fast_vip_deliver_route`, which hands the post to
+Every new post on every route, MAIN and ALT, is delivered by the engine (see
+the package docstring). ALT uses `engine/alt.py` (Telegram translation for the
+T4T route, ALT reply recovery, checkpoints, `[ALT COPIED]` markers). On MAIN: FASTVIP2 calls `fast_vip_deliver_route`, which hands the post to
 `DeliveryEngine.deliver`; the owner routes call `DeliveryEngine.copy_unit`.
 One planner decides Send or Skip (rules, reply target, formatter), one
 deliverer sends, verifies, retries and writes the message map. Edits and

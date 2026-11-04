@@ -1627,18 +1627,30 @@ async def _owner_original_copy_unit(
                         "Album send returned no messages"
                     )
 
+                pairs = list(zip(messages, sent_items))
                 if (
                     len(sent_items)
                     != len(messages)
                 ):
-                    raise RuntimeError(
-                        "Album destination count mismatch"
+                    # send_album only uploads real media; text-only items
+                    # ride on the album. Map exactly what was sent so the
+                    # watchdog does not send the album again.
+                    media_messages = [m for m in messages if real_media(m)]
+                    if len(media_messages) != len(sent_items):
+                        raise RuntimeError(
+                            "Album destination count mismatch"
+                        )
+                    pairs = list(zip(media_messages, sent_items)) + [
+                        (m, sent_items[0]) for m in messages if not real_media(m)
+                    ]
+                    log.warning(
+                        "[ALT ALBUM MEDIA-ONLY MAP] "
+                        f"route={route['name']} "
+                        f"ids={[m.id for m in messages]} "
+                        f"sent={len(sent_items)}"
                     )
 
-                for source, destination in zip(
-                    messages,
-                    sent_items,
-                ):
+                for source, destination in pairs:
                     remember(
                         route,
                         source,
@@ -1716,10 +1728,28 @@ async def _owner_original_copy_unit(
 
             return False
 
+# Telethon delivers updates from connect(), but destination access hashes are
+# only known after main() loads the dialogs. A send in that window fails with
+# "Could not find the input entity", which the owner policy would record as a
+# permanent stop. Copies and edits therefore wait (bounded) for the dialogs.
+DIALOGS_READY = asyncio.Event()
+DIALOGS_READY_WAIT_SECONDS = 60
+
+
+async def wait_dialogs_ready():
+    if DIALOGS_READY.is_set():
+        return
+    try:
+        await asyncio.wait_for(DIALOGS_READY.wait(), DIALOGS_READY_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        log.warning("[ALT DIALOGS NOT READY] proceeding after wait=%ss", DIALOGS_READY_WAIT_SECONDS)
+
+
 async def copy_unit(*args, **kwargs):
     route = kwargs.get("route") or (args[0] if len(args) > 0 else None)
     if route and owner_policy.is_stopped(route):
         return False
+    await wait_dialogs_ready()
     try:
         return await _owner_original_copy_unit(*args, **kwargs)
     except Exception as exc:
@@ -1739,6 +1769,7 @@ async def edit_existing(
     route,
     source_message,
 ):
+    await wait_dialogs_ready()
     if has_username_mention(
         source_message
     ):
@@ -2793,7 +2824,10 @@ async def edited_handler(event):
 async def _owner_original_fetch_route_messages(
     route,
     limit,
+    min_id=0,
 ):
+    # min_id lets Telegram return only messages newer than a checkpoint, so a
+    # quiet route costs one request instead of reading `limit` messages.
     if (
         route["source_topic"]
         is not None
@@ -2805,11 +2839,13 @@ async def _owner_original_fetch_route_messages(
             reply_to=int(
                 route["source_topic"]
             ),
+            min_id=int(min_id),
         )
 
     return await client.get_messages(
         route["source_chat"],
         limit=int(limit),
+        min_id=int(min_id),
     )
 
 async def fetch_route_messages(*args, **kwargs):
@@ -3012,6 +3048,7 @@ async def watchdog(route):
                 await fetch_route_messages(
                     route,
                     WATCHDOG_LIMIT,
+                    min_id=last_id,
                 )
                 or []
             )
@@ -5560,9 +5597,12 @@ async def main():
             f"actual={me.id}"
         )
 
-    await client.get_dialogs(
-        limit=None
-    )
+    try:
+        await client.get_dialogs(
+            limit=None
+        )
+    finally:
+        DIALOGS_READY.set()
 
     # ----------------------------------------------------------
     # ARABIC115 TRANSLATION PREFLIGHT

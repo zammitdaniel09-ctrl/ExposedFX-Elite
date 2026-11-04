@@ -115,6 +115,17 @@ async def run_alt_new_topics_last20_once(
     path = _state_path(legacy, state_file)
     state = _load(path)
 
+    if all(
+        isinstance(state.get(_key(contract)), dict)
+        and state[_key(contract)].get("status") == "done"
+        for contract in contracts
+    ):
+        log.warning(
+            "[ALT NEWTOPICS LAST20 ALL DONE] routes=%s already_done=True",
+            len(contracts),
+        )
+        return state
+
     while not legacy.client.is_connected():
         await asyncio.sleep(0.25)
 

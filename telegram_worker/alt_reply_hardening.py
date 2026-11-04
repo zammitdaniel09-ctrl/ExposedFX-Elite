@@ -6,6 +6,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from telethon.errors import FloodWaitError
+
+from telegram_worker import owner_forwarding_policy as owner_policy
+
 
 log = logging.getLogger("alt-reply-hardening")
 
@@ -18,6 +22,10 @@ PARENT_INFLIGHT_WAIT_SECONDS = 1.0
 RECOVERY_BUDGET_SECONDS = 2.0
 TEXT_MATCH_MAX_AGE_SECONDS = 6 * 60 * 60
 MEDIA_MATCH_MAX_AGE_SECONDS = 10 * 60
+
+
+def _reupload_cannot_help(exc) -> bool:
+    return isinstance(exc, FloodWaitError) or bool(owner_policy.permanent_access_error(exc))
 
 
 def _reply_target_invalid(exc) -> bool:
@@ -400,6 +408,8 @@ def install_alt_reply_hardening(worker, logger=None):
                     reply_to=target_reply,
                 )
             except Exception as exc:
+                if _reupload_cannot_help(exc):
+                    raise
                 logger.warning(
                     "[ALT DIRECT MEDIA FAILED - USING REUPLOAD] source_msg=%s %s: %s",
                     getattr(message, "id", None),
@@ -475,6 +485,8 @@ def install_alt_reply_hardening(worker, logger=None):
             )
             sent_items = sent if isinstance(sent, list) else [sent]
         except Exception as exc:
+            if _reupload_cannot_help(exc):
+                raise
             logger.warning(
                 "[ALT DIRECT ALBUM FAILED - USING REUPLOAD] %s: %s",
                 type(exc).__name__,

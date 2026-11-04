@@ -100,6 +100,17 @@ the cutover commit. State files are shared and need no changes.
 4. CI: `forwarding-safety.yml` compiles both workers, checks route contracts
    and runs every unit test (MAIN and ALT) on each push.
 
+**Restarts do not lose posts.** Before FASTVIP2 starts, `engine/gaps.py`
+checks each route from its last delivered post: missed posts up to 10 minutes
+old are delivered in order; older ones are not sent (stale signals mislead)
+and you get a Saved Messages notice with their ids. Owner routes, the 8323
+formatter and ALT keep their own checkpoints and recover the same way.
+
+**No monkeypatching.** Startup is explicit in `worker_fixed.main()`: engine,
+owner routes, 8323 formatter, SamGtrades relay, health monitor, gap check,
+FASTVIP2. The one interception left is the owner send guard on
+`client._call`, the last line of defence for stopped chats.
+
 ## Monitoring
 
 Logs are one JSON object per line on Railway (`log_setup.py`), so the log
@@ -123,6 +134,8 @@ messages that account's Saved Messages only when something needs attention:
 | ⚠️ N failed deliveries in 10 min | Same route failing repeatedly | Railway logs for that route name |
 | ⏳ flood wait ≥ 60s | Telegram rate-limited the account | Usually clears itself; repeated = too many API calls |
 | 🚨 unexpected error | A traceback outside known paths | Railway logs at that time |
+| ⏭️ post(s) not sent after a restart | Missed during a restart and older than 10 min | Forward manually if still relevant |
+| ♻️ restarted itself | Lost connection or stalled loop; restarted automatically | Nothing, unless it repeats |
 
 A digest of deliveries, failures and lag per route arrives daily at 08:00 Malta.
 

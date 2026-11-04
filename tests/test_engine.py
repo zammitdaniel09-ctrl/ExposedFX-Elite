@@ -4,6 +4,7 @@ The legacy rules (frozen in tests/fixtures/legacy_rules_20261104.py) and the
 reply functions in reply_hardening.py are executed and compared with the
 engine on a generated corpus; the VIP7 formatter and the replay audit too.
 """
+
 import asyncio
 import itertools
 import logging
@@ -17,8 +18,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from telethon.tl.types import (
-    MessageEntityBold, MessageEntityCustomEmoji, MessageEntityMention, MessageEntityTextUrl,
-    MessageEntityUrl, MessageMediaPhoto, MessageMediaWebPage, PeerChannel, PeerUser, Photo,
+    MessageEntityBold,
+    MessageEntityCustomEmoji,
+    MessageEntityMention,
+    MessageEntityTextUrl,
+    MessageEntityUrl,
+    MessageMediaPhoto,
+    MessageMediaWebPage,
+    PeerChannel,
+    PeerUser,
+    Photo,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,8 +45,12 @@ LEGACY_ORACLE = ROOT / "tests" / "fixtures" / "legacy_rules_20261104.py"
 
 def legacy_worker():
     """Execute the frozen legacy rule definitions into a namespace."""
-    ns = {"os": __import__("os"), "re": re, "log": logging.getLogger("legacy-test"),
-          "BLOCKED_SENDER_IDS": {7556281143}}
+    ns = {
+        "os": __import__("os"),
+        "re": re,
+        "log": logging.getLogger("legacy-test"),
+        "BLOCKED_SENDER_IDS": {7556281143},
+    }
     exec(compile(LEGACY_ORACLE.read_text(encoding="utf-8"), str(LEGACY_ORACLE), "exec"), ns)
     return ns
 
@@ -47,10 +60,23 @@ logging.getLogger("legacy-test").setLevel(logging.CRITICAL)
 RULES = Rules(blocked_senders=frozenset({7556281143}))
 
 TEXTS = [
-    "", "XAUUSD BUY NOW 4180.250", "TP1 4185 ✅", "Join @goldsignals for more", "@abc hi",
-    "contact x@yahoo.com", "www.goldsite.com", "see t.me/joinchat/abc", "https://example.org/x",
-    "Gold.Analysis today", "SL 4170.50 | TP 4200", "visit goldfx.io/vip now", "mail@site.co",
-    "4180.250/4183.955", "SELL LIMIT 4192.4\nTP1 4188", "@Gold_Trader_VIP", "e.g. close 50%",
+    "",
+    "XAUUSD BUY NOW 4180.250",
+    "TP1 4185 ✅",
+    "Join @goldsignals for more",
+    "@abc hi",
+    "contact x@yahoo.com",
+    "www.goldsite.com",
+    "see t.me/joinchat/abc",
+    "https://example.org/x",
+    "Gold.Analysis today",
+    "SL 4170.50 | TP 4200",
+    "visit goldfx.io/vip now",
+    "mail@site.co",
+    "4180.250/4183.955",
+    "SELL LIMIT 4192.4\nTP1 4188",
+    "@Gold_Trader_VIP",
+    "e.g. close 50%",
 ]
 FWD = [None, PeerChannel(2521699926), PeerChannel(4367822325), PeerChannel(3838973021), PeerUser(7556281143)]
 
@@ -76,23 +102,51 @@ def corpus(n=600, seed=7):
         text = rnd.choice(TEXTS)
         fwd = rnd.choice(FWD)
         yield SimpleNamespace(
-            id=1000 + i, message=text, raw_text=text, text=text,
+            id=1000 + i,
+            message=text,
+            raw_text=text,
+            text=text,
             entities=make_entities(text, rnd),
             fwd_from=SimpleNamespace(from_id=fwd, saved_from_peer=rnd.choice([None, fwd])) if fwd else None,
             sender_id=rnd.choice([None, 7556281143, 123]),
             from_id=rnd.choice([None, PeerUser(7556281143), PeerChannel(4367822325)]),
-            media=None, grouped_id=None, reply_to=None,
+            media=None,
+            grouped_id=None,
+            reply_to=None,
         )
 
 
 ROUTE_DICTS = [
-    {"name": "Relay508 To VIP7", "source_chat": RELAY, "source_topic": 508, "dest_chat": VIP, "dest_topic": 7,
-     "loop_guard_peers": [RELAY, VIP]},
-    {"name": "Private Live 3838973021 To 9", "source_chat": -1003838973021, "source_topic": None,
-     "dest_chat": VIP, "dest_topic": 9, "loop_guard_peers": [VIP]},
-    {"name": "Owner VIP1364 To Partner28", "source_chat": VIP, "source_topic": 1364,
-     "dest_chat": -1003786932333, "dest_topic": 28},
-    {"name": "Hard block probe", "source_chat": -1002521699926, "source_topic": None, "dest_chat": VIP, "dest_topic": 11},
+    {
+        "name": "Relay508 To VIP7",
+        "source_chat": RELAY,
+        "source_topic": 508,
+        "dest_chat": VIP,
+        "dest_topic": 7,
+        "loop_guard_peers": [RELAY, VIP],
+    },
+    {
+        "name": "Private Live 3838973021 To 9",
+        "source_chat": -1003838973021,
+        "source_topic": None,
+        "dest_chat": VIP,
+        "dest_topic": 9,
+        "loop_guard_peers": [VIP],
+    },
+    {
+        "name": "Owner VIP1364 To Partner28",
+        "source_chat": VIP,
+        "source_topic": 1364,
+        "dest_chat": -1003786932333,
+        "dest_topic": 28,
+    },
+    {
+        "name": "Hard block probe",
+        "source_chat": -1002521699926,
+        "source_topic": None,
+        "dest_chat": VIP,
+        "dest_topic": 11,
+    },
 ]
 
 
@@ -112,16 +166,33 @@ class RuleEquivalenceTests(unittest.TestCase):
     def test_route_rules_match_legacy(self):
         for m, route in itertools.product(corpus(200), ROUTE_DICTS):
             engine_route = Route.from_legacy(route)
-            self.assertEqual(RULES.vip_hard_block(m, engine_route),
-                             LEGACY["should_hard_block_2521699926_from_vip"](m, route))
+            self.assertEqual(
+                RULES.vip_hard_block(m, engine_route),
+                LEGACY["should_hard_block_2521699926_from_vip"](m, route),
+            )
             self.assertEqual(RULES.loop(m, engine_route), LEGACY["should_block_private_peer_loop"](m, route))
 
 
 def reply_message(msg_id, parent=None, top=None):
-    reply = SimpleNamespace(reply_to_msg_id=parent, reply_to_top_id=top, top_msg_id=None) if parent or top else None
-    return SimpleNamespace(id=msg_id, reply_to=reply, reply_to_msg_id=parent, message="x", raw_text="x",
-                           text="x", entities=[], media=None, grouped_id=None, fwd_from=None,
-                           sender_id=None, from_id=None)
+    reply = (
+        SimpleNamespace(reply_to_msg_id=parent, reply_to_top_id=top, top_msg_id=None)
+        if parent or top
+        else None
+    )
+    return SimpleNamespace(
+        id=msg_id,
+        reply_to=reply,
+        reply_to_msg_id=parent,
+        message="x",
+        raw_text="x",
+        text="x",
+        entities=[],
+        media=None,
+        grouped_id=None,
+        fwd_from=None,
+        sender_id=None,
+        from_id=None,
+    )
 
 
 class ReplyEquivalenceTests(unittest.TestCase):
@@ -133,24 +204,38 @@ class ReplyEquivalenceTests(unittest.TestCase):
             f"{RELAY}:102:{VIP}:7": {"a": 9103},
             f"{RELAY}:103:{VIP}:7": 0,
         }
-        worker = SimpleNamespace(message_map=message_map, map_key=LEGACY["map_key"],
-                                 mapped_ids_from_value=LEGACY["mapped_ids_from_value"])
+        worker = SimpleNamespace(
+            message_map=message_map,
+            map_key=LEGACY["map_key"],
+            mapped_ids_from_value=LEGACY["mapped_ids_from_value"],
+        )
         maps = MessageMap(message_map)
-        cases = [reply_message(1), reply_message(2, parent=100), reply_message(3, parent=101, top=508),
-                 reply_message(4, parent=102), reply_message(5, parent=103), reply_message(6, parent=999, top=508),
-                 reply_message(7, parent=508), reply_message(8, top=100)]
+        cases = [
+            reply_message(1),
+            reply_message(2, parent=100),
+            reply_message(3, parent=101, top=508),
+            reply_message(4, parent=102),
+            reply_message(5, parent=103),
+            reply_message(6, parent=999, top=508),
+            reply_message(7, parent=508),
+            reply_message(8, top=100),
+        ]
         for m in cases:
             parents = reply_hardening.real_reply_source_ids(m, route)
-            legacy = (reply_hardening.mapped_reply_id(worker, m, route) or route["dest_topic"]) if parents \
+            legacy = (
+                (reply_hardening.mapped_reply_id(worker, m, route) or route["dest_topic"])
+                if parents
                 else route["dest_topic"]
+            )
             self.assertEqual(reply_target(m, Route.from_legacy(route), maps), legacy, m.id)
 
 
 def photo_message(msg_id, caption="", grouped=None):
     m = reply_message(msg_id)
     m.message = m.raw_text = m.text = caption
-    m.media = MessageMediaPhoto(photo=Photo(id=msg_id * 10, access_hash=1, file_reference=b"", date=None,
-                                            sizes=[], dc_id=1))
+    m.media = MessageMediaPhoto(
+        photo=Photo(id=msg_id * 10, access_hash=1, file_reference=b"", date=None, sizes=[], dc_id=1)
+    )
     m.grouped_id = grouped
     return m
 
@@ -171,15 +256,19 @@ class PlannerTests(unittest.TestCase):
     def test_album_is_one_send_with_the_first_caption(self):
         unit = [photo_message(21, "", 5), photo_message(20, "Chart", 5)]
         plan = self.planner.plan(self.route, unit)
-        self.assertEqual((plan.kind, plan.text, plan.media), ("album", "Chart", (("photo", 200), ("photo", 210))))
+        self.assertEqual(
+            (plan.kind, plan.text, plan.media), ("album", "Chart", (("photo", 200), ("photo", 210)))
+        )
 
     def test_already_copied_and_partial_albums_are_not_resent(self):
         m = reply_message(30)
         self.message_map[self.route.map_key(30)] = 777
         self.assertEqual(self.planner.plan(self.route, [m]), Skip("already_copied"))
         self.message_map[self.route.map_key(40)] = 778
-        self.assertEqual(self.planner.plan(self.route, [photo_message(40, "", 9), photo_message(41, "", 9)]),
-                         Skip("partial_album_mapping"))
+        self.assertEqual(
+            self.planner.plan(self.route, [photo_message(40, "", 9), photo_message(41, "", 9)]),
+            Skip("partial_album_mapping"),
+        )
 
     def test_web_preview_only_post_is_text(self):
         m = reply_message(50)
@@ -202,18 +291,29 @@ class ImperiumFormatterTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             registry = CommunityEmojiRegistry(Path(tmp))
-            registry.entries = {alias: {"type": "custom", "document_id": 5000 + i, "fallback": "✅"}
-                                for i, alias in enumerate(("Boom", "GreenTick", "RedCross", "Warning"))}
+            registry.entries = {
+                alias: {"type": "custom", "document_id": 5000 + i, "fallback": "✅"}
+                for i, alias in enumerate(("Boom", "GreenTick", "RedCross", "Warning"))
+            }
             route = Route.from_legacy(ROUTE_DICTS[0], formatter="imperium_vip")
             planner = Planner(rules=RULES, maps=MessageMap({}), context={"emoji_registry": registry})
-            for i, text in enumerate(("Buy xauusd now\n\nTp 4324\nTp 4337\nTp open\n\nSl 4308",
-                                      "Tp1 hit ✅", "Set breakeven", "Plain chat, not a signal")):
+            for i, text in enumerate(
+                (
+                    "Buy xauusd now\n\nTp 4324\nTp 4337\nTp open\n\nSl 4308",
+                    "Tp1 hit ✅",
+                    "Set breakeven",
+                    "Plain chat, not a signal",
+                )
+            ):
                 m = reply_message(700 + i)
                 m.message = m.raw_text = m.text = text
                 legacy_message, _ = hook._clone_message_with_format(m, registry)
                 plan = planner.plan(route, [m])
-                self.assertEqual((plan.text, plan.entities),
-                                 (legacy_message.message, entity_keys(legacy_message.entities)), text)
+                self.assertEqual(
+                    (plan.text, plan.entities),
+                    (legacy_message.message, entity_keys(legacy_message.entities)),
+                    text,
+                )
 
 
 class ReplayAuditTests(unittest.TestCase):

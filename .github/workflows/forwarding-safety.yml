@@ -32,6 +32,10 @@ jobs:
       - name: Check worker syntax and forwarding safety
         run: python scripts/check_forwarding_contracts.py
       - name: Install test dependencies
-        run: pip install "telethon==1.45.0"
+        run: pip install "telethon==1.45.0" "black==26.10.1" "pyflakes==4.1.0"
+      - name: Formatting (black, same flags as local)
+        run: black --check --skip-magic-trailing-comma -l 110 telegram_worker scripts tests
+      - name: Undefined names and unused imports in the live workers and engine
+        run: python -m pyflakes telegram_worker/engine telegram_worker/worker_fixed.py telegram_worker/liveness.py telegram_worker/log_setup.py telegram_worker/health_monitor.py
       - name: Run worker regression tests (offline, no credentials)
         run: python -m unittest discover -s tests -v

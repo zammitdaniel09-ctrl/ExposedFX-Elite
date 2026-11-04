@@ -13,7 +13,9 @@ from telegram_worker.signal_refiner import build_message, source_line
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001").strip()
-ANTHROPIC_FAST_MODEL = os.environ.get("ANTHROPIC_FAST_MODEL", ANTHROPIC_MODEL or "claude-haiku-4-5-20251001").strip()
+ANTHROPIC_FAST_MODEL = os.environ.get(
+    "ANTHROPIC_FAST_MODEL", ANTHROPIC_MODEL or "claude-haiku-4-5-20251001"
+).strip()
 ANTHROPIC_STRONG_MODEL = os.environ.get("ANTHROPIC_STRONG_MODEL", "claude-sonnet-4-6").strip()
 CLAUDE_DAILY_BUDGET_USD = float(os.environ.get("CLAUDE_DAILY_BUDGET_USD", "8").strip() or "8")
 CLAUDE_USAGE_FILE = Path(os.environ.get("DATA_DIR") or "./data") / "claude_usage.json"
@@ -30,8 +32,20 @@ log = logging.getLogger("universal-signal-ai")
 PRICE_RE = r"\d{1,7}(?:\.\d+)?"
 FOREX_CURRENCIES = {"EUR", "USD", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"}
 IGNORE_SYMBOLS = {
-    "ENTRY", "TARGET", "AROUND", "SIGNAL", "SHORTS", "LONGS", "SELLING",
-    "BUYING", "UPDATE", "PROFIT", "LOSSES", "MANAGE", "RISKYY", "RISKED"
+    "ENTRY",
+    "TARGET",
+    "AROUND",
+    "SIGNAL",
+    "SHORTS",
+    "LONGS",
+    "SELLING",
+    "BUYING",
+    "UPDATE",
+    "PROFIT",
+    "LOSSES",
+    "MANAGE",
+    "RISKYY",
+    "RISKED",
 }
 
 
@@ -43,9 +57,24 @@ def mojibake_score(value: str) -> int:
 def trade_keyword_score(value: str) -> int:
     u = value.upper()
     keywords = (
-        "BUY", "SELL", "GOLD", "XAU", "XAUUSD", "SL", "STOP", "STOPLOSS",
-        "TP", "TARGET", "ENTRY", "ABOVE", "BELOW", "UNDER", "OVER",
-        "PIPS", "HIT", "RISK",
+        "BUY",
+        "SELL",
+        "GOLD",
+        "XAU",
+        "XAUUSD",
+        "SL",
+        "STOP",
+        "STOPLOSS",
+        "TP",
+        "TARGET",
+        "ENTRY",
+        "ABOVE",
+        "BELOW",
+        "UNDER",
+        "OVER",
+        "PIPS",
+        "HIT",
+        "RISK",
     )
     return sum(1 for k in keywords if k in u)
 
@@ -127,10 +156,12 @@ def actionable_signal_text(text: str) -> str:
         "NEW SETUP:",
     ]
 
-    has_stop_context = bool(re.search(
-        r"\b(HIT\s+STOPLOSS|HIT\s+STOP\s*LOSS|STOPLOSS\s+HIT|STOP\s*LOSS\s+HIT|SL\s+HIT|STOP\s+PRESO|STOPPED\s+OUT)\b",
-        up,
-    ))
+    has_stop_context = bool(
+        re.search(
+            r"\b(HIT\s+STOPLOSS|HIT\s+STOP\s*LOSS|STOPLOSS\s+HIT|STOP\s*LOSS\s+HIT|SL\s+HIT|STOP\s+PRESO|STOPPED\s+OUT)\b",
+            up,
+        )
+    )
 
     if not has_stop_context:
         return raw
@@ -147,7 +178,7 @@ def actionable_signal_text(text: str) -> str:
     if best_pos is None:
         return raw
 
-    sliced = raw[best_pos + len(best_marker):].strip(" :\n\r\t-")
+    sliced = raw[best_pos + len(best_marker) :].strip(" :\n\r\t-")
     if sliced:
         return sliced
 
@@ -162,15 +193,19 @@ def is_invalidated_trade_notice(text: str) -> bool:
     raw = clean(text)
     up = raw.upper()
 
-    has_stop_context = bool(re.search(
-        r"\b(HIT\s+STOPLOSS|HIT\s+STOP\s*LOSS|STOPLOSS\s+HIT|STOP\s*LOSS\s+HIT|SL\s+HIT|STOP\s+PRESO|STOPPED\s+OUT)\b",
-        up,
-    ))
+    has_stop_context = bool(
+        re.search(
+            r"\b(HIT\s+STOPLOSS|HIT\s+STOP\s*LOSS|STOPLOSS\s+HIT|STOP\s*LOSS\s+HIT|SL\s+HIT|STOP\s+PRESO|STOPPED\s+OUT)\b",
+            up,
+        )
+    )
 
-    has_next_trade = bool(re.search(
-        r"\b(GO\s+IN\s+TO\s+THE\s+NEXT\s+TRADE|GO\s+INTO\s+THE\s+NEXT\s+TRADE|NEXT\s+TRADE|NEW\s+TRADE|NEXT\s+SETUP|NEW\s+SETUP)\b",
-        up,
-    ))
+    has_next_trade = bool(
+        re.search(
+            r"\b(GO\s+IN\s+TO\s+THE\s+NEXT\s+TRADE|GO\s+INTO\s+THE\s+NEXT\s+TRADE|NEXT\s+TRADE|NEW\s+TRADE|NEXT\s+SETUP|NEW\s+SETUP)\b",
+            up,
+        )
+    )
 
     # If it is a stop notice with no new trade, block it completely.
     return has_stop_context and not has_next_trade
@@ -186,7 +221,9 @@ def is_trade_management_update(text: str) -> bool:
     low = raw.lower()
 
     has_direction = bool(re.search(r"\b(BUY|BUYS|BUYING|SELL|SELLS|SELLING|LONG|LONGS|SHORT|SHORTS)\b", t))
-    has_sl = bool(re.search(r"\b(SL|S/L|STOP\s*LOSS|STOPLOSS|STOP)\b\s*(?:TO|AT|ABOVE|BELOW)?\s*[:@\-]?\s*\d", t))
+    has_sl = bool(
+        re.search(r"\b(SL|S/L|STOP\s*LOSS|STOPLOSS|STOP)\b\s*(?:TO|AT|ABOVE|BELOW)?\s*[:@\-]?\s*\d", t)
+    )
     has_price = bool(re.search(rf"\b{PRICE_RE}\b", t))
 
     # A real setup can contain "high risk" or "pips" and must NOT be blocked.
@@ -253,7 +290,9 @@ def has_strict_new_signal_requirements(text: str) -> bool:
         return False
 
     has_direction = bool(re.search(r"\b(BUY|BUYS|BUYING|SELL|SELLS|SELLING|LONG|LONGS|SHORT|SHORTS)\b", t))
-    has_sl = bool(re.search(r"\b(SL|S/L|STOP\s*LOSS|STOPLOSS|STOP)\b\s*(?:TO|AT|ABOVE|BELOW)?\s*[:@\-]?\s*\d", t))
+    has_sl = bool(
+        re.search(r"\b(SL|S/L|STOP\s*LOSS|STOPLOSS|STOP)\b\s*(?:TO|AT|ABOVE|BELOW)?\s*[:@\-]?\s*\d", t)
+    )
 
     if not (has_direction and has_sl):
         return False
@@ -271,6 +310,7 @@ def has_strict_new_signal_requirements(text: str) -> bool:
     ]
 
     return any(re.search(pat, t, re.M) for pat in compact_patterns)
+
 
 def normalize_symbol(symbol: str, text: str = "") -> str:
     raw = (text or "").upper()
@@ -329,7 +369,6 @@ def symbol_family(symbol: str) -> str:
     return "OTHER"
 
 
-
 def looks_like_signal(text: str) -> bool:
     raw = clean(text)
     if has_strict_new_signal_requirements(raw):
@@ -337,13 +376,21 @@ def looks_like_signal(text: str) -> bool:
 
     # Partial pieces are allowed into the buffer by worker_signal_hub.
     t = raw.upper()
-    has_direction = bool(re.search(r"\b(BUY|BUYS|BUYING|SELL|SELLS|SELLING|LONG|LONGS|SHORT|SHORTS|ENTER)\b", t))
-    has_symbol = bool(re.search(r"\b(XAUUSD|XAGUSD|GOLD|SILVER|BTC|ETH|SOL|NAS100|NASDAQ|US100|US30|US500|GER40|DAX|[A-Z]{6})\b", t))
+    has_direction = bool(
+        re.search(r"\b(BUY|BUYS|BUYING|SELL|SELLS|SELLING|LONG|LONGS|SHORT|SHORTS|ENTER)\b", t)
+    )
+    has_symbol = bool(
+        re.search(
+            r"\b(XAUUSD|XAGUSD|GOLD|SILVER|BTC|ETH|SOL|NAS100|NASDAQ|US100|US30|US500|GER40|DAX|[A-Z]{6})\b",
+            t,
+        )
+    )
     has_sl_or_tp = bool(re.search(r"\b(SL|S/L|STOP|STOPLOSS|STOP\s*LOSS|TP|TARGET|TAKE\s*PROFIT)\b", t))
     has_price = bool(re.search(rf"\b{PRICE_RE}\b", t))
     bare_range = bool(re.search(rf"^\s*{PRICE_RE}\s*(?:-|:|/)\s*{PRICE_RE}\s*$", t, re.M))
 
     return (has_direction and (has_symbol or has_price)) or (has_sl_or_tp and has_price) or bare_range
+
 
 def forex_pip_size(symbol: str) -> float:
     s = (symbol or "").upper().replace("/", "")
@@ -437,7 +484,6 @@ def dynamic_risk(symbol: str, entry: float, sl: float) -> str:
     return "LOW"
 
 
-
 def xau_pip_value() -> float:
     # Gold rule: 10 pips = $1, so 1 pip = $0.10
     return 0.1
@@ -480,7 +526,7 @@ def expand_shorthand_price(first: float, second_text: str) -> float:
     if abs(first) >= 1000 and 0 <= second < 100:
         first_int = str(int(abs(first)))
         digits = raw.zfill(len(raw))
-        prefix = first_int[:-len(digits)]
+        prefix = first_int[: -len(digits)]
         candidate = float(prefix + digits)
 
         # Handles rollover cases like 4502-99 -> 4499
@@ -490,7 +536,6 @@ def expand_shorthand_price(first: float, second_text: str) -> float:
         return candidate
 
     return second
-
 
 
 def repair_obvious_gold_price_token(token: str, entry_ref: Optional[float] = None) -> Optional[float]:
@@ -508,7 +553,7 @@ def repair_obvious_gold_price_token(token: str, entry_ref: Optional[float] = Non
 
     candidates = []
     for i in range(len(digits)):
-        fixed = digits[:i] + digits[i+1:]
+        fixed = digits[:i] + digits[i + 1 :]
         if not fixed:
             continue
         try:
@@ -544,8 +589,7 @@ def preclean_obvious_gold_sl_typos(text: str) -> str:
     # Find rough entry reference from BUY/SELL/LIMIT line.
     entry_ref = None
     entry_match = re.search(
-        rf"\b(?:BUY|SELL|BUYS|SELLS|BUYING|SELLING|LONG|SHORT|LIMIT|ENTRY)\b[^\n]{{0,80}}?({PRICE_RE})",
-        up,
+        rf"\b(?:BUY|SELL|BUYS|SELLS|BUYING|SELLING|LONG|SHORT|LIMIT|ENTRY)\b[^\n]{{0,80}}?({PRICE_RE})", up
     )
 
     if entry_match:
@@ -600,7 +644,6 @@ def extract_sl_distance_units(text: str) -> Optional[float]:
     return None
 
 
-
 def explicit_bracket_sl_price(symbol: str, direction: str, entry_mid: float, text: str) -> Optional[float]:
     """
     Exact bracket SL wins:
@@ -642,7 +685,9 @@ def explicit_bracket_sl_price(symbol: str, direction: str, entry_mid: float, tex
     return None
 
 
-def convert_distance_sl_if_needed(symbol: str, direction: str, entry_mid: float, sl_value: float, text: str) -> float:
+def convert_distance_sl_if_needed(
+    symbol: str, direction: str, entry_mid: float, sl_value: float, text: str
+) -> float:
     """
     Convert distance-style SL into chart price.
 
@@ -671,7 +716,6 @@ def convert_distance_sl_if_needed(symbol: str, direction: str, entry_mid: float,
         return entry_mid - distance
 
     return entry_mid + distance
-
 
 
 def invalid_tp_for_direction(direction: str, entry: float, tp: float) -> bool:
@@ -710,7 +754,9 @@ def tp_wrong_side(direction: str, entry_low: float, entry_high: float, tp: float
     return tp >= lo
 
 
-def repair_obvious_sl_typo(symbol: str, direction: str, entry_low: float, entry_high: float, sl: float, text: str) -> float:
+def repair_obvious_sl_typo(
+    symbol: str, direction: str, entry_low: float, entry_high: float, sl: float, text: str
+) -> float:
     """
     Repairs obvious extra-digit SL typos, e.g. XAU entry 4407 SL 44003 -> 4403.
     Does not guess unclear wrong-side SLs like SELL 4486 SL 4300.
@@ -739,7 +785,7 @@ def repair_obvious_sl_typo(symbol: str, direction: str, entry_low: float, entry_
     candidates = []
 
     for i in range(len(raw_int)):
-        fixed = raw_int[:i] + raw_int[i+1:]
+        fixed = raw_int[:i] + raw_int[i + 1 :]
         if not fixed:
             continue
         try:
@@ -767,7 +813,9 @@ def repair_obvious_sl_typo(symbol: str, direction: str, entry_low: float, entry_
     return best
 
 
-def explicit_tp_wrong_side_exists(text: str, symbol: str, direction: str, entry_low: float, entry_high: float) -> bool:
+def explicit_tp_wrong_side_exists(
+    text: str, symbol: str, direction: str, entry_low: float, entry_high: float
+) -> bool:
     """
     If provider explicitly gives a wrong-side TP, reject instead of silently replacing it.
     Skips TP pips lines because those are converted separately.
@@ -807,7 +855,17 @@ def explicit_tp_wrong_side_exists(text: str, symbol: str, direction: str, entry_
     return False
 
 
-def validate_signal_sanity(symbol: str, direction: str, order_type: str, entry_low: float, entry_high: float, sl: float, tps: list[float], tp_open: bool, text: str) -> bool:
+def validate_signal_sanity(
+    symbol: str,
+    direction: str,
+    order_type: str,
+    entry_low: float,
+    entry_high: float,
+    sl: float,
+    tps: list[float],
+    tp_open: bool,
+    text: str,
+) -> bool:
     if not ENABLE_SIGNAL_SANITY_VALIDATION:
         return True
 
@@ -817,7 +875,9 @@ def validate_signal_sanity(symbol: str, direction: str, order_type: str, entry_l
 
     if fam == "GOLD":
         if lo < 1000 or hi < 1000 or float(sl) < 1000:
-            log.warning(f"[signal sanity rejected] tiny gold price entry={lo}-{hi} sl={sl} text={clean(text)[:100]!r}")
+            log.warning(
+                f"[signal sanity rejected] tiny gold price entry={lo}-{hi} sl={sl} text={clean(text)[:100]!r}"
+            )
             return False
 
     if fam == "FOREX":
@@ -830,16 +890,22 @@ def validate_signal_sanity(symbol: str, direction: str, order_type: str, entry_l
         return False
 
     if sl_wrong_side(direction, lo, hi, sl):
-        log.warning(f"[signal sanity rejected] SL wrong side direction={direction} entry={lo}-{hi} sl={sl} text={clean(text)[:100]!r}")
+        log.warning(
+            f"[signal sanity rejected] SL wrong side direction={direction} entry={lo}-{hi} sl={sl} text={clean(text)[:100]!r}"
+        )
         return False
 
     if explicit_tp_wrong_side_exists(text, symbol, direction, lo, hi):
-        log.warning(f"[signal sanity rejected] explicit TP wrong side direction={direction} entry={lo}-{hi} text={clean(text)[:100]!r}")
+        log.warning(
+            f"[signal sanity rejected] explicit TP wrong side direction={direction} entry={lo}-{hi} text={clean(text)[:100]!r}"
+        )
         return False
 
     for tp in tps or []:
         if tp_wrong_side(direction, lo, hi, float(tp)):
-            log.warning(f"[signal sanity rejected] TP wrong side direction={direction} entry={lo}-{hi} tp={tp}")
+            log.warning(
+                f"[signal sanity rejected] TP wrong side direction={direction} entry={lo}-{hi} tp={tp}"
+            )
             return False
 
     return True
@@ -882,7 +948,9 @@ def fallback_step(symbol: str, entry: float, sl: float) -> float:
     return max(risk_distance * 0.5, entry * 0.002)
 
 
-def estimate_tps(symbol: str, direction: str, entry: float, sl: float, tps: list[float], tp_open: bool = False) -> list[float]:
+def estimate_tps(
+    symbol: str, direction: str, entry: float, sl: float, tps: list[float], tp_open: bool = False
+) -> list[float]:
     """
     Provider TPs first.
     If provider gives no TP prices, create fake RR targets as real prices:
@@ -919,7 +987,6 @@ def estimate_tps(symbol: str, direction: str, entry: float, sl: float, tps: list
     return [entry + sign * risk_distance * rr for rr in (1, 2, 3, 4)]
 
 
-
 def direction_from_text(text: str) -> Optional[str]:
     up = text.upper()
     if re.search(r"\b(BUY|BUYS|BUYING|LONG|LONGS)\b", up):
@@ -930,7 +997,12 @@ def direction_from_text(text: str) -> Optional[str]:
 
 
 def has_entry_keyword(line: str) -> bool:
-    return bool(re.search(r"\b(ENTRY|ENTRIES|ENTER|ENTERING|ENTERED\s+AT|ZONE|AREA|AROUND|NOW|LIMIT|ABOVE|BELOW|OVER|UNDER)\b", line.upper()))
+    return bool(
+        re.search(
+            r"\b(ENTRY|ENTRIES|ENTER|ENTERING|ENTERED\s+AT|ZONE|AREA|AROUND|NOW|LIMIT|ABOVE|BELOW|OVER|UNDER)\b",
+            line.upper(),
+        )
+    )
 
 
 def line_contains_protected_trade_level(line: str) -> bool:
@@ -1144,12 +1216,16 @@ def extract_entry(text: str) -> Optional[tuple[float, float]]:
                 return result
 
         # 4) Direction line, price on following line
-        for nxt in lines[i + 1:i + 5]:
+        for nxt in lines[i + 1 : i + 5]:
             if bad_entry_line_re.search(nxt):
                 continue
 
             working_nxt = nxt
-            if STRICT_ENTRY_SAFETY and line_contains_protected_trade_level(nxt) and not has_entry_keyword(nxt):
+            if (
+                STRICT_ENTRY_SAFETY
+                and line_contains_protected_trade_level(nxt)
+                and not has_entry_keyword(nxt)
+            ):
                 working_nxt = remove_protected_trade_level_segments(nxt)
 
             nums = clean_entry_nums(working_nxt)
@@ -1158,7 +1234,6 @@ def extract_entry(text: str) -> Optional[tuple[float, float]]:
                 return result
 
     return None
-
 
 
 def extract_sl(text: str) -> Optional[float]:
@@ -1182,7 +1257,6 @@ def extract_sl(text: str) -> Optional[float]:
     return vals[-1] if vals else None
 
 
-
 def extract_tps(text: str) -> tuple[list[float], bool]:
     vals = []
     tp_open = False
@@ -1204,8 +1278,9 @@ def extract_tps(text: str) -> tuple[list[float], bool]:
     return vals, tp_open
 
 
-
-def normalise_xau_shorthand_entry_with_sl(symbol: str, direction: str, entry: tuple[float, float], sl: float) -> tuple[float, float]:
+def normalise_xau_shorthand_entry_with_sl(
+    symbol: str, direction: str, entry: tuple[float, float], sl: float
+) -> tuple[float, float]:
     """
     Handles gold shorthand entries:
     Buy now 20-16 + SL 4512 -> 4516-4520
@@ -1254,7 +1329,6 @@ def reasonable_tp_price(symbol: str, entry_mid: float, tp: float) -> bool:
     return True
 
 
-
 def clean_tp_body_for_numbers(line: str) -> str:
     """
     Keeps provider TP prices:
@@ -1291,7 +1365,9 @@ def has_explicit_numeric_tp(text: str) -> bool:
     return False
 
 
-def extract_tps_contextual(text: str, symbol: str, direction: str, entry_mid: float) -> tuple[list[float], bool]:
+def extract_tps_contextual(
+    text: str, symbol: str, direction: str, entry_mid: float
+) -> tuple[list[float], bool]:
     vals: list[float] = []
     tp_open = False
     sign = 1 if direction == "BUY" else -1
@@ -1325,7 +1401,9 @@ def extract_tps_contextual(text: str, symbol: str, direction: str, entry_mid: fl
 
             tp = float(entry_mid) + sign * distance_units * pip_value_for_symbol(symbol)
 
-            if not invalid_tp_for_direction(direction, entry_mid, tp) and reasonable_tp_price(symbol, entry_mid, tp):
+            if not invalid_tp_for_direction(direction, entry_mid, tp) and reasonable_tp_price(
+                symbol, entry_mid, tp
+            ):
                 if tp not in vals:
                     vals.append(tp)
 
@@ -1347,7 +1425,6 @@ def extract_tps_contextual(text: str, symbol: str, direction: str, entry_mid: fl
                 vals.append(tp)
 
     return vals, tp_open
-
 
 
 def order_type_from_text(text: str, direction: str) -> str:
@@ -1388,7 +1465,6 @@ def order_type_from_text(text: str, direction: str) -> str:
         return "LIMIT"
 
     return "MARKET_OR_ZONE"
-
 
 
 def regex_extract(text: str) -> Optional[Dict[str, Any]]:
@@ -1433,7 +1509,9 @@ def regex_extract(text: str) -> Optional[Dict[str, Any]]:
     if not tps and not tp_open:
         tp_open = True
 
-    if not validate_signal_sanity(symbol, direction, order_type, entry_low, entry_high, sl, tps, tp_open, raw):
+    if not validate_signal_sanity(
+        symbol, direction, order_type, entry_low, entry_high, sl, tps, tp_open, raw
+    ):
         return None
 
     return {
@@ -1444,11 +1522,14 @@ def regex_extract(text: str) -> Optional[Dict[str, Any]]:
         "entry_low": entry_low,
         "entry_high": entry_high,
         "sl": float(sl),
-        "tps": estimate_tps(symbol, direction, validation_entry_ref(direction, entry_low, entry_high), sl, tps, tp_open),
+        "tps": estimate_tps(
+            symbol, direction, validation_entry_ref(direction, entry_low, entry_high), sl, tps, tp_open
+        ),
         "tp_open": True,
         "risk": risk_from_text(raw, symbol, mid, sl),
         "layer_point": estimate_layer(direction, entry_low, entry_high, sl),
     }
+
 
 def parse_jsonish(value: str) -> Optional[Dict[str, Any]]:
     try:
@@ -1462,7 +1543,6 @@ def parse_jsonish(value: str) -> Optional[Dict[str, Any]]:
         return json.loads(m.group(0))
     except Exception:
         return None
-
 
 
 CLAUDE_PRICE_PER_MTOK = {
@@ -1496,7 +1576,9 @@ def _save_claude_usage(data):
 
 
 def _model_price(model):
-    return CLAUDE_PRICE_PER_MTOK.get(model, CLAUDE_PRICE_PER_MTOK.get(model.replace("-20251001", ""), (3.0, 15.0)))
+    return CLAUDE_PRICE_PER_MTOK.get(
+        model, CLAUDE_PRICE_PER_MTOK.get(model.replace("-20251001", ""), (3.0, 15.0))
+    )
 
 
 def _record_claude_usage(model, input_tokens, output_tokens):
@@ -1505,7 +1587,9 @@ def _record_claude_usage(model, input_tokens, output_tokens):
     rec = data.get(day, {"usd": 0.0, "calls": 0, "input_tokens": 0, "output_tokens": 0})
 
     in_price, out_price = _model_price(model)
-    cost = (float(input_tokens or 0) / 1_000_000.0) * in_price + (float(output_tokens or 0) / 1_000_000.0) * out_price
+    cost = (float(input_tokens or 0) / 1_000_000.0) * in_price + (
+        float(output_tokens or 0) / 1_000_000.0
+    ) * out_price
 
     rec["usd"] = float(rec.get("usd", 0.0)) + cost
     rec["calls"] = int(rec.get("calls", 0)) + 1
@@ -1575,14 +1659,18 @@ def claude_extract(text: str) -> Optional[Dict[str, Any]]:
 
             if res.status_code >= 400:
                 if CLAUDE_DEBUG_LOGS:
-                    log.warning(f"[claude extract skipped] model={model} status={res.status_code} body={res.text[:200]!r}")
+                    log.warning(
+                        f"[claude extract skipped] model={model} status={res.status_code} body={res.text[:200]!r}"
+                    )
                 continue
 
             data = res.json()
             usage = data.get("usage") or {}
             _record_claude_usage(model, usage.get("input_tokens", 0), usage.get("output_tokens", 0))
 
-            content = "".join(part.get("text", "") for part in data.get("content", []) if part.get("type") == "text")
+            content = "".join(
+                part.get("text", "") for part in data.get("content", []) if part.get("type") == "text"
+            )
             obj = parse_jsonish(content)
             if not obj or not obj.get("is_signal"):
                 continue
@@ -1628,11 +1716,16 @@ def claude_extract(text: str) -> Optional[Dict[str, Any]]:
 
             order_type = str(obj.get("order_type") or order_type_from_text(text, direction)).upper()
 
-            if not validate_signal_sanity(symbol, direction, order_type, entry_low, entry_high, sl, tps, tp_open, text):
+            if not validate_signal_sanity(
+                symbol, direction, order_type, entry_low, entry_high, sl, tps, tp_open, text
+            ):
                 continue
 
             explicit_risk = str(obj.get("risk", "")).upper()
-            if explicit_risk in ("LOW", "MEDIUM", "HIGH") and any(x in clean(text).upper() for x in ("LOW RISK", "MEDIUM RISK", "HIGH RISK", "HIGHER RISK", "VERY HIGH", "RISKY")):
+            if explicit_risk in ("LOW", "MEDIUM", "HIGH") and any(
+                x in clean(text).upper()
+                for x in ("LOW RISK", "MEDIUM RISK", "HIGH RISK", "HIGHER RISK", "VERY HIGH", "RISKY")
+            ):
                 risk = explicit_risk
             else:
                 risk = risk_from_text(text, symbol, mid, sl)
@@ -1645,7 +1738,14 @@ def claude_extract(text: str) -> Optional[Dict[str, Any]]:
                 "entry_low": entry_low,
                 "entry_high": entry_high,
                 "sl": sl,
-                "tps": estimate_tps(symbol, direction, validation_entry_ref(direction, entry_low, entry_high), sl, tps, tp_open),
+                "tps": estimate_tps(
+                    symbol,
+                    direction,
+                    validation_entry_ref(direction, entry_low, entry_high),
+                    sl,
+                    tps,
+                    tp_open,
+                ),
                 "tp_open": True,
                 "risk": risk,
                 "layer_point": estimate_layer(direction, entry_low, entry_high, sl),
@@ -1658,7 +1758,10 @@ def claude_extract(text: str) -> Optional[Dict[str, Any]]:
 
     return None
 
-def extract_and_format(text: str, source_name: str = "ExposedFX", message_id=None) -> Optional[Dict[str, Any]]:
+
+def extract_and_format(
+    text: str, source_name: str = "ExposedFX", message_id=None
+) -> Optional[Dict[str, Any]]:
     text = preclean_obvious_gold_sl_typos(actionable_signal_text(text))
     if is_invalidated_trade_notice(text):
         if CLAUDE_DEBUG_LOGS:

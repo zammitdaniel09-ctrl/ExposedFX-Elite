@@ -1,4 +1,5 @@
 """Backend audit 4 Nov 2026: behaviour-preserving efficiency and safety fixes."""
+
 import ast
 import asyncio
 import json
@@ -51,7 +52,9 @@ class MessageMapTests(unittest.TestCase):
         saves = []
         message_map = {}
         ns = worker_functions(
-            "remember_message", message_map=message_map, save_map=lambda: saves.append(1),
+            "remember_message",
+            message_map=message_map,
+            save_map=lambda: saves.append(1),
             map_key=lambda *parts: ":".join(map(str, parts)),
         )
         route = {"source_chat": -1, "dest_chat": -2, "dest_topic": 3}
@@ -69,12 +72,19 @@ class EditReconcileTests(unittest.TestCase):
         from telethon.tl.types import MessageEntityBold
         from telegram_worker.engine.model import entity_keys
 
-        ns = worker_functions("mapped_edit_fingerprint", hashlib=__import__("hashlib"), entity_keys=entity_keys,
-                              text_of=lambda m: m.message, entities_of=lambda m: m.entities)
+        ns = worker_functions(
+            "mapped_edit_fingerprint",
+            hashlib=__import__("hashlib"),
+            entity_keys=entity_keys,
+            text_of=lambda m: m.message,
+            entities_of=lambda m: m.entities,
+        )
         edited = datetime(2026, 11, 4, tzinfo=timezone.utc)
 
         def fetch():
-            return SimpleNamespace(id=8129, edit_date=edited, message="TP1 ✅", entities=[MessageEntityBold(0, 3)])
+            return SimpleNamespace(
+                id=8129, edit_date=edited, message="TP1 ✅", entities=[MessageEntityBold(0, 3)]
+            )
 
         self.assertEqual(ns["mapped_edit_fingerprint"](fetch()), ns["mapped_edit_fingerprint"](fetch()))
         changed = fetch()
@@ -84,7 +94,7 @@ class EditReconcileTests(unittest.TestCase):
 
 class VipRouterTests(unittest.TestCase):
     def test_backstop_ignores_service_messages(self):
-        self.assertIn('> baseline\n                and not getattr(message, "action", None)', WORKER_SOURCE)
+        self.assertIn('> baseline and not getattr(message, "action", None)', " ".join(WORKER_SOURCE.split()))
 
     # Unsupported posts, album map saves and media fallbacks are covered by
     # tests/test_engine_deliver.py (the engine delivers every FASTVIP2 post).
@@ -104,8 +114,9 @@ class AlertTests(unittest.TestCase):
             runtime_guard.send_alert("hello")
             return time.monotonic() - started
 
-        with patch.object(runtime_guard, "_alert_enabled", return_value=True), \
-                patch.object(runtime_guard, "_post_alert", slow_post):
+        with patch.object(runtime_guard, "_alert_enabled", return_value=True), patch.object(
+            runtime_guard, "_post_alert", slow_post
+        ):
             elapsed = asyncio.run(go())
             for _ in range(20):
                 if posted:
@@ -135,9 +146,14 @@ class StartupCostTests(unittest.TestCase):
             return None
 
         with tempfile.TemporaryDirectory() as tmp:
-            worker = SimpleNamespace(ROUTES=[{"name": "r", "dest_chat": -100, "dest_topic": 7}], client=Client(),
-                                     DATA_DIR=tmp, channel_function=lambda name: None,
-                                     title_from_entity=lambda e: e.title, get_forum_topic_title=title)
+            worker = SimpleNamespace(
+                ROUTES=[{"name": "r", "dest_chat": -100, "dest_topic": 7}],
+                client=Client(),
+                DATA_DIR=tmp,
+                channel_function=lambda name: None,
+                title_from_entity=lambda e: e.title,
+                get_forum_topic_title=title,
+            )
             with patch.object(dd.asyncio, "sleep", nosleep):
                 asyncio.run(dd.log_destination_directory(worker))
                 first = len(calls)
@@ -150,10 +166,13 @@ class Topic1SweepTests(unittest.TestCase):
     def test_sweep_paused_while_hub_is_a_stopped_destination(self):
         from telegram_worker import owner_forwarding_policy as policy
         from telegram_worker import topic1_kill_switch as kill
+
         self.assertIn(kill.HUB_CHAT, policy.STOPPED_DEST_CHATS)
         source = (ROOT / "telegram_worker/topic1_kill_switch.py").read_text(encoding="utf-8")
-        body = source[source.index("async def sweep_loop():"):]
-        self.assertLess(body.index("[TOPIC1 SWEEP PAUSED]"), body.index('purge_and_reverse_audit("startup-full-purge")'))
+        body = source[source.index("async def sweep_loop():") :]
+        self.assertLess(
+            body.index("[TOPIC1 SWEEP PAUSED]"), body.index('purge_and_reverse_audit("startup-full-purge")')
+        )
         self.assertIn("async def dead_topic_intrusion_guard(event):", source)
 
 
@@ -167,14 +186,20 @@ class RepoHygieneTests(unittest.TestCase):
         for path in package_dir.glob("*.py"):
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
                 names = []
-                if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("telegram_worker."):
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module
+                    and node.module.startswith("telegram_worker.")
+                ):
                     names = [node.module.split(".", 1)[1]]
                 elif isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
                     names = [node.module]
                 for name in names:
                     target = name.split(".")[0]
-                    self.assertTrue((package_dir / f"{target}.py").exists() or (package_dir / target).is_dir(),
-                                    f"{path.name} imports {name}")
+                    self.assertTrue(
+                        (package_dir / f"{target}.py").exists() or (package_dir / target).is_dir(),
+                        f"{path.name} imports {name}",
+                    )
 
 
 if __name__ == "__main__":

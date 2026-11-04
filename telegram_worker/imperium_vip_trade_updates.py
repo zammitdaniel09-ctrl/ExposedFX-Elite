@@ -103,25 +103,35 @@ def classify_trade_update(text: str) -> Optional[str]:
         compact,
     )
     if all_targets:
-        _append(lines, f"{{GreenTick}} ALL TARGETS HIT — +{pips} PIPS" if pips else "{GreenTick} ALL TARGETS HIT")
+        _append(
+            lines, f"{{GreenTick}} ALL TARGETS HIT — +{pips} PIPS" if pips else "{GreenTick} ALL TARGETS HIT"
+        )
 
     tp_match = re.search(r"\b(?:TP|T/P|TARGET)\s*#?\s*(\d+)\b", compact, re.IGNORECASE)
     if tp_match and not all_targets:
         tp_num = tp_match.group(1)
-        if _has(r"\b(?:HIT|HITTED|TOUCHED|TAGGED|TRIGGERED|DONE|BANKED|SMASHED|CLEARED)\b", compact) or bool(PIP_RE.search(raw)):
-            _append(lines, f"{{GreenTick}} TP{tp_num} HIT — +{pips} PIPS" if pips else f"{{GreenTick}} TP{tp_num} HIT")
+        if _has(r"\b(?:HIT|HITTED|TOUCHED|TAGGED|TRIGGERED|DONE|BANKED|SMASHED|CLEARED)\b", compact) or bool(
+            PIP_RE.search(raw)
+        ):
+            _append(
+                lines,
+                f"{{GreenTick}} TP{tp_num} HIT — +{pips} PIPS" if pips else f"{{GreenTick}} TP{tp_num} HIT",
+            )
 
     # Non-SL negative pip update.
-    loss_match = re.search(r"(?:^|\b)(?:-|MINUS\s+|LOST\s+|LOSS\s+OF\s+)(\d+(?:\.\d+)?)\s*PIPS?\b", compact, re.IGNORECASE)
+    loss_match = re.search(
+        r"(?:^|\b)(?:-|MINUS\s+|LOST\s+|LOSS\s+OF\s+)(\d+(?:\.\d+)?)\s*PIPS?\b", compact, re.IGNORECASE
+    )
     if loss_match and not lines:
         _append(lines, f"{{RedCross}} -{loss_match.group(1)} PIPS")
 
     pip_context_blocked = _has(
-        r"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS|LOSS|LOST|DROPPED|DOWN|SPREAD|EXAMPLE|RISK|PIP\s*SL)\b",
-        compact,
+        r"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS|LOSS|LOST|DROPPED|DOWN|SPREAD|EXAMPLE|RISK|PIP\s*SL)\b", compact
     )
     if pips and not lines and not pip_context_blocked:
-        explicit_positive = _has(r"(?:^|\s)\+\s*\d|\b(?:RAN|RUNNING|UP|PROFIT|SECURED|BANKED|MADE|GAINED|LOCKED)\b", compact)
+        explicit_positive = _has(
+            r"(?:^|\s)\+\s*\d|\b(?:RAN|RUNNING|UP|PROFIT|SECURED|BANKED|MADE|GAINED|LOCKED)\b", compact
+        )
         bare_short = short and bool(re.fullmatch(r"[+\s\d.A-Z✔✅💥🔥!]+", compact))
         if explicit_positive or bare_short:
             if _has(r"\b(?:RAN|RUNNING|UP)\b", compact):
@@ -156,15 +166,28 @@ def classify_trade_update(text: str) -> Optional[str]:
     if move_be:
         _append(lines, "{GreenTick} MOVE SL TO BREAKEVEN")
 
-    if _has(r"\b(?:TRADE|POSITION|RUNNER|WE|WE'RE|WE ARE|NOW)\b.{0,30}\bRISK\s*FREE\b|\bFREE\s+TRADE\b", compact) and not move_be:
+    if (
+        _has(
+            r"\b(?:TRADE|POSITION|RUNNER|WE|WE'RE|WE ARE|NOW)\b.{0,30}\bRISK\s*FREE\b|\bFREE\s+TRADE\b",
+            compact,
+        )
+        and not move_be
+    ):
         _append(lines, "{GreenTick} TRADE IS RISK-FREE")
     if _has(r"\b(?:LOCK|SECURE|MOVE\s+SL\s+INTO|SL\s+IN)\b.{0,25}\bPROFIT\b", compact):
         _append(lines, "{GreenTick} LOCK IN PROFIT")
-    if short and _has(r"\b(?:TRAIL|TRAILING)\s+(?:THE\s+)?(?:SL|S/L|STOP(?:\s*LOSS)?)\b", compact) and not sl_price:
+    if (
+        short
+        and _has(r"\b(?:TRAIL|TRAILING)\s+(?:THE\s+)?(?:SL|S/L|STOP(?:\s*LOSS)?)\b", compact)
+        and not sl_price
+    ):
         _append(lines, "{Warning} TRAIL STOP LOSS")
 
     # Entry/order state.
-    if _has(r"\b(?:ENTRY|SIGNAL|SETUP|TRADE)\b.{0,28}\b(?:STILL\s+)?VALID\b|\bVALID\s+(?:ENTRY|SETUP|SIGNAL)\b", compact):
+    if _has(
+        r"\b(?:ENTRY|SIGNAL|SETUP|TRADE)\b.{0,28}\b(?:STILL\s+)?VALID\b|\bVALID\s+(?:ENTRY|SETUP|SIGNAL)\b",
+        compact,
+    ):
         _append(lines, "{GreenTick} ENTRY STILL VALID")
     if _has(
         r"\b(?:ENTRY|ORDER|LIMIT|STOP)\b.{0,22}\b(?:HIT|TRIGGERED|ACTIVATED|FILLED|EXECUTED)\b|"
@@ -173,8 +196,18 @@ def classify_trade_update(text: str) -> Optional[str]:
     ):
         _append(lines, "{GreenTick} ENTRY ACTIVATED")
 
-    if _has(r"\b(?:ENTRY|SETUP|SIGNAL|ORDER|TRADE)\b.{0,24}\b(?:INVALID|INVALIDATED|CANCELLED|CANCELED)\b", compact):
-        _append(lines, "{RedCross} PENDING ORDER CANCELLED" if _has(r"\b(?:ORDER|LIMIT|STOP)\b", compact) else "{RedCross} TRADE CANCELLED")
+    if _has(
+        r"\b(?:ENTRY|SETUP|SIGNAL|ORDER|TRADE)\b.{0,24}\b(?:INVALID|INVALIDATED|CANCELLED|CANCELED)\b",
+        compact,
+    ):
+        _append(
+            lines,
+            (
+                "{RedCross} PENDING ORDER CANCELLED"
+                if _has(r"\b(?:ORDER|LIMIT|STOP)\b", compact)
+                else "{RedCross} TRADE CANCELLED"
+            ),
+        )
     if _has(r"\b(?:CANCEL|DELETE|REMOVE)\b.{0,24}\b(?:TRADE|SETUP|SIGNAL)\b", compact):
         _append(lines, "{RedCross} TRADE CANCELLED")
 
@@ -185,18 +218,26 @@ def classify_trade_update(text: str) -> Optional[str]:
     if delete_enter:
         _append(lines, "{Warning} DELETE PENDING ORDER")
         _append(lines, "{Warning} ENTER MARKET NOW")
-    elif _has(r"\b(?:CANCEL|DELETE|REMOVE)\b.{0,24}\b(?:PENDING\s+ORDER|ORDER|LIMIT|STOP\s+ORDER)\b", compact):
+    elif _has(
+        r"\b(?:CANCEL|DELETE|REMOVE)\b.{0,24}\b(?:PENDING\s+ORDER|ORDER|LIMIT|STOP\s+ORDER)\b", compact
+    ):
         _append(lines, "{RedCross} PENDING ORDER CANCELLED")
 
     if _has(r"\b(?:DO\s+NOT|DON'T|DONT)\s+(?:ENTER|TAKE|EXECUTE)\b|\bNO\s+ENTRY\b", compact):
         _append(lines, "{RedCross} DO NOT ENTER")
-    if _has(r"\b(?:MISSED\s+(?:THE\s+)?ENTRY|ENTRY\s+(?:WAS\s+)?MISSED|MISSED\s+IT|DO\s+NOT\s+CHASE|DON'T\s+CHASE|DONT\s+CHASE)\b", compact):
+    if _has(
+        r"\b(?:MISSED\s+(?:THE\s+)?ENTRY|ENTRY\s+(?:WAS\s+)?MISSED|MISSED\s+IT|DO\s+NOT\s+CHASE|DON'T\s+CHASE|DONT\s+CHASE)\b",
+        compact,
+    ):
         _append(lines, "{Warning} ENTRY MISSED — DO NOT CHASE")
     if _has(r"\b(?:WAIT|HOLD\s+OFF|STAY\s+OUT)\b.{0,20}\b(?:ENTRY|TRADE|SIGNAL|FOR\s+NOW|NOW)\b", compact):
         _append(lines, "{Warning} WAIT — DO NOT ENTER YET")
 
     # Position management.
-    if _has(r"^(?:LAYER|LAYER\s+NOW|ADD\s+(?:ANOTHER\s+)?ENTRY|ADD\s+(?:ANOTHER\s+)?POSITION|SCALE\s+IN|ADD\s+ON)(?:\b|$)", compact):
+    if _has(
+        r"^(?:LAYER|LAYER\s+NOW|ADD\s+(?:ANOTHER\s+)?ENTRY|ADD\s+(?:ANOTHER\s+)?POSITION|SCALE\s+IN|ADD\s+ON)(?:\b|$)",
+        compact,
+    ):
         _append(lines, "{Warning} LAYER ENTRY NOW")
     if _has(r"\b(?:RE-?ENTER|REENTRY|RE-ENTRY)\b(?:.{0,20}\b(?:NOW|MARKET)\b)?", compact):
         _append(lines, "{Warning} RE-ENTER TRADE NOW")
@@ -213,9 +254,15 @@ def classify_trade_update(text: str) -> Optional[str]:
     if full_close and not has_partial_scope:
         _append(lines, "{Warning} CLOSE TRADE NOW")
 
-    if _has(r"\b(?:I'?M|I\s+AM|WE'?RE|WE\s+ARE)\s+STILL\s+IN\b|\b(?:TRADE|POSITION)\s+(?:IS\s+)?STILL\s+(?:ACTIVE|OPEN|RUNNING)\b", compact):
+    if _has(
+        r"\b(?:I'?M|I\s+AM|WE'?RE|WE\s+ARE)\s+STILL\s+IN\b|\b(?:TRADE|POSITION)\s+(?:IS\s+)?STILL\s+(?:ACTIVE|OPEN|RUNNING)\b",
+        compact,
+    ):
         _append(lines, "{GreenTick} TRADE STILL ACTIVE")
-    if _has(r"\b(?:LET|LEAVE)\s+(?:IT|RUNNER|REMAINDER|REST)\s*(?:RUN|RUNNING)?\b|\bHOLD\s+(?:THE\s+)?(?:TRADE|RUNNER|REMAINDER)\b", compact):
+    if _has(
+        r"\b(?:LET|LEAVE)\s+(?:IT|RUNNER|REMAINDER|REST)\s*(?:RUN|RUNNING)?\b|\bHOLD\s+(?:THE\s+)?(?:TRADE|RUNNER|REMAINDER)\b",
+        compact,
+    ):
         _append(lines, "{GreenTick} LET REMAINDER RUN")
     if _has(r"\b(?:REDUCE|CUT|LOWER)\s+(?:THE\s+)?RISK\b", compact):
         _append(lines, "{Warning} REDUCE RISK")
@@ -277,7 +324,9 @@ def run_update_self_test() -> Tuple[int, int]:
     for source, expected in cases.items():
         got = classify_trade_update(source)
         if got != expected:
-            raise RuntimeError(f"trade-update self-test failed source={source!r} expected={expected!r} got={got!r}")
+            raise RuntimeError(
+                f"trade-update self-test failed source={source!r} expected={expected!r} got={got!r}"
+            )
 
     safe = (
         "wtf",
@@ -293,6 +342,8 @@ def run_update_self_test() -> Tuple[int, int]:
     for source in safe:
         got = classify_trade_update(source)
         if got is not None:
-            raise RuntimeError(f"trade-update fail-safe classified general chat source={source!r} got={got!r}")
+            raise RuntimeError(
+                f"trade-update fail-safe classified general chat source={source!r} got={got!r}"
+            )
 
     return len(cases), len(safe)

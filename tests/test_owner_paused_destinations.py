@@ -1,4 +1,5 @@
 """Hub and Partner destinations paused 3 Nov 2026: no route and no code path may write there."""
+
 import asyncio
 import sys
 import types
@@ -14,11 +15,18 @@ from telegram_worker.routes import ROUTES
 from telethon.errors import ChatWriteForbiddenError
 from telethon.tl.functions.channels import GetMessagesRequest
 from telethon.tl.functions.messages import (
-    DeleteMessagesRequest, EditMessageRequest, ForwardMessagesRequest, SendMessageRequest,
+    DeleteMessagesRequest,
+    EditMessageRequest,
+    ForwardMessagesRequest,
+    SendMessageRequest,
 )
 from telethon.tl.types import InputPeerChannel
 
-HUB, PARTNER, VIP = InputPeerChannel(3918958200, 0), InputPeerChannel(4442967052, 0), InputPeerChannel(3726286301, 0)
+HUB, PARTNER, VIP = (
+    InputPeerChannel(3918958200, 0),
+    InputPeerChannel(4442967052, 0),
+    InputPeerChannel(3726286301, 0),
+)
 
 
 class FakeClient:
@@ -39,11 +47,19 @@ class PausedDestinationTests(unittest.TestCase):
         self.assertTrue(any(int(r["dest_chat"]) == -1003726286301 for r in ROUTES))
 
     def test_writes_to_paused_chats_are_blocked(self):
-        for request in (SendMessageRequest(HUB, "x"), SendMessageRequest(-1004442967052, "x"),
-                        ForwardMessagesRequest(VIP, [1], PARTNER), EditMessageRequest(HUB, 5, message="x")):
+        for request in (
+            SendMessageRequest(HUB, "x"),
+            SendMessageRequest(-1004442967052, "x"),
+            ForwardMessagesRequest(VIP, [1], PARTNER),
+            EditMessageRequest(HUB, 5, message="x"),
+        ):
             self.assertTrue(policy.blocked_write(request), request)
-        for request in (SendMessageRequest(VIP, "x"), ForwardMessagesRequest(HUB, [1], VIP),
-                        DeleteMessagesRequest([1]), GetMessagesRequest(HUB, [1])):
+        for request in (
+            SendMessageRequest(VIP, "x"),
+            ForwardMessagesRequest(HUB, [1], VIP),
+            DeleteMessagesRequest([1]),
+            GetMessagesRequest(HUB, [1]),
+        ):
             self.assertFalse(policy.blocked_write(request), request)
 
     def test_guard_refuses_before_reaching_telegram(self):
@@ -56,7 +72,9 @@ class PausedDestinationTests(unittest.TestCase):
             asyncio.run(client._call(None, [SendMessageRequest(VIP, "x"), SendMessageRequest(PARTNER, "y")]))
         self.assertEqual(asyncio.run(client._call(None, SendMessageRequest(VIP, "x"))), "ok")
         self.assertEqual(len(client.sent), 1)
-        self.assertEqual(policy.permanent_access_error(ChatWriteForbiddenError(request=None)), "ChatWriteForbiddenError")
+        self.assertEqual(
+            policy.permanent_access_error(ChatWriteForbiddenError(request=None)), "ChatWriteForbiddenError"
+        )
 
 
 if __name__ == "__main__":

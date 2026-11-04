@@ -7,7 +7,6 @@ from typing import Optional, Tuple, List, Dict, Any
 from telethon import events
 from telethon.tl.types import MessageEntityBold, MessageEntityCustomEmoji
 
-
 log = logging.getLogger("imperium-vip-formatter")
 
 PRICE = r"\d{1,7}(?:\.\d+)?"
@@ -64,7 +63,9 @@ async def resolve_imperium_vip_chat(client, logger=None) -> Tuple[Optional[int],
     exact = []
     fallback = []
     async for dialog in client.iter_dialogs():
-        title = str(getattr(dialog, "name", None) or getattr(getattr(dialog, "entity", None), "title", None) or "")
+        title = str(
+            getattr(dialog, "name", None) or getattr(getattr(dialog, "entity", None), "title", None) or ""
+        )
         norm = _normalise_title(title)
         if norm == "IMPERIUM FX VIP":
             exact.append((int(dialog.id), title))
@@ -139,7 +140,9 @@ def _extract_entry_from_trade_line(line: str) -> Tuple[Optional[str], Optional[s
         return range_match.group(1), range_match.group(2)
     cleaned = XAU_RE.sub(" ", line)
     cleaned = DIRECTION_RE.sub(" ", cleaned)
-    cleaned = re.sub(r"\b(NOW|MARKET|LIMIT|STOP|ENTRY|ENTRIES|ENTER|AT|ZONE|PRICE)\b|@", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\b(NOW|MARKET|LIMIT|STOP|ENTRY|ENTRIES|ENTER|AT|ZONE|PRICE)\b|@", " ", cleaned, flags=re.IGNORECASE
+    )
     nums = re.findall(PRICE, cleaned)
     if nums:
         return nums[0], nums[0]
@@ -178,7 +181,14 @@ def parse_xauusd_signal(text: str) -> Optional[Dict[str, Any]]:
 
     if kind in {"LIMIT", "STOP", "ZONE"} and not entry_a:
         return None
-    return {"direction": direction, "kind": kind, "entry_a": entry_a, "entry_b": entry_b, "tps": tps, "sl": sl}
+    return {
+        "direction": direction,
+        "kind": kind,
+        "entry_a": entry_a,
+        "entry_b": entry_b,
+        "tps": tps,
+        "sl": sl,
+    }
 
 
 def _fmt_entry(a: Optional[str], b: Optional[str]) -> Optional[str]:
@@ -243,12 +253,15 @@ def classify_update(text: str) -> Optional[str]:
     if parse_xauusd_signal(raw):
         return None
 
-    sl_hit = bool(re.search(
-        r"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS)\b.{0,30}\b(?:HIT|HITTED|TOUCHED|TRIGGERED|TAGGED)\b|"
-        r"\b(?:HIT|TOUCHED|TRIGGERED|TAGGED)\b.{0,30}\b(?:SL|STOP\s*LOSS|STOPLOSS)\b|"
-        r"\bSTOPPED\s+OUT\b|\bKNOCKED\s+(?:US\s+)?OUT\b",
-        compact, re.IGNORECASE,
-    ))
+    sl_hit = bool(
+        re.search(
+            r"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS)\b.{0,30}\b(?:HIT|HITTED|TOUCHED|TRIGGERED|TAGGED)\b|"
+            r"\b(?:HIT|TOUCHED|TRIGGERED|TAGGED)\b.{0,30}\b(?:SL|STOP\s*LOSS|STOPLOSS)\b|"
+            r"\bSTOPPED\s+OUT\b|\bKNOCKED\s+(?:US\s+)?OUT\b",
+            compact,
+            re.IGNORECASE,
+        )
+    )
     if sl_hit:
         pips = _pip_number(raw)
         if pips:
@@ -258,7 +271,9 @@ def classify_update(text: str) -> Optional[str]:
     m_tp = re.search(r"\b(?:TP|T/P|TARGET)\s*#?\s*(\d+)\b", u)
     if m_tp:
         tp_num = m_tp.group(1)
-        has_result = bool(re.search(r"\b(HIT|HITTED|TOUCHED|TAGGED|DONE|BANKED|SMASHED)\b", u)) or bool(re.search(r"\d+(?:\.\d+)?\s*PIPS?\b", u))
+        has_result = bool(re.search(r"\b(HIT|HITTED|TOUCHED|TAGGED|DONE|BANKED|SMASHED)\b", u)) or bool(
+            re.search(r"\d+(?:\.\d+)?\s*PIPS?\b", u)
+        )
         if has_result:
             pips = _pip_number(raw)
             if pips:
@@ -272,32 +287,53 @@ def classify_update(text: str) -> Optional[str]:
         m = re.search(r"\b(?:RAN|RUNNING|UP)\s*\+?\s*(\d+(?:\.\d+)?)\s*PIPS?\b", raw, re.IGNORECASE)
         if m:
             return f"{{GreenTick}} +{m.group(1)} PIPS RUNNING"
-        m = re.search(r"^\s*(\d+(?:\.\d+)?)\s*PIPS?\s+(?:RUNNING|SECURED|BANKED|PROFIT|IN\s+PROFIT)\b", raw, re.IGNORECASE)
+        m = re.search(
+            r"^\s*(\d+(?:\.\d+)?)\s*PIPS?\s+(?:RUNNING|SECURED|BANKED|PROFIT|IN\s+PROFIT)\b",
+            raw,
+            re.IGNORECASE,
+        )
         if m:
             return f"{{GreenTick}} +{m.group(1)} PIPS"
 
-    if re.search(r"\b(?:SECURE|TAKE|CLOSE|BANK)\b.{0,30}\bPARTIAL", u) and re.search(r"\b(?:BREAK\s*-?\s*EVEN|BREAKEVEN|BE)\b", u):
+    if re.search(r"\b(?:SECURE|TAKE|CLOSE|BANK)\b.{0,30}\bPARTIAL", u) and re.search(
+        r"\b(?:BREAK\s*-?\s*EVEN|BREAKEVEN|BE)\b", u
+    ):
         return "{GreenTick} SECURE PARTIAL PROFITS\n\nMOVE SL TO BREAKEVEN"
-    if re.search(r"\b(?:BREAK\s*-?\s*EVEN|BREAKEVEN)\b", u) or re.search(r"\b(?:MOVE|PUT|SET)\s+(?:SL|STOP(?:\s*LOSS)?)\s+(?:TO\s+)?(?:BE|ENTRY)\b", u):
+    if re.search(r"\b(?:BREAK\s*-?\s*EVEN|BREAKEVEN)\b", u) or re.search(
+        r"\b(?:MOVE|PUT|SET)\s+(?:SL|STOP(?:\s*LOSS)?)\s+(?:TO\s+)?(?:BE|ENTRY)\b", u
+    ):
         return "{GreenTick} MOVE SL TO BREAKEVEN"
     if re.search(r"\b(?:SECURE|TAKE|CLOSE|BANK)\b.{0,30}\bPARTIAL", u):
         return "{GreenTick} SECURE PARTIAL PROFITS"
     if re.search(r"\b(?:ENTRY|SIGNAL|SETUP|TRADE)\b.{0,22}\b(?:STILL\s+)?VALID\b", u):
         return "{GreenTick} ENTRY STILL VALID"
 
-    if ((re.search(r"\b(?:DELETE|CANCEL|REMOVE)\b.{0,28}\b(?:PENDING|ORDER|LIMIT|STOP)\b", u)
-         and re.search(r"\b(?:ENTER|ENTRY|GET\s+IN)\b.{0,22}\b(?:NOW|MARKET)\b", u))
-        or re.search(r"\bDELETE\s+N\s+ENTER\s+NOW\b", u)):
+    if (
+        re.search(r"\b(?:DELETE|CANCEL|REMOVE)\b.{0,28}\b(?:PENDING|ORDER|LIMIT|STOP)\b", u)
+        and re.search(r"\b(?:ENTER|ENTRY|GET\s+IN)\b.{0,22}\b(?:NOW|MARKET)\b", u)
+    ) or re.search(r"\bDELETE\s+N\s+ENTER\s+NOW\b", u):
         return "{Warning} DELETE PENDING ORDER\n\nENTER MARKET NOW"
 
     short = len(compact) <= 120
-    if short and re.search(r"^(?:LAYER|LAYER\s+NOW|ADD\s+(?:ANOTHER\s+)?ENTRY|ADD\s+(?:ANOTHER\s+)?POSITION|SCALE\s+IN|RE-?ENTER|ADD\s+ON)(?:\b|$)", compact):
+    if short and re.search(
+        r"^(?:LAYER|LAYER\s+NOW|ADD\s+(?:ANOTHER\s+)?ENTRY|ADD\s+(?:ANOTHER\s+)?POSITION|SCALE\s+IN|RE-?ENTER|ADD\s+ON)(?:\b|$)",
+        compact,
+    ):
         return "{Warning} LAYER ENTRY NOW"
-    if re.search(r"\b(?:IF\s+YOURS?\s+(?:HAS(?:N'T| NOT)?|HASN'T)\s+CLOSED\s+)?CLOSE\s+(?:THE\s+)?(?:TRADE|POSITION)?\s*NOW\b", u) or re.search(r"\bCLOSE\s+NOW\b", u):
+    if re.search(
+        r"\b(?:IF\s+YOURS?\s+(?:HAS(?:N'T| NOT)?|HASN'T)\s+CLOSED\s+)?CLOSE\s+(?:THE\s+)?(?:TRADE|POSITION)?\s*NOW\b",
+        u,
+    ) or re.search(r"\bCLOSE\s+NOW\b", u):
         return "{Warning} CLOSE TRADE NOW"
-    if short and re.search(r"\b(?:I(?:'M| AM)\s+)?STILL\s+(?:IN\s+(?:THIS|IT)|HOLDING)|\bTRADE\s+STILL\s+ACTIVE\b", u):
+    if short and re.search(
+        r"\b(?:I(?:'M| AM)\s+)?STILL\s+(?:IN\s+(?:THIS|IT)|HOLDING)|\bTRADE\s+STILL\s+ACTIVE\b", u
+    ):
         return "{GreenTick} TRADE STILL ACTIVE"
-    if re.search(r"\b(?:CANCEL|DELETE|REMOVE)\b.{0,22}\b(?:PENDING\s+ORDER|ORDER|TRADE|SETUP|SIGNAL)\b", u) or re.search(r"\b(?:TRADE|SETUP|SIGNAL|ORDER)\s+(?:IS\s+)?(?:CANCELLED|CANCELED|INVALID|INVALIDATED)\b", u):
+    if re.search(
+        r"\b(?:CANCEL|DELETE|REMOVE)\b.{0,22}\b(?:PENDING\s+ORDER|ORDER|TRADE|SETUP|SIGNAL)\b", u
+    ) or re.search(
+        r"\b(?:TRADE|SETUP|SIGNAL|ORDER)\s+(?:IS\s+)?(?:CANCELLED|CANCELED|INVALID|INVALIDATED)\b", u
+    ):
         if re.search(r"\b(?:PENDING|LIMIT|STOP\s+ORDER)\b", u):
             return "{RedCross} PENDING ORDER CANCELLED"
         return "{RedCross} TRADE CANCELLED"
@@ -311,16 +347,38 @@ def build_update(registry, template: str):
 def _run_variant_self_test():
     signals = [
         ("Buy xauusd now\n\nTp 4400\nTp 4410\nTp 4450\n\nSl 4379", "NOW", "BUY", ["4400", "4410", "4450"]),
-        ("SELL XAUUSD MARKET\nTP1: 4330\nTP2: 4315\nTP3: 4300\nSL: 4355", "NOW", "SELL", ["4330", "4315", "4300"]),
+        (
+            "SELL XAUUSD MARKET\nTP1: 4330\nTP2: 4315\nTP3: 4300\nSL: 4355",
+            "NOW",
+            "SELL",
+            ["4330", "4315", "4300"],
+        ),
         ("Buy XAUUSD 4372-4369\nTP 4380\nTP 4390\nTP 4400\nSL 4356", "ZONE", "BUY", ["4380", "4390", "4400"]),
-        ("Buy limit xauusd 4306\nTake Profit 4320\nTarget 4350\nTP 4400\nStop Loss 4290", "LIMIT", "BUY", ["4320", "4350", "4400"]),
+        (
+            "Buy limit xauusd 4306\nTake Profit 4320\nTarget 4350\nTP 4400\nStop Loss 4290",
+            "LIMIT",
+            "BUY",
+            ["4320", "4350", "4400"],
+        ),
         ("Sell stop GOLD 4360\nTP1 = 4350\nTP2 = 4330\nSL = 4372", "STOP", "SELL", ["4350", "4330"]),
-        ("sell xauusd now 4367-4373\nT/P 4362\nT/P 4355\nT/P 4345\nS/L 4378", "ZONE", "SELL", ["4362", "4355", "4345"]),
+        (
+            "sell xauusd now 4367-4373\nT/P 4362\nT/P 4355\nT/P 4345\nS/L 4378",
+            "ZONE",
+            "SELL",
+            ["4362", "4355", "4345"],
+        ),
     ]
     for text, kind, direction, expected_tps in signals:
         parsed = parse_xauusd_signal(text)
-        if not parsed or parsed["kind"] != kind or parsed["direction"] != direction or parsed["tps"] != expected_tps:
-            raise RuntimeError(f"signal self-test failed kind={kind} direction={direction} expected_tps={expected_tps} text={text!r} parsed={parsed!r}")
+        if (
+            not parsed
+            or parsed["kind"] != kind
+            or parsed["direction"] != direction
+            or parsed["tps"] != expected_tps
+        ):
+            raise RuntimeError(
+                f"signal self-test failed kind={kind} direction={direction} expected_tps={expected_tps} text={text!r} parsed={parsed!r}"
+            )
 
     updates = {
         "+ 130 PIPs": "{GreenTick} +130 PIPS",
@@ -365,7 +423,12 @@ async def install_imperium_vip_formatter(client, registry, logger=None):
         return None
 
     signal_count, update_count, safe_count = _run_variant_self_test()
-    logger.warning("[IMPERIUM VIP FORMATTER SELFTEST OK] signal_variants=%s update_variants=%s fail_safe_general_chat=%s", signal_count, update_count, safe_count)
+    logger.warning(
+        "[IMPERIUM VIP FORMATTER SELFTEST OK] signal_variants=%s update_variants=%s fail_safe_general_chat=%s",
+        signal_count,
+        update_count,
+        safe_count,
+    )
 
     required = ["Boom", "GreenTick", "RedCross", "Warning"]
     if not _require_aliases(registry, required):
@@ -401,14 +464,34 @@ async def install_imperium_vip_formatter(client, registry, logger=None):
         try:
             if parsed:
                 out_text, out_entities = build_signal(registry, parsed)
-                await client.edit_message(chat_id, msg_id, out_text, formatting_entities=out_entities, parse_mode=None)
-                logger.warning("[IMPERIUM VIP SIGNAL FORMATTED] source=%s msg=%s kind=%s direction=%s entry=%s/%s tps=%s sl=%s", source, msg_id, parsed["kind"], parsed["direction"], parsed.get("entry_a"), parsed.get("entry_b"), len(parsed["tps"]), parsed["sl"])
+                await client.edit_message(
+                    chat_id, msg_id, out_text, formatting_entities=out_entities, parse_mode=None
+                )
+                logger.warning(
+                    "[IMPERIUM VIP SIGNAL FORMATTED] source=%s msg=%s kind=%s direction=%s entry=%s/%s tps=%s sl=%s",
+                    source,
+                    msg_id,
+                    parsed["kind"],
+                    parsed["direction"],
+                    parsed.get("entry_a"),
+                    parsed.get("entry_b"),
+                    len(parsed["tps"]),
+                    parsed["sl"],
+                )
             else:
                 out_text, out_entities = build_update(registry, update_template)
                 if out_text.strip() == text.strip():
                     return
-                await client.edit_message(chat_id, msg_id, out_text, formatting_entities=out_entities, parse_mode=None)
-                logger.warning("[IMPERIUM VIP UPDATE FORMATTED] source=%s msg=%s before=%r after=%r", source, msg_id, _normalise(text)[:120], out_text[:120])
+                await client.edit_message(
+                    chat_id, msg_id, out_text, formatting_entities=out_entities, parse_mode=None
+                )
+                logger.warning(
+                    "[IMPERIUM VIP UPDATE FORMATTED] source=%s msg=%s before=%r after=%r",
+                    source,
+                    msg_id,
+                    _normalise(text)[:120],
+                    out_text[:120],
+                )
         except Exception as exc:
             logger.warning("[IMPERIUM VIP FORMAT FAILED] msg=%s %s: %s", msg_id, type(exc).__name__, exc)
         finally:
@@ -430,5 +513,10 @@ async def install_imperium_vip_formatter(client, registry, logger=None):
 
     client.add_event_handler(_new_handler, events.NewMessage())
     client.add_event_handler(_edit_handler, events.MessageEdited())
-    logger.warning("[IMPERIUM VIP FORMATTER ACTIVE] chat_id=%s title=%r formats=NOW,ZONE,LIMIT,STOP,TP,SL,BE,PARTIALS,LAYER,CLOSE,CANCEL,ACTIVE aliases=%s", chat_id, title, ",".join(required))
+    logger.warning(
+        "[IMPERIUM VIP FORMATTER ACTIVE] chat_id=%s title=%r formats=NOW,ZONE,LIMIT,STOP,TP,SL,BE,PARTIALS,LAYER,CLOSE,CANCEL,ACTIVE aliases=%s",
+        chat_id,
+        title,
+        ",".join(required),
+    )
     return {"chat_id": chat_id, "title": title, "new_handler": _new_handler, "edit_handler": _edit_handler}

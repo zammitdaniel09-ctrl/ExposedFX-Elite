@@ -2,20 +2,9 @@ import copy
 import logging
 from typing import Any, Dict, Optional, Tuple
 
-from telegram_worker.imperium_vip_formatter import (
-    build_signal,
-    build_update,
-    parse_xauusd_signal,
-)
-from telegram_worker.imperium_vip_trade_update_hardening import (
-    classify_trade_update,
-    run_update_self_test,
-)
-from telegram_worker.reply_hardening import (
-    install_reply_hardening,
-    reply_source_ids,
-)
-
+from telegram_worker.imperium_vip_formatter import build_signal, build_update, parse_xauusd_signal
+from telegram_worker.imperium_vip_trade_update_hardening import classify_trade_update, run_update_self_test
+from telegram_worker.reply_hardening import install_reply_hardening, reply_source_ids
 
 log = logging.getLogger("imperium-vip-inline-hook")
 
@@ -64,11 +53,7 @@ def _already_house_formatted(text: str) -> bool:
     return False
 
 
-def format_imperium_vip_text(
-    text: str,
-    original_entities,
-    registry,
-) -> Tuple[str, Any, Optional[str]]:
+def format_imperium_vip_text(text: str, original_entities, registry) -> Tuple[str, Any, Optional[str]]:
     raw = (text or "").strip()
     if not raw or not _registry_ready(registry) or _already_house_formatted(raw):
         return text, original_entities, None
@@ -123,15 +108,24 @@ def _run_inline_self_test():
     signal_cases = (
         (
             "Buy xauusd now\n\nTp 4324\nTp 4337\nTp 4350\nTp open\n\nSl 4308",
-            "BUY", "NOW", ["4324", "4337", "4350", "OPEN"], "4308",
+            "BUY",
+            "NOW",
+            ["4324", "4337", "4350", "OPEN"],
+            "4308",
         ),
         (
             "Sell xauusd now 4327-4332\n\nTp 4320\nTp 4310\nTp 4280\n\nSl 4335",
-            "SELL", "ZONE", ["4320", "4310", "4280"], "4335",
+            "SELL",
+            "ZONE",
+            ["4320", "4310", "4280"],
+            "4335",
         ),
         (
             "Buy xauusd now 4305-4299\n\nTp 4315\nTp 4330\nTp 4370\nTp open\n\nSl 4290",
-            "BUY", "ZONE", ["4315", "4330", "4370", "OPEN"], "4290",
+            "BUY",
+            "ZONE",
+            ["4315", "4330", "4370", "OPEN"],
+            "4290",
         ),
     )
 
@@ -188,12 +182,7 @@ def install_imperium_vip_inline_hook(main_module, registry, logger=None):
                 getattr(message, "id", None),
             )
 
-        return await original_edit(
-            formatted_message,
-            route,
-            cascade_depth=cascade_depth,
-            visited=visited,
-        )
+        return await original_edit(formatted_message, route, cascade_depth=cascade_depth, visited=visited)
 
     main_module.edit_existing_destination_in_place = edit_wrapper
 

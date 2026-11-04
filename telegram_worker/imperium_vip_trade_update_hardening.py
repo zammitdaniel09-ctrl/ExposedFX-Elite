@@ -7,7 +7,6 @@ from telegram_worker.imperium_vip_trade_updates import (
     run_update_self_test as _base_self_test,
 )
 
-
 PIP_RE = re.compile(r"([+-]?\s*\d+(?:\.\d+)?)\s*PIPS?\b", re.IGNORECASE)
 PRICE = r"\d{1,7}(?:\.\d+)?"
 
@@ -64,8 +63,7 @@ def _missed_target(raw: str, compact: str) -> Optional[str]:
 def _multi_target_hit(raw: str, compact: str) -> Optional[str]:
     """Handle TP2,3 / TP2 & 3 / TP2/TP3 / TP2 AND TP3 without dropping targets."""
     match = re.search(
-        r"\b(?:TP|T/P|TARGET)\s*#?\s*\d+"
-        r"(?:\s*(?:,|&|/|\+|\bAND\b)\s*(?:(?:TP|T/P|TARGET)\s*#?\s*)?\d+)+",
+        r"\b(?:TP|T/P|TARGET)\s*#?\s*\d+" r"(?:\s*(?:,|&|/|\+|\bAND\b)\s*(?:(?:TP|T/P|TARGET)\s*#?\s*)?\d+)+",
         compact,
         re.IGNORECASE,
     )
@@ -118,14 +116,18 @@ def classify_trade_update(text: str) -> Optional[str]:
         return None
 
     # Distance/miss commentary is not a realised pip result.
-    if PIP_RE.search(raw) and re.search(
-        r"\b(?:MISSED|MISS|AWAY|SHORT|SHY|OFF\s+BY|NEEDED|NEED|FROM\s+(?:TP|T/P|TARGET))\b",
-        compact,
-        re.IGNORECASE,
-    ) and not re.search(
-        r"(?:^|\s)\+\s*\d|\b(?:PROFIT|SECURED|BANKED|MADE|GAINED|RAN|RUNNING|UP)\b",
-        compact,
-        re.IGNORECASE,
+    if (
+        PIP_RE.search(raw)
+        and re.search(
+            r"\b(?:MISSED|MISS|AWAY|SHORT|SHY|OFF\s+BY|NEEDED|NEED|FROM\s+(?:TP|T/P|TARGET))\b",
+            compact,
+            re.IGNORECASE,
+        )
+        and not re.search(
+            r"(?:^|\s)\+\s*\d|\b(?:PROFIT|SECURED|BANKED|MADE|GAINED|RAN|RUNNING|UP)\b",
+            compact,
+            re.IGNORECASE,
+        )
     ):
         return None
 
@@ -135,8 +137,12 @@ def classify_trade_update(text: str) -> Optional[str]:
 
     # Unnumbered explicit TP hit.
     if (
-        re.search(r"\b(?:TP|T/P|TARGET)\b.{0,40}\b(?:HIT|SMASHED|DONE|TAGGED|TOUCHED)\b", compact, re.IGNORECASE)
-        or re.search(r"\b(?:HIT|SMASHED|DONE|TAGGED|TOUCHED)\b.{0,40}\b(?:TP|T/P|TARGET)\b", compact, re.IGNORECASE)
+        re.search(
+            r"\b(?:TP|T/P|TARGET)\b.{0,40}\b(?:HIT|SMASHED|DONE|TAGGED|TOUCHED)\b", compact, re.IGNORECASE
+        )
+        or re.search(
+            r"\b(?:HIT|SMASHED|DONE|TAGGED|TOUCHED)\b.{0,40}\b(?:TP|T/P|TARGET)\b", compact, re.IGNORECASE
+        )
     ) and not re.search(r"\b(?:TP|T/P|TARGET)\s*#?\s*\d+", compact, re.IGNORECASE):
         pips = _positive_pips(raw)
         return f"{{GreenTick}} TP HIT — +{pips} PIPS" if pips else "{GreenTick} TP HIT"

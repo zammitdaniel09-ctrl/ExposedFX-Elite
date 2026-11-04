@@ -1,4 +1,5 @@
 """ALT reply-parent resolution: trusted map, in-flight wait, bounded recovery, deleted-parent fallback."""
+
 import asyncio
 import sys
 import time
@@ -74,21 +75,30 @@ class AltReplySpeedTests(unittest.TestCase):
             async def land():
                 await asyncio.sleep(0.3)
                 worker.message_map["-100111:50"] = 800
+
             asyncio.get_running_loop().create_task(land())
             return await arh.resolve_reply_target(worker, ROUTE, reply(51, 50))
+
         self.assertEqual(asyncio.run(go()), 800)
         self.assertEqual(worker.client.calls, [])
 
     def test_unmapped_parent_falls_back_within_budget(self):
         worker = FakeWorker(FakeClient(delay=10))
-        with patch.object(arh, "PARENT_INFLIGHT_WAIT_SECONDS", 0.2), patch.object(arh, "RECOVERY_BUDGET_SECONDS", 0.3):
+        with patch.object(arh, "PARENT_INFLIGHT_WAIT_SECONDS", 0.2), patch.object(
+            arh, "RECOVERY_BUDGET_SECONDS", 0.3
+        ):
             started = time.monotonic()
             self.assertEqual(self.resolve(worker, reply(61, 60)), 9)
         self.assertLess(time.monotonic() - started, 1.5)
 
     def test_recovery_is_one_small_history_read(self):
-        copy = SimpleNamespace(id=555, message="Signal text", media=None, date=NOW,
-                               reply_to=SimpleNamespace(reply_to_top_id=9, reply_to_msg_id=9, top_msg_id=None))
+        copy = SimpleNamespace(
+            id=555,
+            message="Signal text",
+            media=None,
+            date=NOW,
+            reply_to=SimpleNamespace(reply_to_top_id=9, reply_to_msg_id=9, top_msg_id=None),
+        )
         worker = FakeWorker(FakeClient(history=[copy]))
         with patch.object(arh, "PARENT_INFLIGHT_WAIT_SECONDS", 0.0):
             self.assertEqual(self.resolve(worker, reply(71, 70)), 555)
@@ -99,7 +109,9 @@ class AltReplySpeedTests(unittest.TestCase):
 
     def test_deleted_parent_error_is_recognised(self):
         self.assertTrue(arh._reply_target_invalid(Exception("REPLY_MESSAGE_ID_INVALID")))
-        self.assertTrue(arh._reply_target_invalid(Exception("The message ID used ... (caused by MSG_ID_INVALID)")))
+        self.assertTrue(
+            arh._reply_target_invalid(Exception("The message ID used ... (caused by MSG_ID_INVALID)"))
+        )
         self.assertFalse(arh._reply_target_invalid(Exception("FLOOD_WAIT_X")))
 
 

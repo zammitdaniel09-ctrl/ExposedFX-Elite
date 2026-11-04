@@ -6,6 +6,7 @@ Module globals they expect (log, re, os, BLOCKED_SENDER_IDS) are injected by
 the test that executes this file.
 """
 
+
 def mapped_ids_from_value(value):
     """
     Message map compatibility:
@@ -39,26 +40,17 @@ def mapped_ids_from_value(value):
     except Exception:
         return []
 
+
 def text_of(message):
     return message.message or message.raw_text or message.text or ""
 
-FILTER_USERNAME_MENTIONS = (
-    os.environ.get(
-        "FILTER_USERNAME_MENTIONS",
-        "1",
-    ).strip()
-    == "1"
-)
 
-USERNAME_HANDLE_RE = re.compile(
-    r"(?<![A-Za-z0-9._%+\-])"
-    r"@[A-Za-z][A-Za-z0-9_]{4,31}"
-    r"(?![A-Za-z0-9_])"
-)
+FILTER_USERNAME_MENTIONS = os.environ.get("FILTER_USERNAME_MENTIONS", "1").strip() == "1"
 
-def has_username_mention(
-    message,
-):
+USERNAME_HANDLE_RE = re.compile(r"(?<![A-Za-z0-9._%+\-])" r"@[A-Za-z][A-Za-z0-9_]{4,31}" r"(?![A-Za-z0-9_])")
+
+
+def has_username_mention(message):
     """
     Block an actual Telegram-style @username.
 
@@ -77,49 +69,25 @@ def has_username_mention(
     if not FILTER_USERNAME_MENTIONS:
         return False
 
-
-    entities = (
-        getattr(
-            message,
-            "entities",
-            None,
-        )
-        or []
-    )
-
+    entities = getattr(message, "entities", None) or []
 
     for entity in entities:
 
-        if (
-            type(entity).__name__
-            == "MessageEntityMention"
-        ):
+        if type(entity).__name__ == "MessageEntityMention":
 
             return True
 
-
-    text = text_of(
-        message
-    )
-
+    text = text_of(message)
 
     if not text:
         return False
 
+    return bool(USERNAME_HANDLE_RE.search(text))
 
-    return bool(
-        USERNAME_HANDLE_RE.search(
-            text
-        )
-    )
 
-FILTER_LINKS = (
-    os.environ.get("FILTER_LINKS", "1").strip() == "1"
-)
+FILTER_LINKS = os.environ.get("FILTER_LINKS", "1").strip() == "1"
 
-URL_SCHEME_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9._%+\-@])(?:https?://|tg://|www\.|t\.me/|telegram\.me/)\S+"
-)
+URL_SCHEME_RE = re.compile(r"(?i)(?<![A-Za-z0-9._%+\-@])(?:https?://|tg://|www\.|t\.me/|telegram\.me/)\S+")
 
 BARE_DOMAIN_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9._%+\-@])"
@@ -131,11 +99,12 @@ BARE_DOMAIN_RE = re.compile(
 
 _original_has_username_mention_v2 = has_username_mention
 
+
 def has_link(message):
     if not FILTER_LINKS:
         return False
 
-    for entity in (getattr(message, "entities", None) or []):
+    for entity in getattr(message, "entities", None) or []:
         entity_name = type(entity).__name__
 
         if entity_name == "MessageEntityUrl":
@@ -151,22 +120,16 @@ def has_link(message):
     if not text:
         return False
 
-    return bool(
-        URL_SCHEME_RE.search(text)
-        or BARE_DOMAIN_RE.search(text)
-    )
+    return bool(URL_SCHEME_RE.search(text) or BARE_DOMAIN_RE.search(text))
+
 
 def has_username_mention(message):
-    return (
-        _original_has_username_mention_v2(message)
-        or has_link(message)
-    )
+    return _original_has_username_mention_v2(message) or has_link(message)
+
 
 def unit_has_username_mention(messages):
-    return any(
-        has_username_mention(message)
-        for message in (messages or [])
-    )
+    return any(has_username_mention(message) for message in (messages or []))
+
 
 def sender_ids_for_message(message):
     ids = set()
@@ -201,6 +164,7 @@ def sender_ids_for_message(message):
 
     return ids
 
+
 def _marked_peer_id(peer):
     """
     Convert Telethon PeerChannel / PeerChat IDs into the same
@@ -213,25 +177,15 @@ def _marked_peer_id(peer):
     if isinstance(peer, int):
         return int(peer)
 
-    channel_id = getattr(
-        peer,
-        "channel_id",
-        None,
-    )
+    channel_id = getattr(peer, "channel_id", None)
 
     if channel_id:
         try:
-            return int(
-                "-100" + str(abs(int(channel_id)))
-            )
+            return int("-100" + str(abs(int(channel_id))))
         except Exception:
             pass
 
-    chat_id = getattr(
-        peer,
-        "chat_id",
-        None,
-    )
+    chat_id = getattr(peer, "chat_id", None)
 
     if chat_id:
         try:
@@ -240,11 +194,7 @@ def _marked_peer_id(peer):
         except Exception:
             pass
 
-    user_id = getattr(
-        peer,
-        "user_id",
-        None,
-    )
+    user_id = getattr(peer, "user_id", None)
 
     if user_id:
         try:
@@ -253,6 +203,7 @@ def _marked_peer_id(peer):
             pass
 
     return None
+
 
 def forward_origin_chat_ids(message):
     """
@@ -267,25 +218,14 @@ def forward_origin_chat_ids(message):
 
     out = set()
 
-    fwd = getattr(
-        message,
-        "fwd_from",
-        None,
-    )
+    fwd = getattr(message, "fwd_from", None)
 
     if not fwd:
         return out
 
-    for attr in (
-        "from_id",
-        "saved_from_peer",
-    ):
+    for attr in ("from_id", "saved_from_peer"):
 
-        peer = getattr(
-            fwd,
-            attr,
-            None,
-        )
+        peer = getattr(fwd, attr, None)
 
         marked = _marked_peer_id(peer)
 
@@ -294,15 +234,9 @@ def forward_origin_chat_ids(message):
 
     return out
 
-def should_block_private_peer_loop(
-    message,
-    route,
-):
-    peers_raw = (
-        route.get("loop_guard_peers")
-        if isinstance(route, dict)
-        else None
-    )
+
+def should_block_private_peer_loop(message, route):
+    peers_raw = route.get("loop_guard_peers") if isinstance(route, dict) else None
 
     if not peers_raw:
         return False
@@ -315,13 +249,9 @@ def should_block_private_peer_loop(
         except Exception:
             pass
 
-    origins = forward_origin_chat_ids(
-        message
-    )
+    origins = forward_origin_chat_ids(message)
 
-    matched = sorted(
-        origins & peers
-    )
+    matched = sorted(origins & peers)
 
     if not matched:
         return False
@@ -340,9 +270,11 @@ def should_block_private_peer_loop(
 
     return True
 
+
 VIP_HARD_BLOCK_CHAT = -1003726286301
 
 VIP_HARD_BLOCKED_SOURCE = -1002521699926
+
 
 def should_hard_block_2521699926_from_vip(message, route):
     """
@@ -360,9 +292,7 @@ def should_hard_block_2521699926_from_vip(message, route):
         return False
 
     try:
-        dest_chat = int(
-            route.get("dest_chat", 0)
-        )
+        dest_chat = int(route.get("dest_chat", 0))
     except Exception:
         return False
 
@@ -370,28 +300,18 @@ def should_hard_block_2521699926_from_vip(message, route):
         return False
 
     try:
-        direct_source = int(
-            route.get("source_chat", 0)
-        )
+        direct_source = int(route.get("source_chat", 0))
     except Exception:
         direct_source = 0
 
     try:
-        forward_origins = (
-            forward_origin_chat_ids(message)
-        )
+        forward_origins = forward_origin_chat_ids(message)
     except Exception:
         forward_origins = set()
 
-    direct_match = (
-        direct_source
-        == VIP_HARD_BLOCKED_SOURCE
-    )
+    direct_match = direct_source == VIP_HARD_BLOCKED_SOURCE
 
-    forwarded_match = (
-        VIP_HARD_BLOCKED_SOURCE
-        in forward_origins
-    )
+    forwarded_match = VIP_HARD_BLOCKED_SOURCE in forward_origins
 
     if not direct_match and not forwarded_match:
         return False
@@ -409,6 +329,7 @@ def should_hard_block_2521699926_from_vip(message, route):
 
     return True
 
+
 def should_hard_block_sender(message, context="", route=None):
     ids = sender_ids_for_message(message)
     matched = sorted(ids & BLOCKED_SENDER_IDS)
@@ -417,11 +338,7 @@ def should_hard_block_sender(message, context="", route=None):
         return False
 
     route_name = route.get("name") if isinstance(route, dict) else None
-    route_dest = (
-        f"{route.get('dest_chat')}_{route.get('dest_topic')}"
-        if isinstance(route, dict)
-        else None
-    )
+    route_dest = f"{route.get('dest_chat')}_{route.get('dest_topic')}" if isinstance(route, dict) else None
 
     log.warning(
         f"[blocked sender hard stop] blocked_ids={matched} "
@@ -430,6 +347,7 @@ def should_hard_block_sender(message, context="", route=None):
     )
 
     return True
+
 
 def map_key(source_chat, source_msg_id, dest_chat, dest_topic):
     return f"{source_chat}:{source_msg_id}:{dest_chat}:{dest_topic}"

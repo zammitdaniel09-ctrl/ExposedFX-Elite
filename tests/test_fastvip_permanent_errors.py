@@ -44,10 +44,7 @@ def load_module(name, path):
     return module
 
 
-pde = load_module(
-    "permanent_delivery_errors",
-    ROOT / "telegram_worker" / "permanent_delivery_errors.py",
-)
+pde = load_module("permanent_delivery_errors", ROOT / "telegram_worker" / "permanent_delivery_errors.py")
 
 PARTNER_ROUTE = {
     "name": "VIP1364 To Partner4660",
@@ -63,9 +60,21 @@ def rpc_error(cls):
 
 
 def message(msg_id, grouped_id=None):
-    return SimpleNamespace(id=msg_id, grouped_id=grouped_id, message="TP1 hit", raw_text="TP1 hit", text="TP1 hit",
-                           entities=[], media=None, reply_to=None, reply_to_msg_id=None, fwd_from=None,
-                           sender_id=None, from_id=None, date=datetime.now(timezone.utc))
+    return SimpleNamespace(
+        id=msg_id,
+        grouped_id=grouped_id,
+        message="TP1 hit",
+        raw_text="TP1 hit",
+        text="TP1 hit",
+        entities=[],
+        media=None,
+        reply_to=None,
+        reply_to_msg_id=None,
+        fwd_from=None,
+        sender_id=None,
+        from_id=None,
+        date=datetime.now(timezone.utc),
+    )
 
 
 # A destination no owner policy stops (PARTNER_ROUTE's 4660 is a stopped topic).
@@ -91,21 +100,31 @@ class Harness:
         self.message_map = {}
         self.ledger_path = Path(tmp) / "fastvip_permanent_failures_v1.json"
         worker = SimpleNamespace(
-            client=self.client, message_map=self.message_map, DATA_DIR=tmp, EMOJI_REGISTRY=None,
+            client=self.client,
+            message_map=self.message_map,
+            DATA_DIR=tmp,
+            EMOJI_REGISTRY=None,
             FASTVIP_PERMANENT_FAILURES=pde.PermanentFailureLedger(self.ledger_path),
-            FASTVIP_IMPAIRED_ALERTS=pde.Throttle(6 * 3600), save_map=lambda: None,
+            FASTVIP_IMPAIRED_ALERTS=pde.Throttle(6 * 3600),
+            save_map=lambda: None,
             remember_message=self.remember,
         )
-        planner = Planner(rules=Rules(), maps=MessageMap(self.message_map),
-                          permanently_failed=lambda r, ids: worker.FASTVIP_PERMANENT_FAILURES.contains_all(r, ids))
+        planner = Planner(
+            rules=Rules(),
+            maps=MessageMap(self.message_map),
+            permanently_failed=lambda r, ids: worker.FASTVIP_PERMANENT_FAILURES.contains_all(r, ids),
+        )
 
         async def no_sleep(seconds):
             return None
+
         self.deliverer = Deliverer(worker, planner, attempts=3, sleep=no_sleep, alert=self.alerts.append)
         self.route = route
 
     def remember(self, src, dst, route, save=True):
-        self.message_map[f"{route['source_chat']}:{src.id}:{route['dest_chat']}:{route['dest_topic']}"] = dst.id
+        self.message_map[f"{route['source_chat']}:{src.id}:{route['dest_chat']}:{route['dest_topic']}"] = (
+            dst.id
+        )
 
     def run(self, unit, live=True):
         return asyncio.run(self.deliverer.deliver(self.route, Route.from_legacy(self.route), unit, live=live))
@@ -114,6 +133,7 @@ class Harness:
 def raises(exc):
     def behaviour():
         raise exc
+
     return behaviour
 
 
@@ -121,9 +141,7 @@ class ClassificationTests(unittest.TestCase):
 
     def test_permission_errors_are_permanent(self):
         for cls in (ChatSendPlainForbiddenError, ChatWriteForbiddenError, ChannelPrivateError):
-            self.assertEqual(
-                pde.permanent_error_name(rpc_error(cls), -1003885074241), cls.__name__
-            )
+            self.assertEqual(pde.permanent_error_name(rpc_error(cls), -1003885074241), cls.__name__)
 
     def test_flood_wait_and_transient_errors_are_not_permanent(self):
         flood = FloodWaitError(request=None, capture=30)
@@ -138,8 +156,7 @@ class ClassificationTests(unittest.TestCase):
             "Could not find the input entity for PeerChannel(channel_id=3726286301) (PeerChannel)."
         )
         self.assertEqual(
-            pde.permanent_error_name(dest_missing, -1003885074241),
-            pde.DESTINATION_NOT_RESOLVABLE,
+            pde.permanent_error_name(dest_missing, -1003885074241), pde.DESTINATION_NOT_RESOLVABLE
         )
         self.assertIsNone(pde.permanent_error_name(source_missing, -1003885074241))
 
@@ -213,8 +230,12 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(policy.is_stopped(TEST_ROUTE), "lost access is a route stop, as in production")
         self.assertIs(h.run([message(2)]), True)
         self.assertEqual(len(h.client.calls), 1, "a stopped route gets no further attempts")
-        restored = Harness(self.tmp.name, lambda: SimpleNamespace(id=900, message="TP1 hit", raw_text="TP1 hit",
-                                                                 text="TP1 hit", media=None))
+        restored = Harness(
+            self.tmp.name,
+            lambda: SimpleNamespace(
+                id=900, message="TP1 hit", raw_text="TP1 hit", text="TP1 hit", media=None
+            ),
+        )
         policy._RUNTIME.clear()  # runbook: delete the entry from the stop ledger
         self.assertIs(restored.run([message(3)]), True)
         self.assertEqual(restored.client.calls, ["TP1 hit"])
@@ -245,8 +266,10 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(h.client.calls, [])
 
     def test_successful_copy_unchanged(self):
-        h = Harness(self.tmp.name, lambda: SimpleNamespace(id=1, message="TP1 hit", raw_text="TP1 hit",
-                                                           text="TP1 hit", media=None))
+        h = Harness(
+            self.tmp.name,
+            lambda: SimpleNamespace(id=1, message="TP1 hit", raw_text="TP1 hit", text="TP1 hit", media=None),
+        )
         self.assertIs(h.run([message(12)]), True)
         self.assertFalse(h.ledger_path.exists())
         self.assertEqual(h.message_map, {"-1003726286301:12:-1009999999999:7": 1})

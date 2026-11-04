@@ -25,7 +25,7 @@ def build_chunks(blob: str, chunk_count: int):
 
     size = -(-len(blob) // chunk_count)  # ceiling division
 
-    chunks = [blob[i:i + size] for i in range(0, len(blob), size)]
+    chunks = [blob[i : i + size] for i in range(0, len(blob), size)]
 
     # Guard the round trip: the chunks must rebuild the original exactly,
     # and none may be empty, or the worker raises on a missing chunk.

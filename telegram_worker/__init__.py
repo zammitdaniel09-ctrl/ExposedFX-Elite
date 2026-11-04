@@ -13,24 +13,15 @@ from telethon.errors import ChannelPrivateError
 
 from . import runtime_guard as _runtime_guard
 
-
 # Access denied / missing entity hashes will not improve by retrying every
 # 10 seconds. Keep other failures on their original retry cadence.
-WHOLECHAT_ACCESS_RETRY_SECONDS = max(
-    60, int(os.environ.get("WHOLECHAT_ACCESS_RETRY_SECONDS", "300"))
-)
+WHOLECHAT_ACCESS_RETRY_SECONDS = max(60, int(os.environ.get("WHOLECHAT_ACCESS_RETRY_SECONDS", "300")))
 
 
 def _is_wholechat_access_error(exc):
-    return (
-        isinstance(exc, ChannelPrivateError)
-        or (
-            isinstance(exc, ValueError)
-            and (
-                "Could not find the input entity" in str(exc)
-                or "Could not find input entity" in str(exc)
-            )
-        )
+    return isinstance(exc, ChannelPrivateError) or (
+        isinstance(exc, ValueError)
+        and ("Could not find the input entity" in str(exc) or "Could not find input entity" in str(exc))
     )
 
 
@@ -40,14 +31,9 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
     async def _run_wholechat_relay_with_retry(main_module, log=None):
         while True:
             try:
-                from .wholechat_relay_4281603170_to_3743381585 import (
-                    run_wholechat_4281603170_to_3743381585,
-                )
+                from .wholechat_relay_4281603170_to_3743381585 import run_wholechat_4281603170_to_3743381585
 
-                await run_wholechat_4281603170_to_3743381585(
-                    main_module,
-                    logger=log,
-                )
+                await run_wholechat_4281603170_to_3743381585(main_module, logger=log)
                 return
             except asyncio.CancelledError:
                 raise
@@ -58,27 +44,15 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                     return
                 else:
                     if log:
-                        log.exception(
-                            "[WHOLECHAT RELAY WAIT/RETRY] %s: %s",
-                            type(exc).__name__,
-                            exc,
-                        )
+                        log.exception("[WHOLECHAT RELAY WAIT/RETRY] %s: %s", type(exc).__name__, exc)
                     await asyncio.sleep(10)
 
     async def _wait_and_run_owner_tasks(log=None):
         while True:
             try:
                 main_module = sys.modules.get("__main__")
-                client = (
-                    getattr(main_module, "client", None)
-                    if main_module
-                    else None
-                )
-                reply_ready = (
-                    getattr(main_module, "GLOBAL_REPLY_HARDENING", None)
-                    if main_module
-                    else None
-                )
+                client = getattr(main_module, "client", None) if main_module else None
+                reply_ready = getattr(main_module, "GLOBAL_REPLY_HARDENING", None) if main_module else None
 
                 if (
                     main_module is not None
@@ -87,22 +61,9 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                     and client.is_connected()
                     and await client.is_user_authorized()
                 ):
-                    if getattr(
-                        main_module,
-                        "WHOLECHAT_4281603170_TO_3743381585_TASK",
-                        None,
-                    ) is None:
-                        relay_task = asyncio.create_task(
-                            _run_wholechat_relay_with_retry(
-                                main_module,
-                                log,
-                            )
-                        )
-                        setattr(
-                            main_module,
-                            "WHOLECHAT_4281603170_TO_3743381585_TASK",
-                            relay_task,
-                        )
+                    if getattr(main_module, "WHOLECHAT_4281603170_TO_3743381585_TASK", None) is None:
+                        relay_task = asyncio.create_task(_run_wholechat_relay_with_retry(main_module, log))
+                        setattr(main_module, "WHOLECHAT_4281603170_TO_3743381585_TASK", relay_task)
                         if log:
                             log.warning(
                                 "[WHOLECHAT RELAY TASK READY] "
@@ -118,11 +79,7 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                 raise
             except Exception as exc:
                 if log:
-                    log.warning(
-                        "[OWNER TASK WAIT/RETRY] %s: %s",
-                        type(exc).__name__,
-                        exc,
-                    )
+                    log.warning("[OWNER TASK WAIT/RETRY] %s: %s", type(exc).__name__, exc)
 
             await asyncio.sleep(0.5)
 

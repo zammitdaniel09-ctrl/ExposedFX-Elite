@@ -5,7 +5,6 @@ import unicodedata
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
-
 log = logging.getLogger("telegram-reply-hardening")
 
 IMPERIUM_SOURCE_CHAT = -1004367822325
@@ -102,12 +101,7 @@ def _mapped_ids(main_module, value) -> List[int]:
 def _exact_map_key(main_module, route: Dict[str, Any], source_msg_id: int) -> str:
     fn = getattr(main_module, "map_key", None)
     if callable(fn):
-        return fn(
-            route["source_chat"],
-            source_msg_id,
-            route["dest_chat"],
-            route["dest_topic"],
-        )
+        return fn(route["source_chat"], source_msg_id, route["dest_chat"], route["dest_topic"])
     return f"{route['source_chat']}:{source_msg_id}:{route['dest_chat']}:{route['dest_topic']}"
 
 
@@ -195,11 +189,7 @@ def _expected_destination_text(parent, route, registry) -> str:
         return source_text
 
     try:
-        from telegram_worker.imperium_vip_formatter import (
-            build_signal,
-            build_update,
-            parse_xauusd_signal,
-        )
+        from telegram_worker.imperium_vip_formatter import build_signal, build_update, parse_xauusd_signal
         from telegram_worker.imperium_vip_trade_update_hardening import classify_trade_update
 
         parsed = parse_xauusd_signal(source_text)
@@ -258,13 +248,7 @@ async def _destination_topic_messages(main_module, route: Dict[str, Any], limit:
     dest_topic = int(route["dest_topic"])
 
     try:
-        messages = list(
-            await client.get_messages(
-                dest_chat,
-                limit=max(1, int(limit)),
-            )
-            or []
-        )
+        messages = list(await client.get_messages(dest_chat, limit=max(1, int(limit))) or [])
         filtered = [m for m in messages if _message_mentions_topic(m, dest_topic)]
         if filtered:
             return filtered
@@ -273,12 +257,7 @@ async def _destination_topic_messages(main_module, route: Dict[str, Any], limit:
 
     try:
         return list(
-            await client.get_messages(
-                dest_chat,
-                limit=RECOVERY_TOPIC_LIMIT,
-                reply_to=dest_topic,
-            )
-            or []
+            await client.get_messages(dest_chat, limit=RECOVERY_TOPIC_LIMIT, reply_to=dest_topic) or []
         )
     except Exception:
         return []
@@ -325,10 +304,7 @@ async def _mapped_parent_that_exists(main_module, route, source_parent_id) -> Op
 
     for destination_id in existing:
         try:
-            current_parent = await client.get_messages(
-                int(route["dest_chat"]),
-                ids=int(destination_id),
-            )
+            current_parent = await client.get_messages(int(route["dest_chat"]), ids=int(destination_id))
         except Exception:
             current_parent = None
 
@@ -343,10 +319,7 @@ async def _mapped_parent_that_exists(main_module, route, source_parent_id) -> Op
 async def _recover_parent(main_module, client, route, source_parent_id, registry, logger) -> Optional[int]:
     """One bounded attempt to find an unmapped parent's copy in the destination."""
     try:
-        parent = await client.get_messages(
-            int(route["source_chat"]),
-            ids=int(source_parent_id),
-        )
+        parent = await client.get_messages(int(route["source_chat"]), ids=int(source_parent_id))
     except Exception as exc:
         logger.warning(
             "[REPLY PARENT FETCH FAILED] route=%s source_parent=%s %s: %s",
@@ -427,11 +400,7 @@ async def _recover_parent(main_module, client, route, source_parent_id, registry
 
 
 async def ensure_reply_mapping(
-    main_module,
-    message,
-    route: Dict[str, Any],
-    registry=None,
-    logger=None,
+    main_module, message, route: Dict[str, Any], registry=None, logger=None
 ) -> Optional[int]:
     """Resolve the exact forwarded parent for any route.
 
@@ -453,8 +422,11 @@ async def ensure_reply_mapping(
         return None
 
     memo_key = (
-        route.get("source_chat"), route.get("source_topic"),
-        route.get("dest_chat"), route.get("dest_topic"), getattr(message, "id", None),
+        route.get("source_chat"),
+        route.get("source_topic"),
+        route.get("dest_chat"),
+        route.get("dest_topic"),
+        getattr(message, "id", None),
     )
     loop = asyncio.get_running_loop()
     memo = _RESOLVED_MEMO.get(memo_key)
@@ -466,7 +438,7 @@ async def ensure_reply_mapping(
         ):
             return memo[1]
     result = await _ensure_reply_mapping_uncached(
-        main_module, client, message, route, parent_ids, registry, logger,
+        main_module, client, message, route, parent_ids, registry, logger
     )
     if len(_RESOLVED_MEMO) > 2000:
         _RESOLVED_MEMO.clear()

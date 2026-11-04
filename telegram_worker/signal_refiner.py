@@ -16,8 +16,7 @@ HYBRID_BLOCK_ENABLED = os.environ.get("BLOCK_HYBRID_SIGNALS", "1").strip() == "1
 HYBRID_BLOCK_KEYWORDS = [
     x.strip().lower()
     for x in os.environ.get(
-        "HYBRID_BLOCK_KEYWORDS",
-        "hybrid,hybrid signal,hybrid signals,hybrid setup,hybrid entry",
+        "HYBRID_BLOCK_KEYWORDS", "hybrid,hybrid signal,hybrid signals,hybrid setup,hybrid entry"
     ).split(",")
     if x.strip()
 ]
@@ -137,7 +136,6 @@ def all_tps(text: str, parsed: Dict[str, Any]) -> List[float]:
     return out[:8]
 
 
-
 def compact_entry_range(low, high) -> str:
     """
     Display entry zone cleanly:
@@ -232,7 +230,6 @@ def auto_risk(symbol: str, direction: str, entry_low: float, entry_high: float, 
     return "LOW"
 
 
-
 def risk_icon(risk: str) -> str:
     if risk == "LOW":
         return ce("VERY_GOOD")
@@ -262,7 +259,9 @@ def order_type_from_text(text: str, direction: str) -> str:
             return "SELL_STOP"
         if re.search(r"\b(?:BREAK|BREAKS|BROKE|BREAKOUT|IF\s+BREAKS?)\b[^\n]{0,20}\b(BELOW|UNDER)\b", t):
             return "SELL_STOP"
-        if re.search(rf"\b(BELOW|UNDER)\s+[0-9]{{1,7}}(?:\.\d+)?\b[^\n]{{0,50}}\b(SELL|SELLS|SHORT|SHORTS)\b", t):
+        if re.search(
+            rf"\b(BELOW|UNDER)\s+[0-9]{{1,7}}(?:\.\d+)?\b[^\n]{{0,50}}\b(SELL|SELLS|SHORT|SHORTS)\b", t
+        ):
             return "SELL_STOP"
 
     if direction == "BUY":
@@ -314,7 +313,7 @@ def claude_parse(text: str) -> Optional[Dict[str, Any]]:
 
     system = (
         "You extract actionable trading signals from messy Telegram messages. "
-        "Return JSON only. If the text does not contain enough information yet, return {\"is_signal\":false}. "
+        'Return JSON only. If the text does not contain enough information yet, return {"is_signal":false}. '
         "Reject only clear non-trading messages, adverts, analysis-only posts, news, or results. "
         "Accept messy, compact, split, or casual signal wording such as BUY NOW, SELL NOW, long, short, entry, limit, zone, SL, stop, TP, target. "
         "A valid complete signal needs direction, instrument or symbol context, entry or entry zone, stop loss, and at least one take profit/target or TP open. "
@@ -346,12 +345,16 @@ def claude_parse(text: str) -> Optional[Dict[str, Any]]:
         if res.status_code >= 400:
             return None
         data = res.json()
-        content = "".join(part.get("text", "") for part in data.get("content", []) if part.get("type") == "text")
+        content = "".join(
+            part.get("text", "") for part in data.get("content", []) if part.get("type") == "text"
+        )
         obj = json.loads(content)
         if not obj.get("is_signal"):
             return None
         direction = str(obj.get("direction", "")).upper()
-        symbol = str(obj.get("symbol", "XAUUSD")).upper().replace("GOLD", "XAUUSD").replace("XAU/USD", "XAUUSD")
+        symbol = (
+            str(obj.get("symbol", "XAUUSD")).upper().replace("GOLD", "XAUUSD").replace("XAU/USD", "XAUUSD")
+        )
         entry_low = float(obj["entry_low"])
         entry_high = float(obj.get("entry_high", entry_low))
         sl = float(obj["sl"])

@@ -3,32 +3,51 @@
 This file contains routing policy, not Telegram credentials. Existing message
 maps/checkpoints are never changed here. New runtime stops have their own file.
 """
+
 import json
 import os
 import re
 import time
 from pathlib import Path
 
-STOPPED_SOURCE_CHATS = frozenset({
-    -1002817163788, -1002385852838, -1003903223523, -1003423126440,
-    -1003753584094, -1003788774930, -1003803259179, -1003902184158,
-    -1003371106919, -1003893360328, -1003904372271, -1003229476368,
-    -1003801452999,  # Current ChannelPrivateError in MAIN.
-    -1003252087470, -1004347858259, -1004369388188,  # ALT.
-})
+STOPPED_SOURCE_CHATS = frozenset(
+    {
+        -1002817163788,
+        -1002385852838,
+        -1003903223523,
+        -1003423126440,
+        -1003753584094,
+        -1003788774930,
+        -1003803259179,
+        -1003902184158,
+        -1003371106919,
+        -1003893360328,
+        -1003904372271,
+        -1003229476368,
+        -1003801452999,  # Current ChannelPrivateError in MAIN.
+        -1003252087470,
+        -1004347858259,
+        -1004369388188,  # ALT.
+    }
+)
 # 2026-11-03: owner paused the Hub (-1003918958200), Partner
 # (-1004442967052), Jamie SUB IB (-1003802436353) and Market Slayers
 # forwarding (-1004365831817) destinations. Route definitions stay in
 # routes.py and are archived in docs/paused_routes_20261103.md; removing an
 # id here restores them.
-STOPPED_DEST_CHATS = frozenset({
-    -1003216105903, -1003918958200, -1004442967052, -1003802436353,
-    -1004365831817,
-})
-WRITE_REQUESTS = frozenset({
-    "SendMessageRequest", "SendMediaRequest", "SendMultiMediaRequest",
-    "ForwardMessagesRequest", "EditMessageRequest", "SendInlineBotResultRequest",
-})
+STOPPED_DEST_CHATS = frozenset(
+    {-1003216105903, -1003918958200, -1004442967052, -1003802436353, -1004365831817}
+)
+WRITE_REQUESTS = frozenset(
+    {
+        "SendMessageRequest",
+        "SendMediaRequest",
+        "SendMultiMediaRequest",
+        "ForwardMessagesRequest",
+        "EditMessageRequest",
+        "SendInlineBotResultRequest",
+    }
+)
 STOPPED_DEST_TOPICS = frozenset({(-1003885074241, 4660)})
 REOPENED_7250_DESTINATION = (-1003726286301, 12161)
 _RUNTIME = None
@@ -36,8 +55,7 @@ _PATH = None
 
 
 def identity(route):
-    return ":".join(str(route.get(k)) for k in
-                    ("source_chat", "source_topic", "dest_chat", "dest_topic"))
+    return ":".join(str(route.get(k)) for k in ("source_chat", "source_topic", "dest_chat", "dest_topic"))
 
 
 def relay7250_allowed(route):
@@ -45,10 +63,11 @@ def relay7250_allowed(route):
 
 
 def known_stopped(route):
-    return (int(route.get("source_chat") or 0) in STOPPED_SOURCE_CHATS
-            or int(route.get("dest_chat") or 0) in STOPPED_DEST_CHATS
-            or (int(route.get("dest_chat") or 0), int(route.get("dest_topic") or 0))
-            in STOPPED_DEST_TOPICS)
+    return (
+        int(route.get("source_chat") or 0) in STOPPED_SOURCE_CHATS
+        or int(route.get("dest_chat") or 0) in STOPPED_DEST_CHATS
+        or (int(route.get("dest_chat") or 0), int(route.get("dest_topic") or 0)) in STOPPED_DEST_TOPICS
+    )
 
 
 def configure(data_dir):
@@ -87,8 +106,13 @@ def _confirmed(key, reason, logger, route):
     if len(strikes) >= CONFIRM_STRIKES and strikes[-1] - strikes[0] >= CONFIRM_SECONDS:
         return True
     if logger:
-        logger.warning("[OWNER ROUTE STOP PENDING] route=%s contract=%s reason=%s strike=%s RETRY=True",
-                       route.get("name"), key, reason, len(strikes))
+        logger.warning(
+            "[OWNER ROUTE STOP PENDING] route=%s contract=%s reason=%s strike=%s RETRY=True",
+            route.get("name"),
+            key,
+            reason,
+            len(strikes),
+        )
     return False
 
 
@@ -106,8 +130,12 @@ def stop_route(route, reason, logger=None):
     tmp.write_text(json.dumps(_RUNTIME, sort_keys=True), encoding="utf-8")
     tmp.replace(_PATH)
     if logger:
-        logger.warning("[OWNER ROUTE STOPPED] route=%s contract=%s reason=%s RETRY=False NOT_DELIVERED=True",
-                       route.get("name"), key, reason)
+        logger.warning(
+            "[OWNER ROUTE STOPPED] route=%s contract=%s reason=%s RETRY=False NOT_DELIVERED=True",
+            route.get("name"),
+            key,
+            reason,
+        )
 
 
 def blocked_write(request):
@@ -117,6 +145,7 @@ def blocked_write(request):
     peer = getattr(request, "to_peer", None) or getattr(request, "peer", None)
     try:
         from telethon import utils
+
         return int(utils.get_peer_id(peer)) in STOPPED_DEST_CHATS
     except Exception:
         return False
@@ -131,6 +160,7 @@ def install_send_guard(client, logger=None):
         return
     from telethon import utils
     from telethon.errors import ChatWriteForbiddenError
+
     original = client._call
 
     async def guarded_call(sender, request, ordered=False, flood_sleep_threshold=None):
@@ -148,14 +178,24 @@ def install_send_guard(client, logger=None):
 def permanent_access_error(exc):
     names = {c.__name__ for c in type(exc).__mro__}
     permanent = {
-        "ChannelPrivateError", "ChatWriteForbiddenError", "ChatSendPlainForbiddenError",
-        "ChatSendMediaForbiddenError", "ChatSendPhotosForbiddenError",
-        "ChatSendVideosForbiddenError", "ChatSendDocsForbiddenError",
-        "ChatSendAudiosForbiddenError", "ChatSendVoicesForbiddenError",
-        "ChatSendRoundvideosForbiddenError", "ChatSendStickersForbiddenError",
-        "ChatSendGifsForbiddenError", "ChatSendPollForbiddenError",
-        "ChatAdminRequiredError", "ChatRestrictedError", "UserBannedInChannelError",
-        "TopicClosedError", "TopicDeletedError",
+        "ChannelPrivateError",
+        "ChatWriteForbiddenError",
+        "ChatSendPlainForbiddenError",
+        "ChatSendMediaForbiddenError",
+        "ChatSendPhotosForbiddenError",
+        "ChatSendVideosForbiddenError",
+        "ChatSendDocsForbiddenError",
+        "ChatSendAudiosForbiddenError",
+        "ChatSendVoicesForbiddenError",
+        "ChatSendRoundvideosForbiddenError",
+        "ChatSendStickersForbiddenError",
+        "ChatSendGifsForbiddenError",
+        "ChatSendPollForbiddenError",
+        "ChatAdminRequiredError",
+        "ChatRestrictedError",
+        "UserBannedInChannelError",
+        "TopicClosedError",
+        "TopicDeletedError",
     }
     if names & permanent:
         return sorted(names & permanent)[0]
@@ -169,4 +209,3 @@ def permanent_access_error(exc):
     if isinstance(exc, RuntimeError) and text.startswith("Owner topic unavailable:"):
         return "TopicUnavailable"
     return None
-

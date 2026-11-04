@@ -1,6 +1,4 @@
-
 import re
-
 
 PROVIDER_PROFILES = {
     # Default gold-heavy topics.
@@ -73,7 +71,9 @@ def is_promo_text(text: str, topic_id=None) -> bool:
     raw = text or ""
     low = raw.lower()
 
-    has_trade_words = bool(re.search(r"\b(buy|sell|long|short|entry|sl|stop loss|tp|target|xau|gold|nasdaq|btc|eth)\b", low))
+    has_trade_words = bool(
+        re.search(r"\b(buy|sell|long|short|entry|sl|stop loss|tp|target|xau|gold|nasdaq|btc|eth)\b", low)
+    )
 
     if has_trade_words:
         return False
@@ -88,8 +88,12 @@ def apply_provider_profile(text: str, topic_id=None) -> str:
 
     # If a provider sends "SELLS BELOW 4458" without symbol, make it explicit.
     if default_symbol:
-        has_symbol = bool(re.search(r"\b(XAUUSD|XAU/USD|GOLD|NAS100|NASDAQ|US100|BTC|ETH|SOL|[A-Z]{6})\b", raw.upper()))
-        has_trade = bool(re.search(r"\b(BUY|BUYS|BUYING|SELL|SELLS|SELLING|LONG|SHORT|BELOW|ABOVE)\b", raw.upper()))
+        has_symbol = bool(
+            re.search(r"\b(XAUUSD|XAU/USD|GOLD|NAS100|NASDAQ|US100|BTC|ETH|SOL|[A-Z]{6})\b", raw.upper())
+        )
+        has_trade = bool(
+            re.search(r"\b(BUY|BUYS|BUYING|SELL|SELLS|SELLING|LONG|SHORT|BELOW|ABOVE)\b", raw.upper())
+        )
         if has_trade and not has_symbol:
             return f"{default_symbol}\n{raw}"
 

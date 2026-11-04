@@ -8,6 +8,7 @@ Alerts are rate limited and sent from a background task, never inline.
 
 The same file runs on MAIN and ALT; each reports to its own account.
 """
+
 import asyncio
 import json
 import logging
@@ -21,6 +22,7 @@ log = logging.getLogger("health-monitor")
 
 try:
     from zoneinfo import ZoneInfo
+
     TZ = ZoneInfo("Europe/Malta")
 except Exception:  # slim images may ship without tz data; never fail startup
     TZ = timezone(timedelta(hours=1))
@@ -35,8 +37,10 @@ STATE_FILE = "health_monitor_v1.json"
 SUCCESS = (
     re.compile(r"\[FASTVIP COPIED\] route=(?P<route>.+?) source=\S+ .*?(?:lag=(?P<lag>[\d.]+)s|$)"),
     re.compile(r"\[OWNER LIVE POST\] contract=(?P<route>\S+) outcome=sent"),
-    re.compile(r"\[OWNER FORMATTED POST\] contract=(?P<route>\S+) source_id=\S+ "
-               r"outcome=(?:signal|update|recap) lag=(?P<lag>[\d.]+)s"),
+    re.compile(
+        r"\[OWNER FORMATTED POST\] contract=(?P<route>\S+) source_id=\S+ "
+        r"outcome=(?:signal|update|recap) lag=(?P<lag>[\d.]+)s"
+    ),
     re.compile(r"\[WHOLECHAT SENT\] reason=\S+ source=\S+ dest=(?P<route>\S+)"),
     re.compile(r"\[ALT COPIED\] route=(?P<route>.+?) (?:source_msg|ids)="),
 )
@@ -134,8 +138,11 @@ class HealthMonitor:
                 while recent and now - recent[0] > FAILURE_WINDOW_SECONDS:
                     recent.popleft()
                 if len(recent) >= FAILURE_THRESHOLD:
-                    self._alert(("fail", route), f"⚠️ {self.service}: {route}\n"
-                                f"{len(recent)} failed deliveries in 10 min ({match.group('error')})")
+                    self._alert(
+                        ("fail", route),
+                        f"⚠️ {self.service}: {route}\n"
+                        f"{len(recent)} failed deliveries in 10 min ({match.group('error')})",
+                    )
                 return
         for pattern in FLOOD:
             match = pattern.search(text)
@@ -143,7 +150,9 @@ class HealthMonitor:
                 seconds = int(match.group("seconds"))
                 if seconds >= FLOOD_ALERT_SECONDS:
                     route = match.group("route").strip()
-                    self._alert(("flood", route), f"⏳ {self.service}: Telegram flood wait {seconds}s ({route})")
+                    self._alert(
+                        ("flood", route), f"⏳ {self.service}: Telegram flood wait {seconds}s ({route})"
+                    )
                 return
         if level >= logging.ERROR and has_exc:
             first = text.splitlines()[0][:200] if text else "error"
@@ -157,8 +166,10 @@ class HealthMonitor:
         routes = self.state["routes"]
         ok = sum(r["ok"] for r in routes.values())
         fail = sum(r["fail"] for r in routes.values())
-        lines = [f"\U0001f4ca {self.service} · daily health",
-                 f"Delivered {ok} · Failed {fail} · Restarts {self.state.get('restarts', 0)}"]
+        lines = [
+            f"\U0001f4ca {self.service} · daily health",
+            f"Delivered {ok} · Failed {fail} · Restarts {self.state.get('restarts', 0)}",
+        ]
         for name, r in sorted(routes.items(), key=lambda item: -item[1]["ok"]):
             lag = f" · {r['lag_sum'] / r['lag_n']:.1f}s" if r["lag_n"] else ""
             failed = f" · {r['fail']} failed" if r["fail"] else ""
@@ -228,6 +239,9 @@ def install_health_monitor(service, client, data_dir):
         monitor.outbox.append(f"♻️ {service} restarted itself\nReason: {previous.get('reason')}")
     logging.getLogger().addHandler(_LogHandler(monitor))
     monitor.task = asyncio.create_task(monitor.run(client))
-    log.warning("[HEALTH MONITOR READY] service=%s alerts=saved_messages digest=%02d:00 Europe/Malta",
-                service, DIGEST_HOUR)
+    log.warning(
+        "[HEALTH MONITOR READY] service=%s alerts=saved_messages digest=%02d:00 Europe/Malta",
+        service,
+        DIGEST_HOUR,
+    )
     return monitor

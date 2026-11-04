@@ -24,8 +24,7 @@ def _period_week(tz):
 def _rows(stats, start_ts, end_ts):
     con = stats.connect()
     rows = con.execute(
-        "SELECT * FROM results WHERE created_at>=? AND created_at<? ORDER BY created_at",
-        (start_ts, end_ts),
+        "SELECT * FROM results WHERE created_at>=? AND created_at<? ORDER BY created_at", (start_ts, end_ts)
     ).fetchall()
     con.close()
     return rows
@@ -74,16 +73,23 @@ def _report(stats, label, start_ts, end_ts, start_label, end_label):
 
 
 def _meta_get(stats, key):
-    con = stats.connect(); row = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone(); con.close()
+    con = stats.connect()
+    row = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    con.close()
     return row["value"] if row else None
 
 
 def _meta_set(stats, key, value):
-    con = stats.connect(); con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", (key, str(value))); con.commit(); con.close()
+    con = stats.connect()
+    con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", (key, str(value)))
+    con.commit()
+    con.close()
 
 
 async def admin_startup(client):
-    await client.send_message(ADMIN_CHAT, "ExposedFX worker is online. Saved Messages controls are active. Use /help")
+    await client.send_message(
+        ADMIN_CHAT, "ExposedFX worker is online. Saved Messages controls are active. Use /help"
+    )
 
 
 async def handle_admin_command(event, client, stats):
@@ -94,7 +100,9 @@ async def handle_admin_command(event, client, stats):
     tz = ZoneInfo(TZ_NAME)
 
     if cmd == "/help":
-        await client.send_message(ADMIN_CHAT, "Commands:\n/stats_today\n/stats_week\n/top_providers\n/send_weekly\n/help")
+        await client.send_message(
+            ADMIN_CHAT, "Commands:\n/stats_today\n/stats_week\n/top_providers\n/send_weekly\n/help"
+        )
         return
     if cmd == "/stats_today":
         await client.send_message(ADMIN_CHAT, _report(stats, "Daily Recap", *_period_today(tz)))
@@ -108,8 +116,12 @@ async def handle_admin_command(event, client, stats):
         ranked = _rank(rows)
         lines = ["ExposedFX Top Providers", f"Period: {start_label} - {end_label}", ""]
         for i, r in enumerate(ranked[:10], 1):
-            lines.append(f"{i}. {r['source']} | {r['pips']:.1f} pips | {r['wr']:.1f}% WR | {r['trades']} trades")
-        await client.send_message(ADMIN_CHAT, "\n".join(lines) if ranked else "No tracked provider results yet.")
+            lines.append(
+                f"{i}. {r['source']} | {r['pips']:.1f} pips | {r['wr']:.1f}% WR | {r['trades']} trades"
+            )
+        await client.send_message(
+            ADMIN_CHAT, "\n".join(lines) if ranked else "No tracked provider results yet."
+        )
         return
     if cmd == "/send_weekly":
         start_ts, file_path, caption = stats.build_report()

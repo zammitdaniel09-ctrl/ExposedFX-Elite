@@ -1,4 +1,5 @@
 """Where a copied post goes in the destination: its mapped parent or the topic."""
+
 from __future__ import annotations
 
 from typing import Callable, Iterable, List, Mapping, Union
@@ -10,7 +11,9 @@ def _ids(value) -> List[int]:
     """Message-map values are an int, a list of ints or (rarely) a dict of them."""
     if not value:
         return []
-    items = value.values() if isinstance(value, dict) else value if isinstance(value, (list, tuple)) else [value]
+    items = (
+        value.values() if isinstance(value, dict) else value if isinstance(value, (list, tuple)) else [value]
+    )
     out = []
     for item in items:
         try:

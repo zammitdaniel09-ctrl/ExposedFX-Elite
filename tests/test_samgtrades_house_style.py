@@ -1,4 +1,5 @@
 """Exposed | VIP library style for the SamGtrades relay, and the one-time last-100 restyle."""
+
 import asyncio
 import re
 import sys
@@ -15,7 +16,10 @@ package.__path__ = [str(ROOT / "telegram_worker")]
 from telegram_worker import samgtrades_house_formatter as house
 from telegram_worker import wholechat_relay_4281603170_to_3743381585 as relay
 from telethon.tl.types import (
-    MessageEntityBold, MessageEntityCode, MessageEntityCustomEmoji, MessageEntityItalic,
+    MessageEntityBold,
+    MessageEntityCode,
+    MessageEntityCustomEmoji,
+    MessageEntityItalic,
 )
 
 FALLBACK = {"Boom": "\U0001f4a5", "GreenTick": "✅", "RedCross": "❌", "Warning": "⚠️"}
@@ -56,8 +60,11 @@ class FakeRegistry:
 
 def spans(text, entities, kind):
     raw = text.encode("utf-16-le")
-    return [raw[e.offset * 2:(e.offset + e.length) * 2].decode("utf-16-le")
-            for e in entities if isinstance(e, kind)]
+    return [
+        raw[e.offset * 2 : (e.offset + e.length) * 2].decode("utf-16-le")
+        for e in entities
+        if isinstance(e, kind)
+    ]
 
 
 class StyleTests(unittest.TestCase):
@@ -66,54 +73,111 @@ class StyleTests(unittest.TestCase):
     def test_signal_keeps_layout_and_adds_formatting(self):
         text, entities, kind = house.format_samgtrades_text(SIGNAL, None, self.registry)
         self.assertEqual(kind, "signal")
-        self.assertEqual(text, "\U0001f4a5 XAUUSD SELL LIMIT\nPending · wait for price to rise to entry\n\n"
-                               "ENTRY = 4183.955\n\n"
-                               "TP1✅ = 4180.100 (+1.0 RR)\nTP2✅ = 4174.317 (+2.5 RR)\n"
-                               "TP3✅ = 4159.320 (+6.39 RR)\n\nSL❌ = 4187.810 (-1.0 RR)\n\n"
-                               "⚠️ NOT FINANCIAL ADVICE ⚠️")
-        self.assertEqual(spans(text, entities, MessageEntityBold),
-                         ["XAUUSD SELL LIMIT", "ENTRY", "TP1", "TP2", "TP3", "SL", "NOT FINANCIAL ADVICE"])
-        self.assertEqual(spans(text, entities, MessageEntityCode),
-                         ["4183.955", "4180.100", "4174.317", "4159.320", "4187.810"])
-        self.assertEqual(spans(text, entities, MessageEntityItalic), ["Pending · wait for price to rise to entry"])
+        self.assertEqual(
+            text,
+            "\U0001f4a5 XAUUSD SELL LIMIT\nPending · wait for price to rise to entry\n\n"
+            "ENTRY = 4183.955\n\n"
+            "TP1✅ = 4180.100 (+1.0 RR)\nTP2✅ = 4174.317 (+2.5 RR)\n"
+            "TP3✅ = 4159.320 (+6.39 RR)\n\nSL❌ = 4187.810 (-1.0 RR)\n\n"
+            "⚠️ NOT FINANCIAL ADVICE ⚠️",
+        )
+        self.assertEqual(
+            spans(text, entities, MessageEntityBold),
+            ["XAUUSD SELL LIMIT", "ENTRY", "TP1", "TP2", "TP3", "SL", "NOT FINANCIAL ADVICE"],
+        )
+        self.assertEqual(
+            spans(text, entities, MessageEntityCode),
+            ["4183.955", "4180.100", "4174.317", "4159.320", "4187.810"],
+        )
+        self.assertEqual(
+            spans(text, entities, MessageEntityItalic), ["Pending · wait for price to rise to entry"]
+        )
         self.assertEqual(len(spans(text, entities, MessageEntityCustomEmoji)), 7)
 
     def test_market_signal_has_no_pending_note(self):
-        text, entities, _ = house.format_samgtrades_text(SIGNAL.replace("SELL LIMIT", "BUY NOW"), None, self.registry)
+        text, entities, _ = house.format_samgtrades_text(
+            SIGNAL.replace("SELL LIMIT", "BUY NOW"), None, self.registry
+        )
         self.assertTrue(text.startswith("\U0001f4a5 XAUUSD BUY NOW\n\nENTRY"))
         self.assertEqual(spans(text, entities, MessageEntityItalic), [])
 
     def test_every_update_matches_library(self):
         cases = {
-            "{GreenTick} ZONE TRIGGERED/ACTIVATED": ("✅ ZONE TRIGGERED/ACTIVATED\nOrder filled · trade is live", [], []),
+            "{GreenTick} ZONE TRIGGERED/ACTIVATED": (
+                "✅ ZONE TRIGGERED/ACTIVATED\nOrder filled · trade is live",
+                [],
+                [],
+            ),
             "{GreenTick} TP1 HIT — +38.6 PIPS (+1.0 RR)": (
-                "✅ TP1 HIT — +38.6 PIPS (+1.0 RR)\nSecure partials · consider SL to breakeven", ["+38.6 PIPS"], []),
+                "✅ TP1 HIT — +38.6 PIPS (+1.0 RR)\nSecure partials · consider SL to breakeven",
+                ["+38.6 PIPS"],
+                [],
+            ),
             "{GreenTick} TP2 HIT — +96.4 PIPS (+2.5 RR)": (
-                "✅ TP2 HIT — +96.4 PIPS (+2.5 RR)\nRunner continues toward TP3", ["+96.4 PIPS"], []),
+                "✅ TP2 HIT — +96.4 PIPS (+2.5 RR)\nRunner continues toward TP3",
+                ["+96.4 PIPS"],
+                [],
+            ),
             "{GreenTick} TP3 HIT — +246.4 PIPS (+6.39 RR)": (
-                "✅ TP3 HIT — +246.4 PIPS (+6.39 RR)\nFinal target reached · trade closed", ["+246.4 PIPS"], []),
-            "{GreenTick} TP3 HIT — (RR N/A)": ("✅ TP3 HIT (RR N/A)\nFinal target reached · trade closed", [], []),
-            "{GreenTick} TP2 & TP3 HIT — +290 PIPS": ("✅ TP2 & TP3 HIT — +290 PIPS\nBoth targets reached", ["+290 PIPS"], []),
+                "✅ TP3 HIT — +246.4 PIPS (+6.39 RR)\nFinal target reached · trade closed",
+                ["+246.4 PIPS"],
+                [],
+            ),
+            "{GreenTick} TP3 HIT — (RR N/A)": (
+                "✅ TP3 HIT (RR N/A)\nFinal target reached · trade closed",
+                [],
+                [],
+            ),
+            "{GreenTick} TP2 & TP3 HIT — +290 PIPS": (
+                "✅ TP2 & TP3 HIT — +290 PIPS\nBoth targets reached",
+                ["+290 PIPS"],
+                [],
+            ),
             "{GreenTick} +220 PIPS RUNNING": ("✅ +220 PIPS RUNNING\nTrade in profit · protect it", [], []),
             "{GreenTick} +220 PIPS": ("✅ +220 PIPS\nTrade in profit · protect it", [], []),
             "{GreenTick} MOVE SL TO BREAKEVEN": ("✅ MOVE SL TO BREAKEVEN\nTrade is now risk-free", [], []),
-            "{GreenTick} SECURE PARTIAL PROFITS": ("✅ SECURE PARTIAL PROFITS\nClose part, let the rest run", [], []),
+            "{GreenTick} SECURE PARTIAL PROFITS": (
+                "✅ SECURE PARTIAL PROFITS\nClose part, let the rest run",
+                [],
+                [],
+            ),
             "{GreenTick} SECURE PARTIAL PROFITS\n\nMOVE SL TO BREAKEVEN": (
-                "✅ SECURE PARTIAL PROFITS\nMOVE SL TO BREAKEVEN\nClose part · trade is now risk-free", [], []),
+                "✅ SECURE PARTIAL PROFITS\nMOVE SL TO BREAKEVEN\nClose part · trade is now risk-free",
+                [],
+                [],
+            ),
             "{Warning} MOVE SL = 4335": ("⚠️ MOVE SL = 4335\nUpdate your stop loss now", [], ["4335"]),
-            "{GreenTick} ENTRY STILL VALID": ("✅ ENTRY STILL VALID\nSetup unchanged · entry can still be taken", [], []),
+            "{GreenTick} ENTRY STILL VALID": (
+                "✅ ENTRY STILL VALID\nSetup unchanged · entry can still be taken",
+                [],
+                [],
+            ),
             "{GreenTick} TRADE STILL ACTIVE": ("✅ TRADE STILL ACTIVE\nHold · targets still in play", [], []),
             "{Warning} LAYER ENTRY NOW": ("⚠️ LAYER ENTRY NOW\nAdd a second entry at current price", [], []),
             "{Warning} DELETE PENDING ORDER\n\nENTER MARKET NOW": (
-                "⚠️ DELETE PENDING ORDER\nENTER MARKET NOW\nRemove the order and enter at market", [], []),
-            "{Warning} TP1 MISSED BY 10 PIPS": ("⚠️ TP1 MISSED BY 10 PIPS\nPrice turned before the target", [], []),
+                "⚠️ DELETE PENDING ORDER\nENTER MARKET NOW\nRemove the order and enter at market",
+                [],
+                [],
+            ),
+            "{Warning} TP1 MISSED BY 10 PIPS": (
+                "⚠️ TP1 MISSED BY 10 PIPS\nPrice turned before the target",
+                [],
+                [],
+            ),
             "{Warning} CLOSE TRADE NOW": ("⚠️ CLOSE TRADE NOW\nExit at market price", [], []),
             "{Warning} CLOSE AT ENTRY NOW": ("⚠️ CLOSE AT ENTRY NOW\nExit at entry · no loss taken", [], []),
             "{RedCross} SL HIT — -38.6 PIPS (-1.0 RR)": (
-                "❌ SL HIT — -38.6 PIPS (-1.0 RR)\nTrade closed · on to the next", ["-38.6 PIPS"], []),
+                "❌ SL HIT — -38.6 PIPS (-1.0 RR)\nTrade closed · on to the next",
+                ["-38.6 PIPS"],
+                [],
+            ),
             "{RedCross} SL HIT — -1.0 RR": ("❌ SL HIT (-1.0 RR)\nTrade closed · on to the next", [], []),
             "{RedCross} TRADE CANCELLED": ("❌ TRADE CANCELLED\nSetup no longer valid", [], []),
-            "{RedCross} PENDING ORDER CANCELLED": ("❌ PENDING ORDER CANCELLED\nRemove the pending order", [], []),
+            "{RedCross} PENDING ORDER CANCELLED": (
+                "❌ PENDING ORDER CANCELLED\nRemove the pending order",
+                [],
+                [],
+            ),
         }
         for template, (expected, pips, prices) in cases.items():
             text, entities = house.style_update(self.registry, template)
@@ -162,11 +226,20 @@ class RestyleTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         relay._SIGNAL_TEXTS.clear()
-        source = {10: msg(10, SIGNAL), 11: msg(11, TP1, reply_to=10), 12: msg(12, "Good morning team 🔥"),
-                  13: msg(13, "✅ ZONE ACTIVE — XAUUSD SELL\n\nFilled at 4183.955.", reply_to=10)}
+        source = {
+            10: msg(10, SIGNAL),
+            11: msg(11, TP1, reply_to=10),
+            12: msg(12, "Good morning team 🔥"),
+            13: msg(13, "✅ ZONE ACTIVE — XAUUSD SELL\n\nFilled at 4183.955.", reply_to=10),
+        }
         old_signal = "\U0001f4a5 XAUUSD SELL LIMIT\n\nENTRY = 4183.955"
-        dest = {500: msg(500, "Admin note, not relayed"), 501: msg(501, old_signal), 502: msg(502, "✅ TP1 HIT"),
-                503: msg(503, "Good morning team 🔥"), 504: msg(504, "✅ ZONE TRIGGERED/ACTIVATED")}
+        dest = {
+            500: msg(500, "Admin note, not relayed"),
+            501: msg(501, old_signal),
+            502: msg(502, "✅ TP1 HIT"),
+            503: msg(503, "Good morning team 🔥"),
+            504: msg(504, "✅ ZONE TRIGGERED/ACTIVATED"),
+        }
         self.client = FakeClient(dest, source)
         self.map = {"10": 501, "11": 502, "12": 503, "13": 504}
 
@@ -174,8 +247,9 @@ class RestyleTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def run_once(self):
-        return asyncio.run(relay._restyle_recent_once(
-            self.client, self.map, Path(self.tmp.name), FakeRegistry(), relay.log))
+        return asyncio.run(
+            relay._restyle_recent_once(self.client, self.map, Path(self.tmp.name), FakeRegistry(), relay.log)
+        )
 
     def test_edits_only_relayed_formatted_posts_and_never_twice(self):
         self.client.fail_ids = {504}

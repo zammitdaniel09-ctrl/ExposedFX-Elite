@@ -1,4 +1,5 @@
 """Reply-parent resolution stays fast: map hits, in-flight parents, bounded recovery, no double work."""
+
 import asyncio
 import sys
 import time
@@ -30,8 +31,9 @@ class FakeClient:
 
 
 def reply(mid, parent):
-    return SimpleNamespace(id=mid, reply_to_msg_id=None,
-                           reply_to=SimpleNamespace(reply_to_msg_id=parent, reply_to_top_id=5))
+    return SimpleNamespace(
+        id=mid, reply_to_msg_id=None, reply_to=SimpleNamespace(reply_to_msg_id=parent, reply_to_top_id=5)
+    )
 
 
 def key(parent):
@@ -56,14 +58,18 @@ class ReplySpeedTests(unittest.TestCase):
             async def land():
                 await asyncio.sleep(0.3)
                 self.main.message_map[key(50)] = 800
+
             asyncio.get_running_loop().create_task(land())
             return await rh.ensure_reply_mapping(self.main, reply(51, 50), ROUTE)
+
         self.assertEqual(asyncio.run(go()), 800)
         self.assertEqual(len(self.main.client.calls), 1)  # only the existence check
 
     def test_unmapped_parent_is_bounded(self):
         self.main.client = FakeClient(delay=10)
-        with patch.object(rh, "PARENT_INFLIGHT_WAIT_SECONDS", 0.2), patch.object(rh, "RECOVERY_BUDGET_SECONDS", 0.3):
+        with patch.object(rh, "PARENT_INFLIGHT_WAIT_SECONDS", 0.2), patch.object(
+            rh, "RECOVERY_BUDGET_SECONDS", 0.3
+        ):
             started = time.monotonic()
             self.assertIsNone(self.resolve(reply(61, 60)))
         self.assertLess(time.monotonic() - started, 1.5)

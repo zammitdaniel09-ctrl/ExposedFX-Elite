@@ -4,6 +4,7 @@ Pure parsing/rendering: no Telegram client, no I/O. Rendered text is returned
 with Telethon entities (bold, italic, monospace prices, the owner's custom
 emoji) so it can be sent with formatting_entities and parse_mode=None.
 """
+
 import re
 import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
@@ -31,7 +32,9 @@ PRICE = r"\d{1,7}(?:\.\d+)?"
 DIRECTION_RE = re.compile(r"\b(BUY|SELL|LONG|SHORT)\b")
 ORDER_TYPE_RE = re.compile(r"\b(BUY|SELL)[ \t]+(?:\w+[ \t]+){0,2}?(LIMIT|STOP)\b(?![ \t]*LOSS)")
 ENTRY_AT_RE = re.compile(rf"@\s*({PRICE})(?:\s*(?:-|/|TO)\s*({PRICE}))?")
-ENTRY_WORD_RE = re.compile(rf"\bENTRY(?:\s*(?:ZONE|PRICE|POINT))?\s*[:@=\-]?\s*({PRICE})(?:\s*(?:-|/|TO)\s*({PRICE}))?")
+ENTRY_WORD_RE = re.compile(
+    rf"\bENTRY(?:\s*(?:ZONE|PRICE|POINT))?\s*[:@=\-]?\s*({PRICE})(?:\s*(?:-|/|TO)\s*({PRICE}))?"
+)
 SL_RE = re.compile(rf"\b(?:SL|S/L|STOP\s*LOSS|STOPLOSS)\b\s*[:@=\-]?\s*({PRICE})")
 TP_RE = re.compile(rf"\bTP\s*([1-9])\s*[:@=\-]?\s*({PRICE}|OPEN)\b")
 PAIR_RE = re.compile(r"\b([A-Z]{3}(?:USD|JPY|GBP|EUR|CHF|CAD|AUD|NZD))\b")
@@ -39,13 +42,20 @@ INDEX_RE = re.compile(r"\b(US30|US100|NAS100|NAS|SPX500|US500|GER40|DE40|UK100|B
 
 SL_WORD = r"(?:SL|S/L|STOP\s*LOSS|STOPLOSS)"
 SL_MOVE_RE = re.compile(
-    rf"\b{SL_WORD}\s+(?:TO|AT|ON)\s+(BREAK\s*EVEN|BREAKEVEN|BE|ENTRY|TP\s*[1-9]|{PRICE})\b")
+    rf"\b{SL_WORD}\s+(?:TO|AT|ON)\s+(BREAK\s*EVEN|BREAKEVEN|BE|ENTRY|TP\s*[1-9]|{PRICE})\b"
+)
 SET_BE_RE = re.compile(r"\b(?:SET|MOVE|PUT)\s+(?:TO\s+)?(?:BE|BREAK\s*EVEN|BREAKEVEN)\b")
 SL_HIT_RE = re.compile(rf"\b{SL_WORD}\s*(?:WAS\s+|IS\s+|GOT\s+)?(?:HIT|TRIGGERED|TAKEN)\b|\bSTOPPED\s+OUT\b")
-BE_HIT_RE = re.compile(r"\b(?:BE|BREAK\s*EVEN|BREAKEVEN)\s+(?:HIT|TRIGGERED|TAKEN)\b|\bCLOSED\s+(?:AT\s+)?(?:BE|BREAK\s*EVEN|BREAKEVEN)\b")
+BE_HIT_RE = re.compile(
+    r"\b(?:BE|BREAK\s*EVEN|BREAKEVEN)\s+(?:HIT|TRIGGERED|TAKEN)\b|\bCLOSED\s+(?:AT\s+)?(?:BE|BREAK\s*EVEN|BREAKEVEN)\b"
+)
 ALL_TP_RE = re.compile(r"\bALL\s+(?:TARGETS?|TPS?)\b")
-TP_HIT_RE = re.compile(r"\b(?:TP|TARGET)\s*([1-9])\b\s*(?:[:\-]\s*)?(?:IS\s+|WAS\s+|GOT\s+)?(HIT|SMASHED|REACHED|DONE|SECURED|BOOKED|ACHIEVED)\b")
-ENTRY_TRIGGERED_RE = re.compile(r"\b(?:ENTRY|ORDER|LIMIT|POSITION)\s+(?:IS\s+|GOT\s+|HAS\s+BEEN\s+)?(?:TRIGGERED|ACTIVATED|FILLED|ACTIVE)\b")
+TP_HIT_RE = re.compile(
+    r"\b(?:TP|TARGET)\s*([1-9])\b\s*(?:[:\-]\s*)?(?:IS\s+|WAS\s+|GOT\s+)?(HIT|SMASHED|REACHED|DONE|SECURED|BOOKED|ACHIEVED)\b"
+)
+ENTRY_TRIGGERED_RE = re.compile(
+    r"\b(?:ENTRY|ORDER|LIMIT|POSITION)\s+(?:IS\s+|GOT\s+|HAS\s+BEEN\s+)?(?:TRIGGERED|ACTIVATED|FILLED|ACTIVE)\b"
+)
 CLOSE_RE = re.compile(r"\bCLOSE\s+(?:NOW|ALL|EARLY|FULL|IT|THE\s+TRADE|TRADE|POSITION)\b")
 CANCEL_RE = re.compile(r"\b(?:CANCEL|CANCELLED|CANCELED|DELETE|DELETED|REMOVE|REMOVED)\b")
 CANCEL_OBJECT_RE = re.compile(r"\b(?:ORDER|LIMIT|SETUP|SIGNAL|TRADE|PENDING)\b")
@@ -58,7 +68,9 @@ BREAKEVEN_COUNT_RE = re.compile(r"\bBREAK\s*EVENS?\b\s*[:=\-]?\s*(\d+)")
 NET_PIPS_RE = re.compile(r"\bNET\b\s*[:=\-]?\s*([+\-]?)\s*(\d[\d,]*(?:\.\d+)?)\s*PIPS")
 
 # Recaps, promos and links mention "all targets"/"wins" but are not trade updates.
-NOISE_RE = re.compile(r"\b(?:RECAP|WINS?|LOSSES|WIN\s+RATE|RESULTS|SUMMARY|SCREENSHOTS?|ZOOM)\b|HTTPS?://|T\.ME/|@\w")
+NOISE_RE = re.compile(
+    r"\b(?:RECAP|WINS?|LOSSES|WIN\s+RATE|RESULTS|SUMMARY|SCREENSHOTS?|ZOOM)\b|HTTPS?://|T\.ME/|@\w"
+)
 UPDATE_MAX_CHARS = 160
 
 
@@ -98,8 +110,9 @@ def pip_size(symbol: str, price: float) -> float:
 
 def parse_signal(text: str) -> Optional[Dict[str, Any]]:
     up = _upper(text)
-    trade_line = next((line for line in up.splitlines()
-                       if DIRECTION_RE.search(line) and re.search(PRICE, line)), None)
+    trade_line = next(
+        (line for line in up.splitlines() if DIRECTION_RE.search(line) and re.search(PRICE, line)), None
+    )
     if not trade_line:
         return None
     direction = DIRECTION_RE.search(trade_line).group(1)
@@ -144,7 +157,9 @@ def parse_recap(text: str) -> Optional[Dict[str, Any]]:
         "losses": int(losses.group(1)),
         "all_targets": int(all_targets.group(1)) if all_targets else None,
         "breakevens": int(breakevens.group(1)) if breakevens else None,
-        "net_pips": float(net.group(2).replace(",", "")) * (-1 if net.group(1) == "-" else 1) if net else None,
+        "net_pips": (
+            float(net.group(2).replace(",", "")) * (-1 if net.group(1) == "-" else 1) if net else None
+        ),
     }
 
 
@@ -236,7 +251,9 @@ def format_pips(value: float) -> str:
 
 def render_signal(signal) -> Tuple[str, list]:
     b = _Builder()
-    action = signal["direction"] + (" NOW" if signal["order_type"] == "MARKET" else " " + signal["order_type"])
+    action = signal["direction"] + (
+        " NOW" if signal["order_type"] == "MARKET" else " " + signal["order_type"]
+    )
     b.emoji("lightning").add(" ").bold(f"{signal['symbol']} — {action}").add(" ").emoji("lightning").add("\n")
     if signal["order_type"] == "LIMIT":
         way = "drop" if signal["direction"] == "BUY" else "rise"
@@ -262,22 +279,30 @@ def render_recap(recap) -> Tuple[str, list]:
     b = _Builder()
     title = recap["period"] + " RECAP" + (" · " + recap["label"] if recap["label"] else "")
     b.emoji("lightning").add(" ").bold(title).add(" ").emoji("lightning").add("\n\n")
-    rows = [("tick", "Wins:", recap["wins"]), ("cross", "Losses:", recap["losses"]),
-            ("scythe", "Breakeven:", recap["breakevens"]), ("boom", "All targets hit:", recap["all_targets"])]
+    rows = [
+        ("tick", "Wins:", recap["wins"]),
+        ("cross", "Losses:", recap["losses"]),
+        ("scythe", "Breakeven:", recap["breakevens"]),
+        ("boom", "All targets hit:", recap["all_targets"]),
+    ]
     for emoji, label, value in rows:
         if value is not None:
             b.emoji(emoji).add(" ").bold(label).add(" ").mono(str(value)).add("\n")
     closed = recap["wins"] + recap["losses"]
     if closed:
-        b.emoji("star").add(" ").bold("Win rate:").add(" ").mono(f"{round(100 * recap['wins'] / closed)}%").add("\n")
+        b.emoji("star").add(" ").bold("Win rate:").add(" ").mono(
+            f"{round(100 * recap['wins'] / closed)}%"
+        ).add("\n")
     net = recap["net_pips"]
     if net is not None:
         b.emoji("present").add(" ").bold("Net:").add(" ").mono(f"{format_pips(net)} pips").add("\n")
     score = net if net is not None else recap["wins"] - recap["losses"]
     span = "week" if recap["period"] == "WEEKLY" else "day"
-    mood = (f"A green {span} · rest up, we go again" if score > 0
-            else f"A red {span} · reset, we go again" if score < 0
-            else f"A flat {span} · capital protected")
+    mood = (
+        f"A green {span} · rest up, we go again"
+        if score > 0
+        else f"A red {span} · reset, we go again" if score < 0 else f"A flat {span} · capital protected"
+    )
     b.add("\n").italic(mood).add("\n")
     b.emoji("warning").add(" ").italic("Posted levels, before spreads and fees · Not financial advice")
     return b.result()

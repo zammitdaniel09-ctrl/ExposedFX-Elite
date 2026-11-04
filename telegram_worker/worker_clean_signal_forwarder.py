@@ -40,7 +40,6 @@ SESSION_FILE = DATA_DIR / "clean_forwarder_session.session"
 CLEAN_MESSAGE_MAP_FILE = DATA_DIR / "clean_forwarder_message_map.json"
 
 
-
 def load_message_map():
     if not CLEAN_MESSAGE_MAP_FILE.exists():
         return {}
@@ -94,7 +93,6 @@ async def delete_clean_copy_by_source_id(source_msg_id):
         return False
 
 
-
 def clean_b64(value: str) -> str:
     return "".join((value or "").split()).strip()
 
@@ -143,9 +141,7 @@ clean_message_map = load_message_map()
 
 
 HEADER_RE = re.compile(
-    r"^(?:\s|[^\w])*"
-    r"(BUY|SELL)\s+([A-Z0-9/ ]{3,30})\s+(?:INTRADAY\s+)?ZONE\b",
-    re.IGNORECASE,
+    r"^(?:\s|[^\w])*" r"(BUY|SELL)\s+([A-Z0-9/ ]{3,30})\s+(?:INTRADAY\s+)?ZONE\b", re.IGNORECASE
 )
 
 
@@ -196,11 +192,9 @@ def is_my_formatted_signal(text: str) -> bool:
     if any(x in low for x in blocked):
         return False
 
-    is_breakout = bool(re.search(
-        r"\b(BUY|SELL)\s+STOP\s+[A-Z0-9/ ]{3,30}\s+BREAKOUT\s+ZONE\b",
-        t,
-        re.IGNORECASE,
-    ))
+    is_breakout = bool(
+        re.search(r"\b(BUY|SELL)\s+STOP\s+[A-Z0-9/ ]{3,30}\s+BREAKOUT\s+ZONE\b", t, re.IGNORECASE)
+    )
 
     is_normal = bool(HEADER_RE.search(t))
 
@@ -225,12 +219,9 @@ def is_my_formatted_signal(text: str) -> bool:
         ]
         return all(re.search(pattern, t, re.IGNORECASE) for pattern in breakout_required)
 
-    normal_required = [
-        r"(?:buy|sell)\s+point\s*:\s*[-+]?\d",
-    ]
+    normal_required = [r"(?:buy|sell)\s+point\s*:\s*[-+]?\d"]
 
     return all(re.search(pattern, t, re.IGNORECASE) for pattern in normal_required)
-
 
 
 def is_clean_signal_update(text: str) -> bool:
@@ -246,10 +237,11 @@ def is_clean_signal_update(text: str) -> bool:
     has_pips = bool(re.search(r"\+\s*\d{1,5}(?:\.\d+)?\s*PIPS\b", u))
     has_tp_hit = bool(re.search(r"\bTP\s*#?\s*\d{1,2}\s+HIT\b", u))
     has_be = bool(re.search(r"\b(?:BE|BREAK\s*EVEN|BREAKEVEN)\s+HIT\b", u))
-    has_sl_move = bool(re.search(r"\b(?:SL|STOP\s*LOSS)\s+(?:TO|MOVED\s+TO)\s+(?:BE|BREAK\s*EVEN|[-+]?\d)", u))
+    has_sl_move = bool(
+        re.search(r"\b(?:SL|STOP\s*LOSS)\s+(?:TO|MOVED\s+TO)\s+(?:BE|BREAK\s*EVEN|[-+]?\d)", u)
+    )
 
     return has_pips or has_tp_hit or has_be or has_sl_move
-
 
 
 def clean_reply_target(message):
@@ -312,7 +304,9 @@ async def clean_send_message_with_retry(*args, **kwargs):
             last_exc = exc
             if attempt < attempts and is_transient_clean_error(exc):
                 wait = min(2 * attempt, CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS)
-                log.warning(f"[clean send retry transient] attempt={attempt}/{attempts} wait={wait}s error={exc}")
+                log.warning(
+                    f"[clean send retry transient] attempt={attempt}/{attempts} wait={wait}s error={exc}"
+                )
                 await asyncio.sleep(wait)
                 continue
             raise
@@ -341,7 +335,9 @@ async def clean_send_file_with_retry(*args, **kwargs):
             last_exc = exc
             if attempt < attempts and is_transient_clean_error(exc):
                 wait = min(2 * attempt, CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS)
-                log.warning(f"[clean media retry transient] attempt={attempt}/{attempts} wait={wait}s error={exc}")
+                log.warning(
+                    f"[clean media retry transient] attempt={attempt}/{attempts} wait={wait}s error={exc}"
+                )
                 await asyncio.sleep(wait)
                 continue
             raise
@@ -361,7 +357,9 @@ async def clean_forward_with_retry(dest_chat, message):
         except FloodWaitError as exc:
             last_exc = exc
             wait = min(int(exc.seconds) + 1, CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS)
-            log.warning(f"[clean forward retry floodwait] attempt={attempt}/{attempts} wait={wait}s msg={getattr(message, 'id', None)}")
+            log.warning(
+                f"[clean forward retry floodwait] attempt={attempt}/{attempts} wait={wait}s msg={getattr(message, 'id', None)}"
+            )
             if attempt < attempts:
                 await asyncio.sleep(wait)
                 continue
@@ -370,7 +368,9 @@ async def clean_forward_with_retry(dest_chat, message):
             last_exc = exc
             if attempt < attempts and is_transient_clean_error(exc):
                 wait = min(2 * attempt, CLEAN_SEND_RETRY_SLEEP_CAP_SECONDS)
-                log.warning(f"[clean forward retry transient] attempt={attempt}/{attempts} wait={wait}s msg={getattr(message, 'id', None)} error={exc}")
+                log.warning(
+                    f"[clean forward retry transient] attempt={attempt}/{attempts} wait={wait}s msg={getattr(message, 'id', None)} error={exc}"
+                )
                 await asyncio.sleep(wait)
                 continue
             raise
@@ -456,7 +456,9 @@ async def copy_clean_update_message(message, edited=False):
         return None
 
     remember_clean_copy(message, sent)
-    log.info(f"[COPIED SIGNAL UPDATE{' EDIT' if edited else ''}] msg={message.id} -> {DEST_CHAT} reply_to={reply_to}")
+    log.info(
+        f"[COPIED SIGNAL UPDATE{' EDIT' if edited else ''}] msg={message.id} -> {DEST_CHAT} reply_to={reply_to}"
+    )
     return sent
 
 
@@ -538,7 +540,9 @@ async def on_message(event):
         remember_clean_copy(message, sent)
 
     except Exception as exc:
-        log.exception(f"[CLEAN HANDLER FAILED] msg={getattr(getattr(event, 'message', None), 'id', None)}: {exc}")
+        log.exception(
+            f"[CLEAN HANDLER FAILED] msg={getattr(getattr(event, 'message', None), 'id', None)}: {exc}"
+        )
         alert_crash("exposedfx-clean-signal-forwarder:on_message", exc)
 
 
@@ -577,7 +581,9 @@ async def on_message_edited(event):
             log.info(f"[SKIP EDIT NON SIGNAL] msg={message.id} text={text[:80]!r}")
 
     except Exception as exc:
-        log.exception(f"[CLEAN EDIT HANDLER FAILED] msg={getattr(getattr(event, 'message', None), 'id', None)}: {exc}")
+        log.exception(
+            f"[CLEAN EDIT HANDLER FAILED] msg={getattr(getattr(event, 'message', None), 'id', None)}: {exc}"
+        )
         alert_crash("exposedfx-clean-signal-forwarder:on_message_edited", exc)
 
 
@@ -595,13 +601,14 @@ async def on_deleted(event):
         alert_crash("exposedfx-clean-signal-forwarder:on_deleted", exc)
 
 
-
 async def main():
     await start_runtime_guard("exposedfx-clean-signal-forwarder", log)
     await client.connect()
 
     if not await client.is_user_authorized():
-        raise RuntimeError("Telegram session loaded but account is not authorised. Generate a fresh session for this service.")
+        raise RuntimeError(
+            "Telegram session loaded but account is not authorised. Generate a fresh session for this service."
+        )
 
     me = await client.get_me()
     log.info(f"Logged in as {me.first_name} | id={me.id}")

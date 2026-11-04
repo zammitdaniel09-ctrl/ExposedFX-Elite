@@ -4,6 +4,7 @@ Formatters are plugins keyed by name. "copy" keeps the post exactly as the
 provider wrote it; "imperium_vip" restyles XAUUSD signals and trade updates
 for VIP topic 7 with the owner's custom emoji (imperium_vip_inline_hook).
 """
+
 from __future__ import annotations
 
 import copy
@@ -15,11 +16,11 @@ from .rules import entities_of, is_real_media, text_of
 
 @dataclass
 class Rendered:
-    messages: List          # the (possibly restyled) messages, unit order
-    text: str               # text or album caption actually sent
+    messages: List  # the (possibly restyled) messages, unit order
+    text: str  # text or album caption actually sent
     entities: list
-    media: List             # media objects in send order
-    kind: str               # "text" | "media" | "album"
+    media: List  # media objects in send order
+    kind: str  # "text" | "media" | "album"
 
 
 def _copy(message, context):
@@ -32,8 +33,9 @@ def _imperium_vip(message, context):
     text = getattr(message, "message", None) or getattr(message, "raw_text", None) or ""
     if not text:
         return message
-    out_text, out_entities, kind = format_imperium_vip_text(text, getattr(message, "entities", None),
-                                                            context.get("emoji_registry"))
+    out_text, out_entities, kind = format_imperium_vip_text(
+        text, getattr(message, "entities", None), context.get("emoji_registry")
+    )
     if not kind:
         return message
     cloned = copy.copy(message)
@@ -59,8 +61,13 @@ def render(unit: Sequence, formatter: str, context: Dict) -> Rendered:
         )
     first = messages[0]
     media = [first.media] if is_real_media(first) else []
-    return Rendered(messages=messages, text=text_of(first), entities=list(entities_of(first)),
-                    media=media, kind="media" if media else "text")
+    return Rendered(
+        messages=messages,
+        text=text_of(first),
+        entities=list(entities_of(first)),
+        media=media,
+        kind="media" if media else "text",
+    )
 
 
 def caption_args(rendered: Rendered) -> Tuple:

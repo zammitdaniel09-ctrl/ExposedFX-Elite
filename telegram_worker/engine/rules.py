@@ -4,6 +4,7 @@ Every rule here is a pure function of the message, the route and the static
 configuration. The order of `skip_reason` matches the legacy pipeline so the
 reason logged for a skipped post is the same one the old code would give.
 """
+
 from __future__ import annotations
 
 import os
@@ -62,8 +63,11 @@ def forward_origins(message) -> set:
     fwd = getattr(message, "fwd_from", None)
     if not fwd:
         return set()
-    return {marked for marked in (marked_peer_id(getattr(fwd, attr, None))
-                                  for attr in ("from_id", "saved_from_peer")) if marked is not None}
+    return {
+        marked
+        for marked in (marked_peer_id(getattr(fwd, attr, None)) for attr in ("from_id", "saved_from_peer"))
+        if marked is not None
+    }
 
 
 def _peer_ids(obj) -> Iterable[int]:
@@ -122,7 +126,9 @@ class Rules:
             name = type(entity).__name__
             if name == "MessageEntityUrl":
                 return True
-            if name == "MessageEntityTextUrl" and not str(getattr(entity, "url", "") or "").lower().startswith("mailto:"):
+            if name == "MessageEntityTextUrl" and not str(
+                getattr(entity, "url", "") or ""
+            ).lower().startswith("mailto:"):
                 return True
         text = text_of(message)
         return bool(text and (URL_SCHEME_RE.search(text) or BARE_DOMAIN_RE.search(text)))
@@ -137,7 +143,9 @@ class Rules:
     def vip_hard_block(self, message, route: Route) -> bool:
         if route.dest_chat != self.vip_chat:
             return False
-        return route.source_chat == self.vip_blocked_source or self.vip_blocked_source in forward_origins(message)
+        return route.source_chat == self.vip_blocked_source or self.vip_blocked_source in forward_origins(
+            message
+        )
 
     def loop(self, message, route: Route) -> bool:
         return bool(route.loop_guard_peers and forward_origins(message) & route.loop_guard_peers)
@@ -146,8 +154,10 @@ class Rules:
     def retired(self, route: Route) -> Optional[str]:
         if (route.dest_chat, route.dest_topic) == (self.vip_chat, 5):
             return "vip5_retired"  # VIP topic 5 retired; outbound is always blocked
-        if (route.source_chat, route.source_topic) == RELAY_7250 and \
-                (route.dest_chat, route.dest_topic) != RELAY_7250_ONLY_DESTINATION:
+        if (route.source_chat, route.source_topic) == RELAY_7250 and (
+            route.dest_chat,
+            route.dest_topic,
+        ) != RELAY_7250_ONLY_DESTINATION:
             return "relay7250_retired"  # relay 7250 may only feed VIP EXTRA PARTNER [ 4 ]
         return None
 

@@ -1,4 +1,5 @@
 """Typed values the delivery engine works with."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -49,7 +50,8 @@ class Skip:
 @dataclass(frozen=True)
 class Send:
     """One Telegram send: text, a single media post or an album."""
-    kind: str                    # "text" | "media" | "album"
+
+    kind: str  # "text" | "media" | "album"
     dest_chat: int
     reply_to: int
     text: str

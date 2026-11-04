@@ -26,10 +26,7 @@ UPDATE_CUSTOM_EMOJIS = {
     "RED_CROSS": os.environ.get("CUSTOM_EMOJI_RED_CROSS", "5210952531676504517"),
 }
 
-UPDATE_EMOJI_FALLBACKS = {
-    "DIAMOND": "\U0001F48E",
-    "RED_CROSS": "\u274C",
-}
+UPDATE_EMOJI_FALLBACKS = {"DIAMOND": "\U0001f48e", "RED_CROSS": "\u274c"}
 
 
 def update_ce(name: str) -> str:
@@ -99,6 +96,7 @@ PURGE_DEST_LIMIT = int(os.environ.get("PURGE_DEST_LIMIT", "200000"))
 PURGE_DEST_UNTIL_EMPTY = os.environ.get("PURGE_DEST_UNTIL_EMPTY", "1").strip() == "1"
 PURGE_DEST_SLEEP_SECONDS = float(os.environ.get("PURGE_DEST_SLEEP_SECONDS", "0.35"))
 
+
 def load_content_dedupe_signatures():
     try:
         if SIGNAL_CONTENT_DEDUPE_FILE.exists():
@@ -112,7 +110,7 @@ def load_content_dedupe_signatures():
 
 def save_content_dedupe_signatures():
     try:
-        if 'sent_content_signatures' not in globals():
+        if "sent_content_signatures" not in globals():
             return
         tmp = SIGNAL_CONTENT_DEDUPE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(list(sent_content_signatures)[-1200:]), encoding="utf-8")
@@ -172,7 +170,6 @@ def rebuild_last_active_signal_by_topic(lifecycle):
         out[topic] = rec
 
     return out
-
 
 
 def load_content_dedupe_signatures():
@@ -372,7 +369,6 @@ def should_skip(message):
     return False
 
 
-
 def reply_source_ids_for_update(message):
     ids = []
 
@@ -407,10 +403,12 @@ def packet_for_reply_source(message, key):
 
 def has_next_trade_context(text: str) -> bool:
     t = update_match_text(text)
-    return bool(re.search(
-        r"\b(GO\s+IN\s+TO\s+THE\s+NEXT\s+TRADE|GO\s+INTO\s+THE\s+NEXT\s+TRADE|NEXT\s+TRADE|NEW\s+TRADE|NEXT\s+SETUP|NEW\s+SETUP)\b",
-        t,
-    ))
+    return bool(
+        re.search(
+            r"\b(GO\s+IN\s+TO\s+THE\s+NEXT\s+TRADE|GO\s+INTO\s+THE\s+NEXT\s+TRADE|NEXT\s+TRADE|NEW\s+TRADE|NEXT\s+SETUP|NEW\s+SETUP)\b",
+            t,
+        )
+    )
 
 
 def looks_like_new_setup_inside_update(text: str) -> bool:
@@ -483,7 +481,6 @@ def extract_update_pips(text: str):
     return out
 
 
-
 def extract_update_tp_nums(text: str):
     t = update_match_text(text)
     nums = []
@@ -515,18 +512,35 @@ def extract_update_tp_nums(text: str):
 
     # word TP update aliases
     word_tp_map = {
-        "ONE": "1", "TWO": "2", "THREE": "3", "FOUR": "4", "FIVE": "5",
-        "FIRST": "1", "SECOND": "2", "THIRD": "3", "FOURTH": "4", "FIFTH": "5",
+        "ONE": "1",
+        "TWO": "2",
+        "THREE": "3",
+        "FOUR": "4",
+        "FIVE": "5",
+        "FIRST": "1",
+        "SECOND": "2",
+        "THIRD": "3",
+        "FOURTH": "4",
+        "FIFTH": "5",
     }
 
     for word, number in word_tp_map.items():
-        if re.search(rf"\b(TP|TARGET|TAKE\s*PROFIT)\s*(?:NUMBER\s*)?{word}\b[^\n]{{0,40}}\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED)\b", t):
+        if re.search(
+            rf"\b(TP|TARGET|TAKE\s*PROFIT)\s*(?:NUMBER\s*)?{word}\b[^\n]{{0,40}}\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED)\b",
+            t,
+        ):
             nums.append(number)
-        if re.search(rf"\b{word}\s+(TP|TARGET|TAKE\s*PROFIT)\b[^\n]{{0,40}}\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED)\b", t):
+        if re.search(
+            rf"\b{word}\s+(TP|TARGET|TAKE\s*PROFIT)\b[^\n]{{0,40}}\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED)\b",
+            t,
+        ):
             nums.append(number)
 
     # compact TP update aliases
-    for m in re.findall(r"\b(?:TP|TARGET|TAKE\s*PROFIT)\s*#?\s*(\d{1,2})\b[^\n]{0,40}\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED)\b", t):
+    for m in re.findall(
+        r"\b(?:TP|TARGET|TAKE\s*PROFIT)\s*#?\s*(\d{1,2})\b[^\n]{0,40}\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED)\b",
+        t,
+    ):
         if isinstance(m, tuple):
             nums.append(str(m[0]))
         else:
@@ -538,19 +552,33 @@ def extract_update_tp_nums(text: str):
 
     # ultra TP variation aliases
     tp_words = {
-        "ONE": "1", "TWO": "2", "THREE": "3", "FOUR": "4", "FIVE": "5",
-        "FIRST": "1", "SECOND": "2", "THIRD": "3", "FOURTH": "4", "FIFTH": "5",
+        "ONE": "1",
+        "TWO": "2",
+        "THREE": "3",
+        "FOUR": "4",
+        "FIVE": "5",
+        "FIRST": "1",
+        "SECOND": "2",
+        "THIRD": "3",
+        "FOURTH": "4",
+        "FIFTH": "5",
     }
 
     # T1 hit, T2 done, tgt1 reached, target 1 secured, take profit 1 banked
-    for m in re.findall(r"\b(?:TP|T|TGT|TARGET|TAKE\s*PROFIT)\s*#?\s*(\d{1,2})\b[^\n]{0,50}\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED|TAKEN|FILLED)\b", t):
+    for m in re.findall(
+        r"\b(?:TP|T|TGT|TARGET|TAKE\s*PROFIT)\s*#?\s*(\d{1,2})\b[^\n]{0,50}\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED|TAKEN|FILLED)\b",
+        t,
+    ):
         if isinstance(m, tuple):
             nums.append(str(m[0]))
         else:
             nums.append(str(m))
 
     # hit TP1, secured T2, reached target 3
-    for m in re.findall(r"\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED|TAKEN|FILLED)\b[^\n]{0,50}\b(?:TP|T|TGT|TARGET|TAKE\s*PROFIT)\s*#?\s*(\d{1,2})\b", t):
+    for m in re.findall(
+        r"\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED|TAKEN|FILLED)\b[^\n]{0,50}\b(?:TP|T|TGT|TARGET|TAKE\s*PROFIT)\s*#?\s*(\d{1,2})\b",
+        t,
+    ):
         if isinstance(m, tuple):
             nums.append(str(m[1]))
         else:
@@ -558,10 +586,16 @@ def extract_update_tp_nums(text: str):
 
     # first target hit, second tp done, target one reached
     for word, number in tp_words.items():
-        if re.search(rf"\b{word}\s+(?:TP|TGT|TARGET|TAKE\s*PROFIT)\b[^\n]{{0,50}}\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED|TAKEN|FILLED)\b", t):
+        if re.search(
+            rf"\b{word}\s+(?:TP|TGT|TARGET|TAKE\s*PROFIT)\b[^\n]{{0,50}}\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED|TAKEN|FILLED)\b",
+            t,
+        ):
             nums.append(number)
 
-        if re.search(rf"\b(?:TP|TGT|TARGET|TAKE\s*PROFIT)\s+{word}\b[^\n]{{0,50}}\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED|TAKEN|FILLED)\b", t):
+        if re.search(
+            rf"\b(?:TP|TGT|TARGET|TAKE\s*PROFIT)\s+{word}\b[^\n]{{0,50}}\b(HIT|DONE|SMASHED|CLEANED|REACHED|TOUCHED|CLOSED|SECURED|BANKED|TAKEN|FILLED)\b",
+            t,
+        ):
             nums.append(number)
 
     # emoji-only updates: TP1 ✅, T2 💎, target 3 🔥
@@ -599,27 +633,45 @@ def has_set_be_instruction(text: str) -> bool:
 def is_breakeven_hit_phrase(text: str) -> bool:
     t = update_match_text(text)
     return bool(
-        re.search(r"\b(BE|BREAKEVEN|BREAK\s*EVEN)\b.{0,30}\b(HIT|TOUCHED|REACHED|DONE|TAKEN|CLOSED|GOT\s+HIT)\b", t)
+        re.search(
+            r"\b(BE|BREAKEVEN|BREAK\s*EVEN)\b.{0,30}\b(HIT|TOUCHED|REACHED|DONE|TAKEN|CLOSED|GOT\s+HIT)\b", t
+        )
         or re.search(r"\b(HIT|TOUCHED|REACHED|DONE|TAKEN|CLOSED)\b.{0,30}\b(BE|BREAKEVEN|BREAK\s*EVEN)\b", t)
-        or re.search(r"\b(BE|BREAKEVEN|BREAK\s*EVEN)\b\s+(HAS\s+BEEN|HAS|WAS|GOT|IS)\s+(HIT|TOUCHED|REACHED|DONE|TAKEN|CLOSED)", t)
+        or re.search(
+            r"\b(BE|BREAKEVEN|BREAK\s*EVEN)\b\s+(HAS\s+BEEN|HAS|WAS|GOT|IS)\s+(HIT|TOUCHED|REACHED|DONE|TAKEN|CLOSED)",
+            t,
+        )
     )
 
 
 def is_stop_loss_hit_phrase(text: str) -> bool:
     t = update_match_text(text)
     return bool(
-        re.search(r"\b(SL|STOP|STOPLOSS|STOP\s*LOSS)\b.{0,35}\b(HIT|TOUCHED|REACHED|DONE|TAKEN|CLOSED|GOT\s+HIT)\b", t)
-        or re.search(r"\b(HIT|TOUCHED|REACHED|DONE|TAKEN|CLOSED)\b.{0,35}\b(SL|STOP|STOPLOSS|STOP\s*LOSS)\b", t)
+        re.search(
+            r"\b(SL|STOP|STOPLOSS|STOP\s*LOSS)\b.{0,35}\b(HIT|TOUCHED|REACHED|DONE|TAKEN|CLOSED|GOT\s+HIT)\b",
+            t,
+        )
+        or re.search(
+            r"\b(HIT|TOUCHED|REACHED|DONE|TAKEN|CLOSED)\b.{0,35}\b(SL|STOP|STOPLOSS|STOP\s*LOSS)\b", t
+        )
         or re.search(r"\b(STOPPED\s+OUT|STOP\s+OUT|STOP\s+PRESO|LOSS\s+TAKEN|LOSS\s+HIT)\b", t)
-        or re.search(r"\b(SL|STOP|STOPLOSS|STOP\s*LOSS)\b\s+(HAS\s+BEEN|HAS|WAS|GOT|IS)\s+(HIT|TOUCHED|REACHED|DONE|TAKEN|CLOSED)", t)
+        or re.search(
+            r"\b(SL|STOP|STOPLOSS|STOP\s*LOSS)\b\s+(HAS\s+BEEN|HAS|WAS|GOT|IS)\s+(HIT|TOUCHED|REACHED|DONE|TAKEN|CLOSED)",
+            t,
+        )
     )
 
 
 def is_entry_triggered_phrase(text: str) -> bool:
     t = update_match_text(text)
     return bool(
-        re.search(r"\b(ENTRY|ORDER|TRADE|POSITION)\b.{0,30}\b(TRIGGERED|ACTIVATED|FILLED|EXECUTED|OPENED|ACTIVE)\b", t)
-        or re.search(r"\b(TRIGGERED|ACTIVATED|FILLED|EXECUTED|OPENED)\b.{0,30}\b(ENTRY|ORDER|TRADE|POSITION)\b", t)
+        re.search(
+            r"\b(ENTRY|ORDER|TRADE|POSITION)\b.{0,30}\b(TRIGGERED|ACTIVATED|FILLED|EXECUTED|OPENED|ACTIVE)\b",
+            t,
+        )
+        or re.search(
+            r"\b(TRIGGERED|ACTIVATED|FILLED|EXECUTED|OPENED)\b.{0,30}\b(ENTRY|ORDER|TRADE|POSITION)\b", t
+        )
         or re.search(r"\b(WE\s+ARE\s+IN|IN\s+TRADE|IN\s+THE\s+TRADE|TRADE\s+IS\s+LIVE|ORDER\s+LIVE)\b", t)
     )
 
@@ -627,16 +679,27 @@ def is_entry_triggered_phrase(text: str) -> bool:
 def is_cancel_update_phrase(text: str) -> bool:
     t = update_match_text(text)
     return bool(
-        re.search(r"\b(CANCEL|CANCELLED|INVALID|REMOVE|REMOVED|DELETE|DELETED)\b.{0,25}\b(TRADE|SIGNAL|ORDER|SETUP|PENDING)?\b", t)
-        or re.search(r"\b(NO\s+TRADE|DONT\s+ENTER|DO\s+NOT\s+ENTER|FORGET\s+IT|SKIP\s+THIS|SKIP\s+TRADE|SETUP\s+INVALID|TRADE\s+INVALID)\b", t)
+        re.search(
+            r"\b(CANCEL|CANCELLED|INVALID|REMOVE|REMOVED|DELETE|DELETED)\b.{0,25}\b(TRADE|SIGNAL|ORDER|SETUP|PENDING)?\b",
+            t,
+        )
+        or re.search(
+            r"\b(NO\s+TRADE|DONT\s+ENTER|DO\s+NOT\s+ENTER|FORGET\s+IT|SKIP\s+THIS|SKIP\s+TRADE|SETUP\s+INVALID|TRADE\s+INVALID)\b",
+            t,
+        )
     )
 
 
 def is_close_update_phrase(text: str) -> bool:
     t = update_match_text(text)
     return bool(
-        re.search(r"\b(CLOSE|EXIT|MANUALLY\s+CLOSE|BOOK)\b.{0,25}\b(NOW|TRADE|FULL|ALL|PROFIT|PROFITS|IT)?\b", t)
-        or re.search(r"\b(FULL\s+CLOSE|CLOSE\s+IT|CLOSE\s+EVERYTHING|ALL\s+CLOSED|BOOKED\s+PROFIT|PROFIT\s+BOOKED)\b", t)
+        re.search(
+            r"\b(CLOSE|EXIT|MANUALLY\s+CLOSE|BOOK)\b.{0,25}\b(NOW|TRADE|FULL|ALL|PROFIT|PROFITS|IT)?\b", t
+        )
+        or re.search(
+            r"\b(FULL\s+CLOSE|CLOSE\s+IT|CLOSE\s+EVERYTHING|ALL\s+CLOSED|BOOKED\s+PROFIT|PROFIT\s+BOOKED)\b",
+            t,
+        )
     )
 
 
@@ -662,66 +725,183 @@ def phrase_bank_update(raw: str, pips_part: str | None):
     extra = f" {pips_part}" if pips_part else ""
 
     be_hit_phrases = [
-        "BE HAS BEEN HIT", "BE BEEN HIT", "BE GOT HIT", "BE WAS HIT", "BE IS HIT",
-        "BREAKEVEN HAS BEEN HIT", "BREAKEVEN GOT HIT", "BREAKEVEN WAS HIT", "BREAKEVEN IS HIT",
-        "BREAK EVEN HAS BEEN HIT", "BREAK EVEN GOT HIT", "BREAK EVEN WAS HIT",
-        "BE TOUCHED", "BREAKEVEN TOUCHED", "BREAK EVEN TOUCHED",
-        "BE REACHED", "BREAKEVEN REACHED", "BREAK EVEN REACHED",
-        "BACK TO BE", "BACK TO BREAKEVEN", "BACK TO BREAK EVEN",
-        "CLOSED AT BE", "CLOSE AT BE", "SCRATCHED", "NO LOSS", "NO LOSS TRADE",
+        "BE HAS BEEN HIT",
+        "BE BEEN HIT",
+        "BE GOT HIT",
+        "BE WAS HIT",
+        "BE IS HIT",
+        "BREAKEVEN HAS BEEN HIT",
+        "BREAKEVEN GOT HIT",
+        "BREAKEVEN WAS HIT",
+        "BREAKEVEN IS HIT",
+        "BREAK EVEN HAS BEEN HIT",
+        "BREAK EVEN GOT HIT",
+        "BREAK EVEN WAS HIT",
+        "BE TOUCHED",
+        "BREAKEVEN TOUCHED",
+        "BREAK EVEN TOUCHED",
+        "BE REACHED",
+        "BREAKEVEN REACHED",
+        "BREAK EVEN REACHED",
+        "BACK TO BE",
+        "BACK TO BREAKEVEN",
+        "BACK TO BREAK EVEN",
+        "CLOSED AT BE",
+        "CLOSE AT BE",
+        "SCRATCHED",
+        "NO LOSS",
+        "NO LOSS TRADE",
     ]
 
     set_be_phrases = [
-        "SET BE", "SET TO BE", "SET SL BE", "SET SL TO BE",
-        "SET BREAKEVEN", "SET TO BREAKEVEN", "SET BREAK EVEN", "SET TO BREAK EVEN",
-        "MOVE BE", "MOVE TO BE", "MOVE SL BE", "MOVE SL TO BE",
-        "MOVE BREAKEVEN", "MOVE SL TO BREAKEVEN", "MOVE SL TO BREAK EVEN",
-        "SL TO ENTRY", "SL AT ENTRY", "STOP TO ENTRY", "STOPLOSS TO ENTRY",
-        "MAKE IT RISK FREE", "RISK FREE NOW", "SET RISK FREE",
-        "PROTECT TRADE", "PROTECT POSITION", "SECURE ENTRY",
+        "SET BE",
+        "SET TO BE",
+        "SET SL BE",
+        "SET SL TO BE",
+        "SET BREAKEVEN",
+        "SET TO BREAKEVEN",
+        "SET BREAK EVEN",
+        "SET TO BREAK EVEN",
+        "MOVE BE",
+        "MOVE TO BE",
+        "MOVE SL BE",
+        "MOVE SL TO BE",
+        "MOVE BREAKEVEN",
+        "MOVE SL TO BREAKEVEN",
+        "MOVE SL TO BREAK EVEN",
+        "SL TO ENTRY",
+        "SL AT ENTRY",
+        "STOP TO ENTRY",
+        "STOPLOSS TO ENTRY",
+        "MAKE IT RISK FREE",
+        "RISK FREE NOW",
+        "SET RISK FREE",
+        "PROTECT TRADE",
+        "PROTECT POSITION",
+        "SECURE ENTRY",
     ]
 
     sl_hit_phrases = [
-        "SL HAS BEEN HIT", "SL BEEN HIT", "SL GOT HIT", "SL WAS HIT", "SL IS HIT",
-        "STOP HAS BEEN HIT", "STOP GOT HIT", "STOP WAS HIT", "STOP IS HIT",
-        "STOP LOSS HAS BEEN HIT", "STOP LOSS GOT HIT", "STOP LOSS WAS HIT",
-        "STOPLOSS HAS BEEN HIT", "STOPLOSS GOT HIT",
-        "SL TOUCHED", "STOP TOUCHED", "STOP LOSS TOUCHED", "STOPLOSS TOUCHED",
-        "SL REACHED", "STOP REACHED", "STOP LOSS REACHED", "STOPLOSS REACHED",
-        "SL TAKEN", "STOP TAKEN", "STOP LOSS TAKEN", "LOSS TAKEN",
-        "STOPPED OUT", "STOP OUT", "LOSS BOOKED", "TRADE STOPPED",
+        "SL HAS BEEN HIT",
+        "SL BEEN HIT",
+        "SL GOT HIT",
+        "SL WAS HIT",
+        "SL IS HIT",
+        "STOP HAS BEEN HIT",
+        "STOP GOT HIT",
+        "STOP WAS HIT",
+        "STOP IS HIT",
+        "STOP LOSS HAS BEEN HIT",
+        "STOP LOSS GOT HIT",
+        "STOP LOSS WAS HIT",
+        "STOPLOSS HAS BEEN HIT",
+        "STOPLOSS GOT HIT",
+        "SL TOUCHED",
+        "STOP TOUCHED",
+        "STOP LOSS TOUCHED",
+        "STOPLOSS TOUCHED",
+        "SL REACHED",
+        "STOP REACHED",
+        "STOP LOSS REACHED",
+        "STOPLOSS REACHED",
+        "SL TAKEN",
+        "STOP TAKEN",
+        "STOP LOSS TAKEN",
+        "LOSS TAKEN",
+        "STOPPED OUT",
+        "STOP OUT",
+        "LOSS BOOKED",
+        "TRADE STOPPED",
     ]
 
     entry_phrases = [
-        "ENTRY ACTIVE", "ENTRY ACTIVATED", "ENTRY FILLED", "ENTRY EXECUTED",
-        "ORDER ACTIVE", "ORDER ACTIVATED", "ORDER FILLED", "ORDER EXECUTED",
-        "TRADE ACTIVE", "TRADE LIVE", "TRADE IS LIVE", "POSITION OPEN",
-        "WE ARE IN", "WE IN", "NOW IN", "IN TRADE", "IN THE TRADE",
-        "TRIGGERED IN", "FILLED NOW", "ENTERED NOW",
+        "ENTRY ACTIVE",
+        "ENTRY ACTIVATED",
+        "ENTRY FILLED",
+        "ENTRY EXECUTED",
+        "ORDER ACTIVE",
+        "ORDER ACTIVATED",
+        "ORDER FILLED",
+        "ORDER EXECUTED",
+        "TRADE ACTIVE",
+        "TRADE LIVE",
+        "TRADE IS LIVE",
+        "POSITION OPEN",
+        "WE ARE IN",
+        "WE IN",
+        "NOW IN",
+        "IN TRADE",
+        "IN THE TRADE",
+        "TRIGGERED IN",
+        "FILLED NOW",
+        "ENTERED NOW",
     ]
 
     close_phrases = [
-        "CLOSE IT", "CLOSE EVERYTHING", "CLOSE ALL", "CLOSE FULL", "FULL CLOSE",
-        "EXIT NOW", "EXIT TRADE", "EXIT HERE", "ALL OUT", "GET OUT",
-        "BOOK PROFITS", "BOOK PROFIT", "PROFIT BOOKED", "TAKE PROFIT NOW",
-        "SECURE ALL", "BANK ALL", "CLOSE MANUALLY",
+        "CLOSE IT",
+        "CLOSE EVERYTHING",
+        "CLOSE ALL",
+        "CLOSE FULL",
+        "FULL CLOSE",
+        "EXIT NOW",
+        "EXIT TRADE",
+        "EXIT HERE",
+        "ALL OUT",
+        "GET OUT",
+        "BOOK PROFITS",
+        "BOOK PROFIT",
+        "PROFIT BOOKED",
+        "TAKE PROFIT NOW",
+        "SECURE ALL",
+        "BANK ALL",
+        "CLOSE MANUALLY",
     ]
 
     partial_phrases = [
-        "TAKE PARTIAL", "TAKE PARTIALS", "PARTIAL TAKEN", "PARTIAL SECURED",
-        "SECURE PARTIAL", "SECURE PARTIALS", "BOOK PARTIAL", "BOOK PARTIALS",
-        "BANK PARTIAL", "BANK PARTIALS", "BANK SOME", "BOOK SOME",
-        "SECURE SOME", "TAKE SOME", "CLOSE HALF", "CLOSE 50",
-        "CLOSE 50%", "HALF CLOSE", "50% CLOSE",
+        "TAKE PARTIAL",
+        "TAKE PARTIALS",
+        "PARTIAL TAKEN",
+        "PARTIAL SECURED",
+        "SECURE PARTIAL",
+        "SECURE PARTIALS",
+        "BOOK PARTIAL",
+        "BOOK PARTIALS",
+        "BANK PARTIAL",
+        "BANK PARTIALS",
+        "BANK SOME",
+        "BOOK SOME",
+        "SECURE SOME",
+        "TAKE SOME",
+        "CLOSE HALF",
+        "CLOSE 50",
+        "CLOSE 50%",
+        "HALF CLOSE",
+        "50% CLOSE",
     ]
 
     cancel_phrases = [
-        "CANCEL THIS", "CANCEL TRADE", "CANCEL SIGNAL", "CANCEL ORDER",
-        "TRADE CANCELLED", "SIGNAL CANCELLED", "ORDER CANCELLED",
-        "SETUP INVALID", "TRADE INVALID", "SIGNAL INVALID", "ORDER INVALID",
-        "DO NOT ENTER", "DONT ENTER", "NO ENTRY", "NO TRADE",
-        "FORGET THIS", "FORGET IT", "SKIP THIS", "SKIP TRADE",
-        "REMOVE ORDER", "DELETE ORDER", "PENDING CANCELLED",
+        "CANCEL THIS",
+        "CANCEL TRADE",
+        "CANCEL SIGNAL",
+        "CANCEL ORDER",
+        "TRADE CANCELLED",
+        "SIGNAL CANCELLED",
+        "ORDER CANCELLED",
+        "SETUP INVALID",
+        "TRADE INVALID",
+        "SIGNAL INVALID",
+        "ORDER INVALID",
+        "DO NOT ENTER",
+        "DONT ENTER",
+        "NO ENTRY",
+        "NO TRADE",
+        "FORGET THIS",
+        "FORGET IT",
+        "SKIP THIS",
+        "SKIP TRADE",
+        "REMOVE ORDER",
+        "DELETE ORDER",
+        "PENDING CANCELLED",
     ]
 
     if has_any(cancel_phrases):
@@ -732,11 +912,7 @@ def phrase_bank_update(raw: str, pips_part: str | None):
         }
 
     if has_any(sl_hit_phrases):
-        return {
-            "type": "SL_HIT",
-            "status": "SL_HIT",
-            "text": f"<b>STOP LOSS HIT{extra} {EMOJI_CROSS}</b>",
-        }
+        return {"type": "SL_HIT", "status": "SL_HIT", "text": f"<b>STOP LOSS HIT{extra} {EMOJI_CROSS}</b>"}
 
     if has_any(be_hit_phrases):
         return {
@@ -790,7 +966,9 @@ def classify_signal_update_text(text):
         return None
 
     # Avoid fresh setups/recaps/promos.
-    has_new_setup = bool(re.search(r"\b(BUY|SELL|LONG|SHORT)\b", t)) and bool(re.search(r"\b(SL|STOP|STOPLOSS|STOP\s*LOSS)\b\s*[:@\-]?\s*\d", t))
+    has_new_setup = bool(re.search(r"\b(BUY|SELL|LONG|SHORT)\b", t)) and bool(
+        re.search(r"\b(SL|STOP|STOPLOSS|STOP\s*LOSS)\b\s*[:@\-]?\s*\d", t)
+    )
     if has_new_setup:
         return None
 
@@ -828,18 +1006,10 @@ def classify_signal_update_text(text):
 
     if is_stop_loss_hit_phrase(raw):
         extra = f" {pips_part}" if pips_part else ""
-        return {
-            "type": "SL_HIT",
-            "status": "SL_HIT",
-            "text": f"<b>STOP LOSS HIT{extra} {EMOJI_CROSS}</b>",
-        }
+        return {"type": "SL_HIT", "status": "SL_HIT", "text": f"<b>STOP LOSS HIT{extra} {EMOJI_CROSS}</b>"}
 
     if is_breakeven_hit_phrase(raw):
-        return {
-            "type": "BE_HIT",
-            "status": "BREAKEVEN_HIT",
-            "text": f"<b>BREAKEVEN HIT {EMOJI_DIAMOND}</b>",
-        }
+        return {"type": "BE_HIT", "status": "BREAKEVEN_HIT", "text": f"<b>BREAKEVEN HIT {EMOJI_DIAMOND}</b>"}
 
     if is_entry_triggered_phrase(raw):
         return {
@@ -865,7 +1035,10 @@ def classify_signal_update_text(text):
         }
 
     # Cancel / invalid / remove pending
-    if re.search(r"\b(CANCEL|CANCELLED|INVALID|REMOVE|REMOVED|DELETE|DELETED|NO\s+TRADE|DON'?T\s+ENTER|DO\s+NOT\s+ENTER)\b", t):
+    if re.search(
+        r"\b(CANCEL|CANCELLED|INVALID|REMOVE|REMOVED|DELETE|DELETED|NO\s+TRADE|DON'?T\s+ENTER|DO\s+NOT\s+ENTER)\b",
+        t,
+    ):
         return {
             "type": "CANCEL",
             "status": "CANCELLED",
@@ -873,13 +1046,12 @@ def classify_signal_update_text(text):
         }
 
     # Stop loss hit
-    if re.search(r"\b(SL\s+HIT|HIT\s+SL|STOPLOSS\s+HIT|STOP\s*LOSS\s+HIT|HIT\s+STOPLOSS|HIT\s+STOP\s*LOSS|STOP\s+PRESO|STOPPED\s+OUT|STOP\s+HIT|HIT\s+STOP|SL\s+DONE|LOSS\s+HIT|STOPPED)\b", t):
+    if re.search(
+        r"\b(SL\s+HIT|HIT\s+SL|STOPLOSS\s+HIT|STOP\s*LOSS\s+HIT|HIT\s+STOPLOSS|HIT\s+STOP\s*LOSS|STOP\s+PRESO|STOPPED\s+OUT|STOP\s+HIT|HIT\s+STOP|SL\s+DONE|LOSS\s+HIT|STOPPED)\b",
+        t,
+    ):
         extra = f" {pips_part}" if pips_part else ""
-        return {
-            "type": "SL_HIT",
-            "status": "SL_HIT",
-            "text": f"<b>STOP LOSS HIT{extra} {EMOJI_CROSS}</b>",
-        }
+        return {"type": "SL_HIT", "status": "SL_HIT", "text": f"<b>STOP LOSS HIT{extra} {EMOJI_CROSS}</b>"}
 
     # TP hit combined with BE instruction, e.g. "TP2 HIT SET BE"
     early_tp_nums = extract_update_tp_nums(raw)
@@ -902,16 +1074,18 @@ def classify_signal_update_text(text):
 
     # Breakeven hit
     if re.search(r"\b(BE\s+HIT|BREAKEVEN\s+HIT|BREAK\s*EVEN\s+HIT|HIT\s+BE)\b", t):
-        return {
-            "type": "BE_HIT",
-            "status": "BREAKEVEN_HIT",
-            "text": f"<b>BREAKEVEN HIT {EMOJI_DIAMOND}</b>",
-        }
+        return {"type": "BE_HIT", "status": "BREAKEVEN_HIT", "text": f"<b>BREAKEVEN HIT {EMOJI_DIAMOND}</b>"}
 
     # Move SL / protect
-    m = re.search(r"\b(?:MOVE|MOVED|CHANGE|CHANGED|UPDATE|UPDATED|SET)\s+(?:YOUR\s+)?(?:SL|S/L|STOP|STOPLOSS|STOP\s*LOSS)\s*(?:TO|AT)?\s*[:@\-]?\s*(BE|BREAKEVEN|BREAK\s*EVEN|ENTRY|ENTRIES|\d{1,7}(?:\.\d+)?)\b", t)
+    m = re.search(
+        r"\b(?:MOVE|MOVED|CHANGE|CHANGED|UPDATE|UPDATED|SET)\s+(?:YOUR\s+)?(?:SL|S/L|STOP|STOPLOSS|STOP\s*LOSS)\s*(?:TO|AT)?\s*[:@\-]?\s*(BE|BREAKEVEN|BREAK\s*EVEN|ENTRY|ENTRIES|\d{1,7}(?:\.\d+)?)\b",
+        t,
+    )
     if not m:
-        m = re.search(r"\b(?:SL|S/L|STOP|STOPLOSS|STOP\s*LOSS)\s*(?:TO|AT|MOVED\s+TO|UPDATED\s+TO)\s*[:@\-]?\s*(BE|BREAKEVEN|BREAK\s*EVEN|ENTRY|ENTRIES|\d{1,7}(?:\.\d+)?)\b", t)
+        m = re.search(
+            r"\b(?:SL|S/L|STOP|STOPLOSS|STOP\s*LOSS)\s*(?:TO|AT|MOVED\s+TO|UPDATED\s+TO)\s*[:@\-]?\s*(BE|BREAKEVEN|BREAK\s*EVEN|ENTRY|ENTRIES|\d{1,7}(?:\.\d+)?)\b",
+            t,
+        )
 
     if m:
         target = m.group(1).replace("BREAK EVEN", "BREAKEVEN")
@@ -937,7 +1111,10 @@ def classify_signal_update_text(text):
         }
 
     # Close / secure trade
-    if re.search(r"\b(CLOSE\s+NOW|CLOSE\s+TRADE|CLOSE\s+FULL|CLOSE\s+ALL|MANUALLY\s+CLOSE|TAKE\s+PROFIT\s+NOW|EXIT\s+NOW|EXIT\s+TRADE|CLOSE\s+IT|FULL\s+CLOSE|BOOK\s+PROFIT|BOOK\s+PROFITS)\b", t):
+    if re.search(
+        r"\b(CLOSE\s+NOW|CLOSE\s+TRADE|CLOSE\s+FULL|CLOSE\s+ALL|MANUALLY\s+CLOSE|TAKE\s+PROFIT\s+NOW|EXIT\s+NOW|EXIT\s+TRADE|CLOSE\s+IT|FULL\s+CLOSE|BOOK\s+PROFIT|BOOK\s+PROFITS)\b",
+        t,
+    ):
         extra = f" {pips_part}" if pips_part else ""
         return {
             "type": "CLOSE",
@@ -946,7 +1123,10 @@ def classify_signal_update_text(text):
         }
 
     # Partial close / secure partial
-    if re.search(r"\b(PARTIAL|PARTIALS|CLOSE\s+HALF|CLOSE\s+50|SECURE\s+SOME|SECURED\s+SOME|TAKE\s+SOME|TAKE\s+PARTIAL|TAKE\s+PROFIT\s+PARTIAL|BANK\s+SOME|BOOK\s+SOME)\b", t):
+    if re.search(
+        r"\b(PARTIAL|PARTIALS|CLOSE\s+HALF|CLOSE\s+50|SECURE\s+SOME|SECURED\s+SOME|TAKE\s+SOME|TAKE\s+PARTIAL|TAKE\s+PROFIT\s+PARTIAL|BANK\s+SOME|BOOK\s+SOME)\b",
+        t,
+    ):
         extra = f" {pips_part}" if pips_part else ""
         return {
             "type": "PARTIAL",
@@ -959,27 +1139,15 @@ def classify_signal_update_text(text):
     if tp_nums:
         tp_part = " ".join(f"TP{n}" for n in tp_nums) + " HIT"
         extra = f" {pips_part}" if pips_part else ""
-        return {
-            "type": "TP_HIT",
-            "status": "TP_HIT",
-            "text": f"<b>{tp_part}{extra} {EMOJI_DIAMOND}</b>",
-        }
+        return {"type": "TP_HIT", "status": "TP_HIT", "text": f"<b>{tp_part}{extra} {EMOJI_DIAMOND}</b>"}
 
     # Pips-only running profit
     if pips_part:
-        return {
-            "type": "PIPS",
-            "status": "RUNNING_PROFIT",
-            "text": f"<b>{pips_part} {EMOJI_DIAMOND}</b>",
-        }
+        return {"type": "PIPS", "status": "RUNNING_PROFIT", "text": f"<b>{pips_part} {EMOJI_DIAMOND}</b>"}
 
     # Hold / running
     if re.search(r"\b(HOLD|HOLDING|RUNNING|STILL\s+RUNNING|LET\s+IT\s+RUN|KEEP\s+RUNNING|RUNNER)\b", t):
-        return {
-            "type": "RUNNING",
-            "status": "RUNNING",
-            "text": f"<b>TRADE STILL RUNNING {EMOJI_DIAMOND}</b>",
-        }
+        return {"type": "RUNNING", "status": "RUNNING", "text": f"<b>TRADE STILL RUNNING {EMOJI_DIAMOND}</b>"}
 
     return None
 
@@ -1003,20 +1171,19 @@ async def maybe_send_signal_update_reply(message, key, text):
     ai_msg_id = packet_ids[1]
 
     if should_skip_duplicate_update_reply(key, ai_msg_id, update_text):
-        log.info(f"[signal update skipped] duplicate legacy update key={key} ai_msg={ai_msg_id} text={update_text}")
+        log.info(
+            f"[signal update skipped] duplicate legacy update key={key} ai_msg={ai_msg_id} text={update_text}"
+        )
         return True
 
     sent = await send_message_with_retry(
-        SIGNAL_DEST_CHAT,
-        update_text,
-        parse_mode="html",
-        link_preview=False,
-        reply_to=ai_msg_id,
+        SIGNAL_DEST_CHAT, update_text, parse_mode="html", link_preview=False, reply_to=ai_msg_id
     )
 
-    log.info(f"[signal update sent] source_reply={message.id} replied_source={source_id} ai_msg={ai_msg_id} update_msg={getattr(sent, 'id', None)} text={update_text}")
+    log.info(
+        f"[signal update sent] source_reply={message.id} replied_source={source_id} ai_msg={ai_msg_id} update_msg={getattr(sent, 'id', None)} text={update_text}"
+    )
     return True
-
 
 
 def lifecycle_key_for(message, key):
@@ -1113,13 +1280,23 @@ def move_update_from_text(text):
     if has_next_trade_context(raw) and looks_like_new_setup_inside_update(raw):
         return None
 
-    if re.search(r"\b(CANCEL|CANCELLED|REMOVE|REMOVED|INVALID|DELETE|DELETED|NO\s+TRADE|DON'?T\s+ENTER|DO\s+NOT\s+ENTER)\b", t):
-        return {"type": "CANCEL", "status": "CANCELLED", "text": f"<b>SIGNAL CANCELLED / REMOVED {EMOJI_DIAMOND}</b>"}
+    if re.search(
+        r"\b(CANCEL|CANCELLED|REMOVE|REMOVED|INVALID|DELETE|DELETED|NO\s+TRADE|DON'?T\s+ENTER|DO\s+NOT\s+ENTER)\b",
+        t,
+    ):
+        return {
+            "type": "CANCEL",
+            "status": "CANCELLED",
+            "text": f"<b>SIGNAL CANCELLED / REMOVED {EMOJI_DIAMOND}</b>",
+        }
 
     if not re.search(r"\b(MOVE|MOVED|CHANGE|CHANGED|UPDATE|UPDATED|ENTERED|ENTRY|ENTRIES|LIMIT)\b", t):
         return None
 
-    m = re.search(r"\b(?:MOVE|MOVED|CHANGE|CHANGED|UPDATE|UPDATED)\s+(?:LIMIT|ENTRY|ENTRIES|LEVEL|ZONE)?\s*(?:TO|AT)?\s*[:@\-]?\s*(\d{1,7}(?:\.\d+)?)\b", t)
+    m = re.search(
+        r"\b(?:MOVE|MOVED|CHANGE|CHANGED|UPDATE|UPDATED)\s+(?:LIMIT|ENTRY|ENTRIES|LEVEL|ZONE)?\s*(?:TO|AT)?\s*[:@\-]?\s*(\d{1,7}(?:\.\d+)?)\b",
+        t,
+    )
     if not m:
         m = re.search(r"\b(?:ENTERED|ENTRY|ENTRIES)\s+(?:AT|TO)?\s*[:@\-]?\s*(\d{1,7}(?:\.\d+)?)\b", t)
 
@@ -1136,11 +1313,7 @@ def move_update_from_text(text):
 
 
 def update_reply_signature(key, ai_msg_id, update_text):
-    base = "|".join([
-        str(key),
-        str(ai_msg_id),
-        re.sub(r"\s+", " ", str(update_text or "").strip().upper()),
-    ])
+    base = "|".join([str(key), str(ai_msg_id), re.sub(r"\s+", " ", str(update_text or "").strip().upper())])
     return hashlib.sha256(base.encode("utf-8", errors="ignore")).hexdigest()
 
 
@@ -1403,20 +1576,18 @@ async def maybe_send_lifecycle_update(message, key, text):
         return True
 
     sent = await send_message_with_retry(
-        SIGNAL_DEST_CHAT,
-        update_text,
-        parse_mode="html",
-        link_preview=False,
-        reply_to=int(ai_msg_id),
+        SIGNAL_DEST_CHAT, update_text, parse_mode="html", link_preview=False, reply_to=int(ai_msg_id)
     )
 
     rec["last_update_ts"] = time.time()
-    rec.setdefault("updates", []).append({
-        "source_msg_id": int(message.id),
-        "dest_msg_id": int(getattr(sent, "id", 0) or 0),
-        "text": update_text,
-        "ts": time.time(),
-    })
+    rec.setdefault("updates", []).append(
+        {
+            "source_msg_id": int(message.id),
+            "dest_msg_id": int(getattr(sent, "id", 0) or 0),
+            "text": update_text,
+            "ts": time.time(),
+        }
+    )
 
     new_status = lifecycle_status_from_update(text, move_update)
     if new_status:
@@ -1443,7 +1614,9 @@ async def maybe_send_lifecycle_update(message, key, text):
 
     save_signal_lifecycle()
 
-    log.info(f"[lifecycle update sent] topic={key} source_msg={message.id} ai_msg={ai_msg_id} status={rec.get('status')} text={update_text}")
+    log.info(
+        f"[lifecycle update sent] topic={key} source_msg={message.id} ai_msg={ai_msg_id} status={rec.get('status')} text={update_text}"
+    )
     return True
 
 
@@ -1455,7 +1628,6 @@ def source_name_for(message):
 def buffer_key(message):
     topic_id = topic_id_of(message)
     return str(topic_id or "main")
-
 
 
 def load_packet_map():
@@ -1530,8 +1702,8 @@ def remember_signal_packet(message, key, sent_messages):
         log.info(f"[signal packet mapped] source_msg={message.id} -> dest_ids={ids}")
 
 
-
 signal_packet_map = load_packet_map()
+
 
 def recover_lifecycle_from_packet_map_if_empty():
     """
@@ -1605,7 +1777,6 @@ def recover_lifecycle_from_packet_map_if_empty():
 recovered_lifecycle_records = recover_lifecycle_from_packet_map_if_empty()
 
 
-
 def trim_buffer(key):
     now = time.time()
     dq = buffers[key]
@@ -1630,9 +1801,13 @@ def looks_like_fresh_signal_start(text: str) -> bool:
     t = update_match_text(text)
     has_direction = bool(re.search(r"\b(BUY|BUYS|BUYING|SELL|SELLS|SELLING|LONG|LONGS|SHORT|SHORTS)\b", t))
     has_entry = bool(re.search(rf"\b(ENTRY|ENTRIES|ENTER|ENTERING)\b[^\n]{{0,40}}{PRICE_RE}", t))
-    has_symbol = bool(re.search(r"\b(XAUUSD|XAGUSD|GOLD|SILVER|BTC|ETH|SOL|NAS100|NASDAQ|US100|US30|US500|GER40|DAX|[A-Z]{6})\b", t))
+    has_symbol = bool(
+        re.search(
+            r"\b(XAUUSD|XAGUSD|GOLD|SILVER|BTC|ETH|SOL|NAS100|NASDAQ|US100|US30|US500|GER40|DAX|[A-Z]{6})\b",
+            t,
+        )
+    )
     return has_direction and (has_entry or has_symbol)
-
 
 
 def extract_tp_context_from_result(result):
@@ -1654,11 +1829,7 @@ def extract_tp_context_from_result(result):
 def remember_last_signal_context(key, result):
     tp_text = extract_tp_context_from_result(result)
     if tp_text:
-        last_signal_context[key] = {
-            "ts": time.time(),
-            "tp_text": tp_text,
-            "result": result,
-        }
+        last_signal_context[key] = {"ts": time.time(), "tp_text": tp_text, "result": result}
 
 
 def apply_same_as_above_context(key, text):
@@ -1684,7 +1855,12 @@ def looks_like_partial_signal_piece(text: str) -> bool:
     t = update_match_text(raw)
 
     # Management/recap-only messages should not enter the signal buffer.
-    recap_only = bool(re.search(r"\b(TP\s*\d*\s*HIT|PIPS?\s*[✅🎯💥🔥]?|BE\s*HIT|SL\s*TO\s*BE|CLOSE|CLOSED|CANCEL|INVALID|STILL\s+RUNNING)\b", t))
+    recap_only = bool(
+        re.search(
+            r"\b(TP\s*\d*\s*HIT|PIPS?\s*[✅🎯💥🔥]?|BE\s*HIT|SL\s*TO\s*BE|CLOSE|CLOSED|CANCEL|INVALID|STILL\s+RUNNING)\b",
+            t,
+        )
+    )
     has_setup_word = bool(re.search(r"\b(BUY|SELL|LONG|SHORT|ENTRY|ENTER|SL|STOP|TP|TARGET)\b", t))
     if recap_only and not has_setup_word:
         return False
@@ -1736,16 +1912,22 @@ def signature_for(result, key, source_msg_id=None):
     Edits keep the same source_msg_id, so old packets can still be replaced.
     """
     parsed = result.get("parsed") or {}
-    base = "|".join([
-        str(key),
-        str(source_msg_id or ""),
-        str(parsed.get("symbol", "")),
-        str(parsed.get("direction", "")),
-        str(parsed.get("entry_low", "")),
-        str(parsed.get("entry_high", "")),
-        str(parsed.get("sl", "")),
-        ",".join(str(x) for x in parsed.get("tps", [])[:8]) if isinstance(parsed.get("tps"), list) else "",
-    ])
+    base = "|".join(
+        [
+            str(key),
+            str(source_msg_id or ""),
+            str(parsed.get("symbol", "")),
+            str(parsed.get("direction", "")),
+            str(parsed.get("entry_low", "")),
+            str(parsed.get("entry_high", "")),
+            str(parsed.get("sl", "")),
+            (
+                ",".join(str(x) for x in parsed.get("tps", [])[:8])
+                if isinstance(parsed.get("tps"), list)
+                else ""
+            ),
+        ]
+    )
 
     if base.count("|") < 6:
         base = f"{key}|{source_msg_id or ''}|{result.get('message', '')}"
@@ -1783,7 +1965,9 @@ async def send_ai_formatted_signal(message, result, reply_to_id):
                 link_preview=False,
                 reply_to=reply_to_id,
             )
-            log.info(f"[signal hub ai media sent] source_msg={getattr(message, 'id', None)} ai_msg={getattr(sent, 'id', None)}")
+            log.info(
+                f"[signal hub ai media sent] source_msg={getattr(message, 'id', None)} ai_msg={getattr(sent, 'id', None)}"
+            )
             return sent
 
         except Exception as exc:
@@ -1793,11 +1977,7 @@ async def send_ai_formatted_signal(message, result, reply_to_id):
             )
 
     sent = await send_message_with_retry(
-        SIGNAL_DEST_CHAT,
-        formatted,
-        parse_mode="html",
-        link_preview=False,
-        reply_to=reply_to_id,
+        SIGNAL_DEST_CHAT, formatted, parse_mode="html", link_preview=False, reply_to=reply_to_id
     )
 
     return sent
@@ -1825,10 +2005,14 @@ async def forward_original(message, text):
                 formatting_entities=entities if text else None,
                 parse_mode=None,
             )
-            log.info(f"[signal hub original anonymous media copied] msg={message.id} topic={topic_id_of(message)}")
+            log.info(
+                f"[signal hub original anonymous media copied] msg={message.id} topic={topic_id_of(message)}"
+            )
             return sent
         except Exception as exc:
-            log.warning(f"[signal hub original anonymous media direct copy failed] msg={message.id}: {type(exc).__name__}: {exc}")
+            log.warning(
+                f"[signal hub original anonymous media direct copy failed] msg={message.id}: {type(exc).__name__}: {exc}"
+            )
 
         cache_dir = DATA_DIR / "ai_original_media_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1844,7 +2028,9 @@ async def forward_original(message, text):
                     formatting_entities=entities if text else None,
                     parse_mode=None,
                 )
-                log.info(f"[signal hub original anonymous media reuploaded] msg={message.id} topic={topic_id_of(message)}")
+                log.info(
+                    f"[signal hub original anonymous media reuploaded] msg={message.id} topic={topic_id_of(message)}"
+                )
                 return sent
         finally:
             if downloaded:
@@ -1854,7 +2040,9 @@ async def forward_original(message, text):
                     pass
 
     if not text:
-        log.info(f"[signal hub original anonymous skipped empty] msg={message.id} topic={topic_id_of(message)}")
+        log.info(
+            f"[signal hub original anonymous skipped empty] msg={message.id} topic={topic_id_of(message)}"
+        )
         return None
 
     sent = await send_message_with_retry(
@@ -1904,7 +2092,9 @@ async def send_message_with_retry(*args, **kwargs):
                 wait = min(2 * attempt, SIGNAL_SEND_RETRY_SLEEP_CAP_SECONDS)
 
             if wait and attempt < attempts:
-                log.warning(f"[signal send retry] attempt={attempt}/{attempts} wait={wait}s error={name}: {exc}")
+                log.warning(
+                    f"[signal send retry] attempt={attempt}/{attempts} wait={wait}s error={name}: {exc}"
+                )
                 await asyncio.sleep(wait)
                 continue
 
@@ -1928,12 +2118,16 @@ async def forward_original_with_retry(message, text):
             seconds = getattr(exc, "seconds", None)
             if seconds is not None and attempt < attempts:
                 wait = min(int(seconds) + 1, SIGNAL_SEND_RETRY_SLEEP_CAP_SECONDS)
-                log.warning(f"[signal original retry floodwait] attempt={attempt}/{attempts} wait={wait}s msg={getattr(message, 'id', None)}")
+                log.warning(
+                    f"[signal original retry floodwait] attempt={attempt}/{attempts} wait={wait}s msg={getattr(message, 'id', None)}"
+                )
                 await asyncio.sleep(wait)
                 continue
             if attempt < attempts and is_transient_send_error(exc):
                 wait = min(2 * attempt, SIGNAL_SEND_RETRY_SLEEP_CAP_SECONDS)
-                log.warning(f"[signal original retry transient] attempt={attempt}/{attempts} wait={wait}s msg={getattr(message, 'id', None)} error={exc}")
+                log.warning(
+                    f"[signal original retry transient] attempt={attempt}/{attempts} wait={wait}s msg={getattr(message, 'id', None)} error={exc}"
+                )
                 await asyncio.sleep(wait)
                 continue
             raise
@@ -2049,8 +2243,12 @@ def is_obvious_non_trade_partial(text: str) -> bool:
 
     # Messages with only hype/announcement wording and no trade levels should not buffer.
     has_direction = bool(re.search(r"\b(BUY|SELL|BUYS|SELLS|BUYING|SELLING|LONG|SHORT)\b", up))
-    has_symbol = bool(re.search(r"\b(XAU|XAUUSD|GOLD|BTC|BTCUSD|NAS100|NASDAQ|US100|GER40|US30|EURUSD|GBPUSD|USDJPY)\b", up))
-    has_trade_level_word = bool(re.search(r"\b(SL|STOP|STOPLOSS|TP|TARGET|ENTRY|LIMIT|ABOVE|BELOW|UNDER|OVER)\b", up))
+    has_symbol = bool(
+        re.search(r"\b(XAU|XAUUSD|GOLD|BTC|BTCUSD|NAS100|NASDAQ|US100|GER40|US30|EURUSD|GBPUSD|USDJPY)\b", up)
+    )
+    has_trade_level_word = bool(
+        re.search(r"\b(SL|STOP|STOPLOSS|TP|TARGET|ENTRY|LIMIT|ABOVE|BELOW|UNDER|OVER)\b", up)
+    )
     has_price = bool(re.search(r"\b\d{3,7}(?:\.\d+)?\b", up))
 
     if not has_direction and not has_symbol and not has_trade_level_word:
@@ -2099,7 +2297,6 @@ def is_any_signal_update_text(text: str) -> bool:
     return False
 
 
-
 def looks_like_split_signal_continuation(text: str) -> bool:
     """
     Allows structural entry/SL/TP lines to complete an existing buffered
@@ -2143,11 +2340,7 @@ def looks_like_split_signal_continuation(text: str) -> bool:
     level_re = r"(?:\d{3,7}(?:\.\d+)?|\d{1,2}\.\d{3,7})"
 
     # Absolute stop-loss level.
-    if re.search(
-        rf"\b(?:SL|S/L|STOP|STOPLOSS|STOP\s*LOSS)\b"
-        rf"\s*[:@\-]?\s*{level_re}\b",
-        t,
-    ):
+    if re.search(rf"\b(?:SL|S/L|STOP|STOPLOSS|STOP\s*LOSS)\b" rf"\s*[:@\-]?\s*{level_re}\b", t):
         return True
 
     # Distance-based stop loss, for example: Stop loss 20 pips.
@@ -2168,19 +2361,11 @@ def looks_like_split_signal_continuation(text: str) -> bool:
         return True
 
     # Entry or zone line.
-    if re.search(
-        rf"\b(?:ENTRY|ENTRIES|ENTER|ENTERING|ZONE|AREA)\b"
-        rf"[^\n]{{0,50}}{PRICE_RE}",
-        t,
-    ):
+    if re.search(rf"\b(?:ENTRY|ENTRIES|ENTER|ENTERING|ZONE|AREA)\b" rf"[^\n]{{0,50}}{PRICE_RE}", t):
         return True
 
     # Bare price range.
-    if re.search(
-        rf"^\s*{PRICE_RE}\s*(?:-|:|/)\s*{PRICE_RE}\s*$",
-        raw.upper(),
-        re.MULTILINE,
-    ):
+    if re.search(rf"^\s*{PRICE_RE}\s*(?:-|:|/)\s*{PRICE_RE}\s*$", raw.upper(), re.MULTILINE):
         return True
 
     return False
@@ -2196,30 +2381,14 @@ async def try_signal_before_update_gate(message, key, text, source_name):
     3. Leave real management updates to the existing update classifier.
     """
 
-    standalone_text = apply_provider_profile(
-        apply_same_as_above_context(key, text),
-        topic_id_of(message),
-    )
+    standalone_text = apply_provider_profile(apply_same_as_above_context(key, text), topic_id_of(message))
 
-    result = extract_and_format(
-        standalone_text,
-        source_name,
-        message.id,
-    )
+    result = extract_and_format(standalone_text, source_name, message.id)
 
     if result:
-        log.info(
-            f"[signal hub pre-update complete] "
-            f"msg={message.id} topic={topic_id_of(message)}"
-        )
+        log.info(f"[signal hub pre-update complete] " f"msg={message.id} topic={topic_id_of(message)}")
 
-        await send_full_signal(
-            message,
-            result,
-            key,
-            text,
-            forward_raw=True,
-        )
+        await send_full_signal(message, result, key, text, forward_raw=True)
         return True
 
     if not PARTIAL_BUFFER_ENABLED:
@@ -2233,23 +2402,13 @@ async def try_signal_before_update_gate(message, key, text, source_name):
     if not looks_like_split_signal_continuation(text):
         return False
 
-    buffers[key].append({
-        "ts": time.time(),
-        "id": message.id,
-        "text": text,
-        "message": message,
-    })
+    buffers[key].append({"ts": time.time(), "id": message.id, "text": text, "message": message})
 
     combined = apply_provider_profile(
-        apply_same_as_above_context(key, combined_text_for(key)),
-        topic_id_of(message),
+        apply_same_as_above_context(key, combined_text_for(key)), topic_id_of(message)
     )
 
-    result = extract_and_format(
-        combined,
-        source_name,
-        message.id,
-    )
+    result = extract_and_format(combined, source_name, message.id)
 
     if result:
         raw_msg = first_buffer_message(key) or message
@@ -2260,13 +2419,7 @@ async def try_signal_before_update_gate(message, key, text, source_name):
             f"pieces={len(buffers[key])}"
         )
 
-        await send_full_signal(
-            raw_msg,
-            result,
-            key,
-            message_text(raw_msg).strip(),
-            forward_raw=True,
-        )
+        await send_full_signal(raw_msg, result, key, message_text(raw_msg).strip(), forward_raw=True)
     else:
         log.info(
             f"[signal hub waiting] split continuation stored "
@@ -2277,7 +2430,6 @@ async def try_signal_before_update_gate(message, key, text, source_name):
     # The continuation has been consumed by the signal buffer. Do not allow
     # the management-update gate to suppress or reinterpret it.
     return True
-
 
 
 @client.on(events.NewMessage())
@@ -2302,12 +2454,7 @@ async def on_signal_hub_message(event):
 
         # Complete setups and structural split-signal continuations must be
         # processed before the management-update classifier.
-        if await try_signal_before_update_gate(
-            message,
-            key,
-            text,
-            source_name,
-        ):
+        if await try_signal_before_update_gate(message, key, text, source_name):
             return
 
         # Management updates are now suppressed by default.
@@ -2323,7 +2470,9 @@ async def on_signal_hub_message(event):
                 return
             if await maybe_send_signal_update_reply(message, key, text):
                 return
-            log.info(f"[signal update unmatched] recognized update but no AI target key={key} msg={message.id} text={text[:100]!r}")
+            log.info(
+                f"[signal update unmatched] recognized update but no AI target key={key} msg={message.id} text={text[:100]!r}"
+            )
             return
 
         # First try this message alone. Complete setups should not enter the partial buffer.
@@ -2353,14 +2502,18 @@ async def on_signal_hub_message(event):
         # Do NOT forward candidate messages yet.
         # Only forward the original after the setup is fully confirmed and formatted.
 
-        combined = apply_provider_profile(apply_same_as_above_context(key, combined_text_for(key)), topic_id_of(message))
+        combined = apply_provider_profile(
+            apply_same_as_above_context(key, combined_text_for(key)), topic_id_of(message)
+        )
         result = extract_and_format(combined, source_name, message.id)
         if result:
             raw_msg = first_buffer_message(key) or message
             await send_full_signal(raw_msg, result, key, message_text(raw_msg).strip(), forward_raw=True)
             return
 
-        log.info(f"[signal hub waiting] partial message stored key={key} topic={topic_id_of(message)} size={len(buffers[key])}")
+        log.info(
+            f"[signal hub waiting] partial message stored key={key} topic={topic_id_of(message)} size={len(buffers[key])}"
+        )
     except Exception as exc:
         log.exception(f"[signal hub failed] {exc}")
 
@@ -2371,8 +2524,6 @@ async def on_admin_message(event):
         await handle_admin_command(event, client, stats)
     except Exception as exc:
         log.error(f"[admin command failed] {exc}")
-
-
 
 
 async def purge_destination_on_start_once():
@@ -2390,7 +2541,9 @@ async def purge_destination_on_start_once():
 
     while True:
         if deleted >= limit:
-            log.warning(f"[incoming purge limit reached] chat={SIGNAL_DEST_CHAT} deleted={deleted} limit={limit}")
+            log.warning(
+                f"[incoming purge limit reached] chat={SIGNAL_DEST_CHAT} deleted={deleted} limit={limit}"
+            )
             break
 
         batch_limit = min(100, limit - deleted)
@@ -2429,7 +2582,9 @@ async def main():
     await start_runtime_guard("exposedfx-ai-signal-formatter", log)
     await client.connect()
     if not await client.is_user_authorized():
-        raise RuntimeError("Telegram session loaded but account is not authorised. Regenerate session chunks.")
+        raise RuntimeError(
+            "Telegram session loaded but account is not authorised. Regenerate session chunks."
+        )
 
     me = await client.get_me()
     log.info(f"Logged in as {me.first_name} | id={me.id}")
@@ -2448,7 +2603,9 @@ async def main():
     log.info("AI/source replies to the anonymous original copy: True")
     log.info("Anonymous original copy mode active: True")
     log.info(f"Universal AI extractor active for any pair")
-    log.info(f"Partial signal buffer: {PARTIAL_BUFFER_ENABLED} | window={BUFFER_WINDOW_SECONDS}s | max={BUFFER_MAX_MESSAGES}")
+    log.info(
+        f"Partial signal buffer: {PARTIAL_BUFFER_ENABLED} | window={BUFFER_WINDOW_SECONDS}s | max={BUFFER_MAX_MESSAGES}"
+    )
     log.info("Partial buffer strict guard active: True")
     log.info(f"Content signal dedupe active: {CONTENT_DEDUPE_ENABLED}")
     log.info(f"SIGNAL_SEND_RETRY_ATTEMPTS={SIGNAL_SEND_RETRY_ATTEMPTS}")

@@ -6,15 +6,8 @@ import re
 
 from telethon.tl.types import MessageEntityCustomEmoji
 
-from telegram_worker.imperium_vip_formatter import (
-    build_signal,
-    build_update,
-    parse_xauusd_signal,
-)
-from telegram_worker.imperium_vip_trade_updates import (
-    classify_trade_update,
-    run_update_self_test,
-)
+from telegram_worker.imperium_vip_formatter import build_signal, build_update, parse_xauusd_signal
+from telegram_worker.imperium_vip_trade_updates import classify_trade_update, run_update_self_test
 
 log = logging.getLogger("imperium-vip-destination-poller")
 
@@ -108,9 +101,7 @@ def _already_house_formatted(message, registry):
     text = _text(message).strip()
     upper = text.upper()
 
-    if "NOT FINANCIAL ADVICE" in upper and (
-        "XAUUSD BUY" in upper or "XAUUSD SELL" in upper
-    ):
+    if "NOT FINANCIAL ADVICE" in upper and ("XAUUSD BUY" in upper or "XAUUSD SELL" in upper):
         return True
 
     stripped = re.sub(r"^[^A-Z0-9+\-]+", "", upper).strip()
@@ -121,7 +112,7 @@ def _already_house_formatted(message, registry):
     if not custom_ids:
         return False
 
-    for entity in (getattr(message, "entities", None) or []):
+    for entity in getattr(message, "entities", None) or []:
         if isinstance(entity, MessageEntityCustomEmoji):
             try:
                 if int(getattr(entity, "document_id", 0) or 0) in custom_ids:
@@ -133,17 +124,11 @@ def _already_house_formatted(message, registry):
 
 async def _topic_messages(client):
     try:
-        messages = await client.get_messages(
-            DEST_CHAT,
-            limit=POLL_LIMIT,
-            reply_to=DEST_TOPIC,
-        )
+        messages = await client.get_messages(DEST_CHAT, limit=POLL_LIMIT, reply_to=DEST_TOPIC)
         return list(messages or [])
     except Exception as exc:
         log.warning(
-            "[IMPERIUM VIP DEST POLL GETREPLIES FAILED] %s: %s; using chat fallback",
-            type(exc).__name__,
-            exc,
+            "[IMPERIUM VIP DEST POLL GETREPLIES FAILED] %s: %s; using chat fallback", type(exc).__name__, exc
         )
 
     messages = await client.get_messages(DEST_CHAT, limit=max(POLL_LIMIT * 3, 60))
@@ -171,11 +156,7 @@ async def _format_destination_message(client, registry, message, logger=None):
     if parsed:
         out_text, out_entities = build_signal(registry, parsed)
         await client.edit_message(
-            DEST_CHAT,
-            msg_id,
-            out_text,
-            formatting_entities=out_entities,
-            parse_mode=None,
+            DEST_CHAT, msg_id, out_text, formatting_entities=out_entities, parse_mode=None
         )
         logger.warning(
             "[IMPERIUM VIP ROUTE SIGNAL FORMATTED] source=%s_%s dest=%s_%s msg=%s kind=%s direction=%s tps=%s sl=%s",
@@ -195,13 +176,7 @@ async def _format_destination_message(client, registry, message, logger=None):
     if out_text.strip() == raw.strip():
         return False
 
-    await client.edit_message(
-        DEST_CHAT,
-        msg_id,
-        out_text,
-        formatting_entities=out_entities,
-        parse_mode=None,
-    )
+    await client.edit_message(DEST_CHAT, msg_id, out_text, formatting_entities=out_entities, parse_mode=None)
     logger.warning(
         "[IMPERIUM VIP ROUTE UPDATE FORMATTED] source=%s_%s dest=%s_%s msg=%s before=%r after=%r",
         SOURCE_CHAT,
@@ -254,10 +229,7 @@ async def install_imperium_vip_destination_poller(client, registry, logger=None)
             try:
                 messages = await _topic_messages(client)
                 current_ids = set()
-                for message in sorted(
-                    messages,
-                    key=lambda m: int(getattr(m, "id", 0) or 0),
-                ):
+                for message in sorted(messages, key=lambda m: int(getattr(m, "id", 0) or 0)):
                     msg_id = int(getattr(message, "id", 0) or 0)
                     if not msg_id:
                         continue
@@ -275,27 +247,16 @@ async def install_imperium_vip_destination_poller(client, registry, logger=None)
                         continue
 
                     try:
-                        changed = await _format_destination_message(
-                            client,
-                            registry,
-                            message,
-                            logger=logger,
-                        )
+                        changed = await _format_destination_message(client, registry, message, logger=logger)
                         if changed:
                             # Refresh signature after our own edit so the next
                             # poll cannot immediately process it again.
-                            refreshed = await client.get_messages(
-                                DEST_CHAT,
-                                ids=msg_id,
-                            )
+                            refreshed = await client.get_messages(DEST_CHAT, ids=msg_id)
                             if refreshed:
                                 seen[msg_id] = _signature(refreshed)
                     except Exception as exc:
                         logger.exception(
-                            "[IMPERIUM VIP DEST FORMAT FAILED] msg=%s %s: %s",
-                            msg_id,
-                            type(exc).__name__,
-                            exc,
+                            "[IMPERIUM VIP DEST FORMAT FAILED] msg=%s %s: %s", msg_id, type(exc).__name__, exc
                         )
 
                 # Keep memory bounded to the recent topic window.
@@ -308,11 +269,7 @@ async def install_imperium_vip_destination_poller(client, registry, logger=None)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning(
-                    "[IMPERIUM VIP DEST POLLER RETRY] %s: %s",
-                    type(exc).__name__,
-                    exc,
-                )
+                logger.warning("[IMPERIUM VIP DEST POLLER RETRY] %s: %s", type(exc).__name__, exc)
 
             await asyncio.sleep(POLL_SECONDS)
 

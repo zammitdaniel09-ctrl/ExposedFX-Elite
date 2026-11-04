@@ -8,6 +8,7 @@ takes the latest 30 posts of the source topic, then continues live: a
 NewMessage event wakes the ordered checkpoint reader at once, and a short poll
 is the backstop. Updates reply to their formatted signal in the destination.
 """
+
 import asyncio
 import json
 import logging
@@ -20,12 +21,21 @@ from telethon.errors import FloodWaitError
 from telegram_worker import library_signal_format as fmt
 from telegram_worker import owner_forwarding_policy as policy
 from telegram_worker.owner_requested_routes_20261102 import (
-    load_state, rpc, save_state, topic_id, verify_roots,
+    load_state,
+    rpc,
+    save_state,
+    topic_id,
+    verify_roots,
 )
 
 log = logging.getLogger("owner-formatted-20261103")
-ROUTE = {"name": "Owner Relay8323 To VIP12289 Formatted", "source_chat": -1004367822325,
-         "source_topic": 8323, "dest_chat": -1003726286301, "dest_topic": 12289}
+ROUTE = {
+    "name": "Owner Relay8323 To VIP12289 Formatted",
+    "source_chat": -1004367822325,
+    "source_topic": 8323,
+    "dest_chat": -1003726286301,
+    "dest_topic": 12289,
+}
 BACKFILL = 30
 POLL_SECONDS = 3
 ORPHAN_MAX_AGE = 24 * 3600
@@ -45,9 +55,11 @@ def _copy(value):
 
 
 async def send(worker, text, entities, reply_to):
-    return await rpc(lambda: worker.client.send_message(
-        ROUTE["dest_chat"], text, formatting_entities=entities,
-        reply_to=reply_to, link_preview=False))
+    return await rpc(
+        lambda: worker.client.send_message(
+            ROUTE["dest_chat"], text, formatting_entities=entities, reply_to=reply_to, link_preview=False
+        )
+    )
 
 
 async def process(worker, state, message):
@@ -57,8 +69,12 @@ async def process(worker, state, message):
     if signal:
         out, entities = fmt.render_signal(signal)
         sent = await send(worker, out, entities, ROUTE["dest_topic"])
-        state["signals"][source_id] = {"signal": signal, "dest": int(sent.id),
-                                       "progress": {}, "at": message.date.timestamp()}
+        state["signals"][source_id] = {
+            "signal": signal,
+            "dest": int(sent.id),
+            "progress": {},
+            "at": message.date.timestamp(),
+        }
         state["latest_signal"] = source_id
         state["posted"][source_id] = int(sent.id)
         return "signal"
@@ -96,22 +112,36 @@ async def process(worker, state, message):
 
 
 async def initialize(worker, state, path):
-    latest = await rpc(lambda: worker.client.get_messages(
-        ROUTE["source_chat"], reply_to=ROUTE["source_topic"], limit=BACKFILL + 1))
+    latest = await rpc(
+        lambda: worker.client.get_messages(
+            ROUTE["source_chat"], reply_to=ROUTE["source_topic"], limit=BACKFILL + 1
+        )
+    )
     ids = sorted(int(m.id) for m in latest or [] if int(m.id) != ROUTE["source_topic"])[-BACKFILL:]
     # An empty topic starts at 0, so the first posts that arrive are formatted.
-    state.update(initialized=True, checkpoint=(ids[0] - 1) if ids else 0,
-                 backfill_selected=len(ids), started_at=time.time())
+    state.update(
+        initialized=True,
+        checkpoint=(ids[0] - 1) if ids else 0,
+        backfill_selected=len(ids),
+        started_at=time.time(),
+    )
     save_state(path, state)
-    log.warning("[OWNER FORMATTED BACKFILL SELECTED] contract=%s requested=%s selected=%s",
-                policy.identity(ROUTE), BACKFILL, len(ids))
+    log.warning(
+        "[OWNER FORMATTED BACKFILL SELECTED] contract=%s requested=%s selected=%s",
+        policy.identity(ROUTE),
+        BACKFILL,
+        len(ids),
+    )
 
 
 async def cycle(worker, state, path):
     checkpoint = int(state["checkpoint"])
-    messages = [m async for m in worker.client.iter_messages(
-        ROUTE["source_chat"], reply_to=ROUTE["source_topic"], min_id=checkpoint,
-        reverse=True, limit=50)]
+    messages = [
+        m
+        async for m in worker.client.iter_messages(
+            ROUTE["source_chat"], reply_to=ROUTE["source_topic"], min_id=checkpoint, reverse=True, limit=50
+        )
+    ]
     for message in messages:
         if int(message.id) <= checkpoint or int(message.id) == ROUTE["source_topic"]:
             continue
@@ -121,9 +151,13 @@ async def cycle(worker, state, path):
         state["checkpoint"] = checkpoint = int(message.id)
         state["counts"][outcome] = state["counts"].get(outcome, 0) + 1
         save_state(path, state)
-        log.warning("[OWNER FORMATTED POST] contract=%s source_id=%s outcome=%s lag=%.1fs",
-                    policy.identity(ROUTE), message.id, outcome,
-                    time.time() - message.date.timestamp())
+        log.warning(
+            "[OWNER FORMATTED POST] contract=%s source_id=%s outcome=%s lag=%.1fs",
+            policy.identity(ROUTE),
+            message.id,
+            outcome,
+            time.time() - message.date.timestamp(),
+        )
 
 
 async def reformat_edited_signal(worker, state, path, message):
@@ -132,8 +166,11 @@ async def reformat_edited_signal(worker, state, path, message):
     if not signal or signal == record["signal"]:
         return
     out, entities = fmt.render_signal(signal)
-    await rpc(lambda: worker.client.edit_message(
-        ROUTE["dest_chat"], record["dest"], out, formatting_entities=entities, link_preview=False))
+    await rpc(
+        lambda: worker.client.edit_message(
+            ROUTE["dest_chat"], record["dest"], out, formatting_entities=entities, link_preview=False
+        )
+    )
     record["signal"] = signal
     save_state(path, state)
     log.warning("[OWNER FORMATTED SIGNAL EDITED] source_id=%s dest_id=%s", message.id, record["dest"])
@@ -174,11 +211,14 @@ async def run_owner_formatted_route(worker):
             async with lock:
                 await reformat_edited_signal(worker, state, path, event.message)
         except Exception as exc:
-            log.warning("[OWNER FORMATTED EDIT SKIPPED] source_id=%s error=%s",
-                        event.message.id, type(exc).__name__)
+            log.warning(
+                "[OWNER FORMATTED EDIT SKIPPED] source_id=%s error=%s", event.message.id, type(exc).__name__
+            )
 
-    handlers = ((on_new, events.NewMessage(chats=ROUTE["source_chat"])),
-                (on_edit, events.MessageEdited(chats=ROUTE["source_chat"])))
+    handlers = (
+        (on_new, events.NewMessage(chats=ROUTE["source_chat"])),
+        (on_edit, events.MessageEdited(chats=ROUTE["source_chat"])),
+    )
     for callback, event in handlers:
         client.add_event_handler(callback, event)
     try:
@@ -195,10 +235,16 @@ async def run_owner_formatted_route(worker):
                 reason = policy.permanent_access_error(exc)
                 if reason and stop(state, path, reason):
                     return
-                log.warning("[OWNER FORMATTED WAIT] contract=%s error=%s", policy.identity(ROUTE), type(exc).__name__)
+                log.warning(
+                    "[OWNER FORMATTED WAIT] contract=%s error=%s", policy.identity(ROUTE), type(exc).__name__
+                )
                 await asyncio.sleep(15)
-        log.warning("[OWNER FORMATTED LIVE READY] contract=%s checkpoint=%s poll=%ss EVENT_WAKE=True",
-                    policy.identity(ROUTE), state["checkpoint"], POLL_SECONDS)
+        log.warning(
+            "[OWNER FORMATTED LIVE READY] contract=%s checkpoint=%s poll=%ss EVENT_WAKE=True",
+            policy.identity(ROUTE),
+            state["checkpoint"],
+            POLL_SECONDS,
+        )
         while True:
             wake.clear()
             try:
@@ -212,8 +258,11 @@ async def run_owner_formatted_route(worker):
                 reason = policy.permanent_access_error(exc)
                 if reason and stop(state, path, reason):
                     return
-                log.warning("[OWNER FORMATTED LIVE WAIT] contract=%s error=%s",
-                            policy.identity(ROUTE), type(exc).__name__)
+                log.warning(
+                    "[OWNER FORMATTED LIVE WAIT] contract=%s error=%s",
+                    policy.identity(ROUTE),
+                    type(exc).__name__,
+                )
                 await asyncio.sleep(5)
             try:
                 await asyncio.wait_for(wake.wait(), POLL_SECONDS)

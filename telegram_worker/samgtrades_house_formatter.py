@@ -19,16 +19,9 @@ import unicodedata
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
-from telethon.tl.types import (
-    MessageEntityBold,
-    MessageEntityCode,
-    MessageEntityItalic,
-)
+from telethon.tl.types import MessageEntityBold, MessageEntityCode, MessageEntityItalic
 
-from telegram_worker.imperium_vip_trade_update_hardening import (
-    classify_trade_update,
-)
-
+from telegram_worker.imperium_vip_trade_update_hardening import classify_trade_update
 
 PRICE = r"\d{1,7}(?:\.\d+)?"
 REQUIRED_ALIASES = ("Boom", "GreenTick", "RedCross", "Warning")
@@ -140,11 +133,7 @@ def parse_samgtrades_signal(text: str) -> Optional[Dict[str, Any]]:
     if not raw or "SIGNAL ALERT" not in upper or "XAUUSD" not in upper:
         return None
 
-    direction_kind = re.search(
-        r"\b(BUY|SELL)\s+(LIMIT|STOP|MARKET|NOW)\b",
-        raw,
-        re.IGNORECASE,
-    )
+    direction_kind = re.search(r"\b(BUY|SELL)\s+(LIMIT|STOP|MARKET|NOW)\b", raw, re.IGNORECASE)
     if not direction_kind:
         return None
 
@@ -152,16 +141,8 @@ def parse_samgtrades_signal(text: str) -> Optional[Dict[str, Any]]:
     raw_kind = direction_kind.group(2).upper()
     kind = "NOW" if raw_kind in {"MARKET", "NOW"} else raw_kind
 
-    entry_match = re.search(
-        rf"^\s*(?:💰\s*)?ENTRY\s*:\s*({PRICE})\b",
-        raw,
-        re.IGNORECASE | re.MULTILINE,
-    )
-    sl_match = re.search(
-        rf"^\s*(?:🛑\s*)?SL\s*:\s*({PRICE})\b",
-        raw,
-        re.IGNORECASE | re.MULTILINE,
-    )
+    entry_match = re.search(rf"^\s*(?:💰\s*)?ENTRY\s*:\s*({PRICE})\b", raw, re.IGNORECASE | re.MULTILINE)
+    sl_match = re.search(rf"^\s*(?:🛑\s*)?SL\s*:\s*({PRICE})\b", raw, re.IGNORECASE | re.MULTILINE)
 
     if not entry_match or not sl_match:
         return None
@@ -173,11 +154,7 @@ def parse_samgtrades_signal(text: str) -> Optional[Dict[str, Any]]:
     rrs: List[Optional[Decimal]] = []
 
     for line in raw.splitlines():
-        match = re.match(
-            rf"^\s*(?:✅\s*)?TP\s*\d+\s*:\s*({PRICE})\b(.*)$",
-            line,
-            re.IGNORECASE,
-        )
+        match = re.match(rf"^\s*(?:✅\s*)?TP\s*\d+\s*:\s*({PRICE})\b(.*)$", line, re.IGNORECASE)
         if not match:
             continue
 
@@ -185,11 +162,7 @@ def parse_samgtrades_signal(text: str) -> Optional[Dict[str, Any]]:
         tail = match.group(2) or ""
 
         # Source format: TPx: price (pips, 2.5R)
-        rr_match = re.search(
-            r"(?:^|[,\s(])([+-]?\d+(?:\.\d+)?)\s*R\b",
-            tail,
-            re.IGNORECASE,
-        )
+        rr_match = re.search(r"(?:^|[,\s(])([+-]?\d+(?:\.\d+)?)\s*R\b", tail, re.IGNORECASE)
         rr = _decimal(rr_match.group(1)) if rr_match else None
         if rr is None:
             rr = _computed_rr(entry, sl, price)
@@ -259,19 +232,13 @@ def _build_signal_with_rr(registry, parsed):
     note = _PENDING_NOTES.get((direction, kind))
     if note:
         lines.append(f"__{note}__")
-    lines += [
-        "",
-        f"**ENTRY** = `{entry}`",
-        "",
-    ]
+    lines += ["", f"**ENTRY** = `{entry}`", ""]
 
     rrs = list(parsed.get("rrs") or [])
     for idx, price in enumerate(parsed["tps"], 1):
         rr = rrs[idx - 1] if idx - 1 < len(rrs) else None
         rr_text = _format_rr_value(rr, signed=True) or "RR N/A"
-        lines.append(
-            f"**TP{idx}**{{GreenTick}} = `{price}` ({rr_text})"
-        )
+        lines.append(f"**TP{idx}**{{GreenTick}} = `{price}` ({rr_text})")
 
     lines += [
         "",
@@ -314,10 +281,10 @@ def style_update(registry, template: str):
     alias, head = match.groups()
     rr = re.search(r"\s*(?:—\s*)?\(?([+-]?\d+(?:\.\d+)?\s+RR|RR N/A)\)?$", head)
     if rr:
-        head = head[:rr.start()]
+        head = head[: rr.start()]
     pips = re.search(r"\s+—\s+([+-]?\d[\d,]*(?:\.\d+)?\s+PIPS)$", head)
     if pips:
-        head = head[:pips.start()]
+        head = head[: pips.start()]
     value = re.match(rf"^(.*?)\s*=\s*({PRICE})$", head)
     if value:
         head = value.group(1)
@@ -337,26 +304,15 @@ def style_update(registry, template: str):
 
 
 def _pip_value(raw: str) -> Optional[str]:
-    match = re.search(
-        r"\(\s*([+-]?\d+(?:\.\d+)?)\s*PIPS?\s*\)",
-        raw,
-        re.IGNORECASE,
-    )
+    match = re.search(r"\(\s*([+-]?\d+(?:\.\d+)?)\s*PIPS?\s*\)", raw, re.IGNORECASE)
     if not match:
-        match = re.search(
-            r"([+-]?\d+(?:\.\d+)?)\s*PIPS?\b",
-            raw,
-            re.IGNORECASE,
-        )
+        match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*PIPS?\b", raw, re.IGNORECASE)
     if not match:
         return None
     return match.group(1).lstrip("+").lstrip("-")
 
 
-def _parent_rr_for_tp(
-    parent_signal: Optional[Dict[str, Any]],
-    tp_number: int,
-) -> Optional[Decimal]:
+def _parent_rr_for_tp(parent_signal: Optional[Dict[str, Any]], tp_number: int) -> Optional[Decimal]:
     if not parent_signal:
         # SamGtrades currently defines TP1=1R and TP2=2.5R. TP3 can vary,
         # therefore only these two have safe fallbacks without the parent.
@@ -373,11 +329,7 @@ def _parent_rr_for_tp(
     return None
 
 
-def _append_rr_to_base_update(
-    template: str,
-    raw: str,
-    parent_signal: Optional[Dict[str, Any]],
-) -> str:
+def _append_rr_to_base_update(template: str, raw: str, parent_signal: Optional[Dict[str, Any]]) -> str:
     upper = template.upper()
 
     # If a generic update already contains an RR marker, leave it untouched.
@@ -388,11 +340,7 @@ def _append_rr_to_base_update(
         return template
 
     pips = _pip_value(raw)
-    risk_pips = (
-        parent_signal.get("risk_pips")
-        if parent_signal
-        else None
-    )
+    risk_pips = parent_signal.get("risk_pips") if parent_signal else None
     if pips is not None and risk_pips:
         pips_num = _decimal(pips)
         risk_num = _decimal(risk_pips)
@@ -405,10 +353,7 @@ def _append_rr_to_base_update(
     return template
 
 
-def classify_samgtrades_update(
-    text: str,
-    parent_text: Optional[str] = None,
-) -> Optional[str]:
+def classify_samgtrades_update(text: str, parent_text: Optional[str] = None) -> Optional[str]:
     raw = _normalise(text)
     if not raw:
         return None
@@ -419,11 +364,7 @@ def classify_samgtrades_update(
     if parse_samgtrades_signal(raw):
         return None
 
-    parent_signal = (
-        parse_samgtrades_signal(parent_text or "")
-        if parent_text
-        else None
-    )
+    parent_signal = parse_samgtrades_signal(parent_text or "") if parent_text else None
 
     if "XAUUSD" in upper and re.search(r"\bCANCEL+ED\b|\bCANCELED\b", upper):
         return "{RedCross} TRADE CANCELLED"
@@ -445,9 +386,7 @@ def classify_samgtrades_update(
             parts.append(f"({rr_text})")
         elif tp_number >= 3:
             parts.append("(RR N/A)")
-        return " — ".join(parts[:2]) + (
-            f" {parts[2]}" if len(parts) >= 3 else ""
-        )
+        return " — ".join(parts[:2]) + (f" {parts[2]}" if len(parts) >= 3 else "")
 
     if re.search(r"\bSL\s+HIT\b", upper):
         pips = _pip_value(raw)
@@ -457,20 +396,13 @@ def classify_samgtrades_update(
 
     base = classify_trade_update(raw)
     if base:
-        return _append_rr_to_base_update(
-            base,
-            raw,
-            parent_signal,
-        )
+        return _append_rr_to_base_update(base, raw, parent_signal)
 
     return None
 
 
 def format_samgtrades_text(
-    text: str,
-    original_entities,
-    registry,
-    parent_text: Optional[str] = None,
+    text: str, original_entities, registry, parent_text: Optional[str] = None
 ) -> Tuple[str, Any, Optional[str]]:
     raw = (text or "").strip()
     if not raw or not registry_ready(registry):
@@ -485,15 +417,9 @@ def format_samgtrades_text(
         out_text, out_entities = _build_signal_with_rr(registry, parsed)
         return out_text, out_entities, "signal"
 
-    update_template = classify_samgtrades_update(
-        raw,
-        parent_text=parent_text,
-    )
+    update_template = classify_samgtrades_update(raw, parent_text=parent_text)
     if update_template:
-        out_text, out_entities = style_update(
-            registry,
-            update_template,
-        )
+        out_text, out_entities = style_update(registry, update_template)
         return out_text, out_entities, "update"
 
     return text, original_entities, None
@@ -521,19 +447,12 @@ Trade responsibly! 📈
         raise RuntimeError("SamGtrades signal self-test parse failed")
 
     if parsed["tps"] != ["4180.100", "4174.317", "4159.320"]:
-        raise RuntimeError(
-            f"SamGtrades TP parse failed: {parsed['tps']!r}"
-        )
+        raise RuntimeError(f"SamGtrades TP parse failed: {parsed['tps']!r}")
 
-    got_rr = [
-        _format_rr_value(value, signed=True)
-        for value in parsed["rrs"]
-    ]
+    got_rr = [_format_rr_value(value, signed=True) for value in parsed["rrs"]]
     expected_rr = ["+1.0 RR", "+2.5 RR", "+6.39 RR"]
     if got_rr != expected_rr:
-        raise RuntimeError(
-            f"SamGtrades RR parse failed expected={expected_rr!r} got={got_rr!r}"
-        )
+        raise RuntimeError(f"SamGtrades RR parse failed expected={expected_rr!r} got={got_rr!r}")
 
     cases = {
         """🚫 CANCELLED — XAUUSD SELL
@@ -575,10 +494,7 @@ Trade closed — on to the next 🔁
     }
 
     for source, expected_template in cases.items():
-        got = classify_samgtrades_update(
-            source,
-            parent_text=signal,
-        )
+        got = classify_samgtrades_update(source, parent_text=signal)
         if got != expected_template:
             raise RuntimeError(
                 f"SamGtrades update self-test failed source={source!r} "

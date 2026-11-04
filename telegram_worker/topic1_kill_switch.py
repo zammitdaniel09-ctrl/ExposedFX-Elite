@@ -26,7 +26,6 @@ from telethon.errors import FloodWaitError
 
 from telegram_worker import owner_forwarding_policy
 
-
 log = logging.getLogger("topic1-kill-switch")
 
 HUB_CHAT = -1003918958200
@@ -154,10 +153,7 @@ async def _delete_ids(client, ids, logger, reason):
             except FloodWaitError as exc:
                 wait_for = max(1, int(exc.seconds)) + 1
                 logger.warning(
-                    "[TOPIC1 PURGE FLOODWAIT] reason=%s wait=%ss batch=%s",
-                    reason,
-                    wait_for,
-                    len(batch),
+                    "[TOPIC1 PURGE FLOODWAIT] reason=%s wait=%ss batch=%s", reason, wait_for, len(batch)
                 )
                 await asyncio.sleep(wait_for)
             except Exception as exc:
@@ -183,11 +179,7 @@ async def _fetch_topic_children(client, logger):
             raw = await client.get_messages(HUB_CHAT, limit=PURGE_LIMIT, reply_to=DEAD_TOPIC)
             messages.extend(list(raw or []))
         except Exception as retry_exc:
-            logger.warning(
-                "[TOPIC1 THREAD FETCH FAILED] %s: %s",
-                type(retry_exc).__name__,
-                retry_exc,
-            )
+            logger.warning("[TOPIC1 THREAD FETCH FAILED] %s: %s", type(retry_exc).__name__, retry_exc)
     except Exception as exc:
         logger.warning("[TOPIC1 THREAD FETCH FAILED] %s: %s", type(exc).__name__, exc)
 
@@ -222,8 +214,7 @@ def install_topic1_kill_switch(main_module, logger=None):
     explicit = [
         route
         for route in routes
-        if _as_int(route.get("dest_chat")) == HUB_CHAT
-        and _as_int(route.get("dest_topic")) == DEAD_TOPIC
+        if _as_int(route.get("dest_chat")) == HUB_CHAT and _as_int(route.get("dest_topic")) == DEAD_TOPIC
     ]
     for route in explicit:
         sig = _route_sig(route)
@@ -236,9 +227,8 @@ def install_topic1_kill_switch(main_module, logger=None):
     def is_quarantined(route):
         sig = _route_sig(route)
         return (
-            (_as_int(route.get("dest_chat")) == HUB_CHAT and _as_int(route.get("dest_topic")) == DEAD_TOPIC)
-            or _sig_key(sig) in quarantined
-        )
+            _as_int(route.get("dest_chat")) == HUB_CHAT and _as_int(route.get("dest_topic")) == DEAD_TOPIC
+        ) or _sig_key(sig) in quarantined
 
     def apply_quarantine_to_routes():
         before = len(routes)
@@ -275,7 +265,11 @@ def install_topic1_kill_switch(main_module, logger=None):
 
     async def purge_and_reverse_audit(reason):
         children = await _fetch_topic_children(client, logger)
-        ids = {int(message.id) for message in children if _as_int(getattr(message, "id", None)) not in (None, DEAD_TOPIC)}
+        ids = {
+            int(message.id)
+            for message in children
+            if _as_int(getattr(message, "id", None)) not in (None, DEAD_TOPIC)
+        }
 
         # Reverse-map any destination IDs found in the persistent message map.
         # This identifies which historical route(s) actually created messages
@@ -305,16 +299,18 @@ def install_topic1_kill_switch(main_module, logger=None):
                     and _as_int(route.get("dest_topic")) == dest_topic
                 ):
                     await quarantine_route(
-                        route,
-                        "historical_message_map_proves_delivery_into_dead_topic_1",
-                        overlap,
+                        route, "historical_message_map_proves_delivery_into_dead_topic_1", overlap
                     )
 
         if reverse_hits:
             for hit in reverse_hits[:100]:
                 logger.error(
                     "[TOPIC1 WRITER IDENTIFIED] source_chat=%s source_msg=%s intended_dest=%s_%s actual_topic=1 dest_ids=%s",
-                    hit[0], hit[1], hit[2], hit[3], hit[4],
+                    hit[0],
+                    hit[1],
+                    hit[2],
+                    hit[3],
+                    hit[4],
                 )
         else:
             logger.warning(
@@ -324,12 +320,7 @@ def install_topic1_kill_switch(main_module, logger=None):
 
         deleted = await _delete_ids(client, ids, logger, reason)
         state["purge_runs"] = int(state.get("purge_runs", 0) or 0) + 1
-        state["last_purge"] = {
-            "reason": reason,
-            "found": len(ids),
-            "deleted": deleted,
-            "ts": time.time(),
-        }
+        state["last_purge"] = {"reason": reason, "found": len(ids), "deleted": deleted, "ts": time.time()}
         _save_state(state_path, state)
         logger.warning(
             "[TOPIC1 PURGE COMPLETE] reason=%s found=%s deleted=%s root_preserved=True quarantined_routes=%s",
@@ -381,11 +372,7 @@ def install_topic1_kill_switch(main_module, logger=None):
                     if _as_int(getattr(message, "id", None)) not in (None, DEAD_TOPIC)
                 ]
                 if ids:
-                    logger.error(
-                        "[TOPIC1 SWEEP FOUND INTRUSIONS] count=%s newest=%s",
-                        len(ids),
-                        max(ids),
-                    )
+                    logger.error("[TOPIC1 SWEEP FOUND INTRUSIONS] count=%s newest=%s", len(ids), max(ids))
                     await _delete_ids(client, ids, logger, "periodic-sweep")
             except asyncio.CancelledError:
                 raise

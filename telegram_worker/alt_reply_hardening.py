@@ -10,7 +10,6 @@ from telethon.errors import FloodWaitError
 
 from telegram_worker import owner_forwarding_policy as owner_policy
 
-
 log = logging.getLogger("alt-reply-hardening")
 
 # Speed (owner request 3 Nov 2026): a reply never waits on a long history
@@ -121,9 +120,7 @@ def _message_mentions_topic(message, topic_id: int) -> bool:
 
 
 def _cache_mapping(worker, route, source_parent_id: int, destination_parent_id: int) -> None:
-    worker.message_map[
-        worker.map_key(route, int(source_parent_id))
-    ] = int(destination_parent_id)
+    worker.message_map[worker.map_key(route, int(source_parent_id))] = int(destination_parent_id)
     worker.save_json(worker.MAP_FILE, worker.message_map)
 
 
@@ -133,13 +130,7 @@ async def _destination_topic_messages(worker, route):
     dest_topic = int(route["dest_topic"])
 
     try:
-        messages = list(
-            await worker.client.get_messages(
-                dest_chat,
-                limit=RECOVERY_CHAT_LIMIT,
-            )
-            or []
-        )
+        messages = list(await worker.client.get_messages(dest_chat, limit=RECOVERY_CHAT_LIMIT) or [])
         filtered = [m for m in messages if _message_mentions_topic(m, dest_topic)]
         if filtered:
             return filtered
@@ -148,12 +139,7 @@ async def _destination_topic_messages(worker, route):
 
     try:
         return list(
-            await worker.client.get_messages(
-                dest_chat,
-                limit=RECOVERY_TOPIC_LIMIT,
-                reply_to=dest_topic,
-            )
-            or []
+            await worker.client.get_messages(dest_chat, limit=RECOVERY_TOPIC_LIMIT, reply_to=dest_topic) or []
         )
     except Exception:
         return []
@@ -180,10 +166,7 @@ async def _wait_for_mapped_parent(worker, route, source_parent_id: int) -> Optio
 async def _recover_parent(worker, route, message, source_parent_id: int, logger) -> Optional[int]:
     """One bounded attempt to find an unmapped parent's copy in the destination."""
     try:
-        source_parent = await worker.client.get_messages(
-            int(route["source_chat"]),
-            ids=int(source_parent_id),
-        )
+        source_parent = await worker.client.get_messages(int(route["source_chat"]), ids=int(source_parent_id))
     except Exception as exc:
         logger.warning(
             "[ALT REPLY PARENT FETCH FAILED] route=%s parent=%s %s: %s",
@@ -200,10 +183,7 @@ async def _recover_parent(worker, route, message, source_parent_id: int, logger)
     # Translation routes must compare against the translated destination
     # caption/text, not the raw Arabic source text.
     try:
-        expected_text, _expected_entities = await worker.translated_payload(
-            route,
-            source_parent,
-        )
+        expected_text, _expected_entities = await worker.translated_payload(route, source_parent)
     except Exception:
         expected_text = _message_text(source_parent)
 
@@ -296,8 +276,7 @@ async def resolve_reply_target(worker, route, message, logger=None) -> int:
 
         try:
             recovered = await asyncio.wait_for(
-                _recover_parent(worker, route, message, source_parent_id, logger),
-                RECOVERY_BUDGET_SECONDS,
+                _recover_parent(worker, route, message, source_parent_id, logger), RECOVERY_BUDGET_SECONDS
             )
         except asyncio.TimeoutError:
             recovered = None
@@ -333,9 +312,18 @@ def install_alt_reply_hardening(worker, logger=None):
         return existing
 
     required = (
-        "client", "mapped_ids", "map_key", "message_map", "save_json", "MAP_FILE",
-        "translated_payload", "real_media", "has_username_mention",
-        "unit_has_username_mention", "log_username_filter_alt", "MEDIA_DIR",
+        "client",
+        "mapped_ids",
+        "map_key",
+        "message_map",
+        "save_json",
+        "MAP_FILE",
+        "translated_payload",
+        "real_media",
+        "has_username_mention",
+        "unit_has_username_mention",
+        "log_username_filter_alt",
+        "MEDIA_DIR",
     )
     missing = [name for name in required if not hasattr(worker, name)]
     if missing:
@@ -418,9 +406,7 @@ def install_alt_reply_hardening(worker, logger=None):
                 )
                 if _reply_target_invalid(exc):
                     target_reply = topic_root
-                downloaded = await message.download_media(
-                    file=str(worker.MEDIA_DIR / f"single_{message.id}")
-                )
+                downloaded = await message.download_media(file=str(worker.MEDIA_DIR / f"single_{message.id}"))
                 if not downloaded:
                     raise RuntimeError("Media download fallback returned nothing")
                 try:
@@ -455,8 +441,7 @@ def install_alt_reply_hardening(worker, logger=None):
             return None
 
         probe = next(
-            (m for m in messages if real_reply_source_ids(route, m)),
-            messages[0] if messages else None,
+            (m for m in messages if real_reply_source_ids(route, m)), messages[0] if messages else None
         )
         target_reply = (
             await resolve_reply_target(worker, route, probe, logger=logger)
@@ -487,11 +472,7 @@ def install_alt_reply_hardening(worker, logger=None):
         except Exception as exc:
             if _reupload_cannot_help(exc):
                 raise
-            logger.warning(
-                "[ALT DIRECT ALBUM FAILED - USING REUPLOAD] %s: %s",
-                type(exc).__name__,
-                exc,
-            )
+            logger.warning("[ALT DIRECT ALBUM FAILED - USING REUPLOAD] %s: %s", type(exc).__name__, exc)
             if _reply_target_invalid(exc):
                 target_reply = int(route["dest_topic"])
             downloaded_files = []

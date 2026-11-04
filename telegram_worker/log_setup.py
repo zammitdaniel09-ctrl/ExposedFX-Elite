@@ -4,6 +4,7 @@ On Railway every line is one JSON object on stdout, so the log explorer shows
 each line's real severity (plain stderr lines were all shown as "error") and
 @logger:... filters work. Locally the plain text format is kept.
 """
+
 import json
 import logging
 import os
@@ -21,12 +22,15 @@ class RailwayJsonFormatter(logging.Formatter):
         message = record.getMessage()
         if record.exc_info:
             message = f"{message}\n{self.formatException(record.exc_info)}"
-        return json.dumps({
-            "level": _LEVELS.get(record.levelname, "info"),
-            "message": message,
-            "logger": record.name,
-            "service": self.service,
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "level": _LEVELS.get(record.levelname, "info"),
+                "message": message,
+                "logger": record.name,
+                "service": self.service,
+            },
+            ensure_ascii=False,
+        )
 
 
 def configure_logging(service):

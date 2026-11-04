@@ -1,4 +1,5 @@
 """Health monitor: classifies the workers' real log lines, rate-limits alerts, builds the digest."""
+
 import asyncio
 import logging
 import sys
@@ -17,13 +18,19 @@ from telegram_worker import health_monitor as hm
 FORMATTED = "[OWNER FORMATTED POST] contract=-1004367822325:8323:-1003726286301:12289 source_id=8519 outcome=update lag=0.7s"
 SKIPPED = "[OWNER FORMATTED POST] contract=-1004367822325:8323:-1003726286301:12289 source_id=8511 outcome=skipped lag=1.4s"
 FASTVIP_OK = "[FASTVIP COPIED] route=Relay508 To VIP7 source=-1004367822325_508 ids=[8170] kind=SINGLE"
-FASTVIP_FAIL = ("[FASTVIP DEST FAILED] route=Private Live 3838973021 To 9 ids=[24298] dest=-1003726286301_9 "
-                "RuntimeError: VIP priority copy returned no destination message")
+FASTVIP_FAIL = (
+    "[FASTVIP DEST FAILED] route=Private Live 3838973021 To 9 ids=[24298] dest=-1003726286301_9 "
+    "RuntimeError: VIP priority copy returned no destination message"
+)
 WHOLECHAT_OK = "[WHOLECHAT SENT] reason=live source=-1004281603170 dest=-1003743381585 source_ids=[2047]"
-ALT_OK = "[ALT COPIED] route=NewAccount Select7194 To Relay8323 source_msg=8106 dest_msg=8517 reason=telegram_push"
+ALT_OK = (
+    "[ALT COPIED] route=NewAccount Select7194 To Relay8323 source_msg=8106 dest_msg=8517 reason=telegram_push"
+)
 ALT_FAIL = "[ALT COPY FAILED] route=ALT RELAY 1 ids=[2282, 2283] ChatWriteForbiddenError: no rights"
-STOPPED = ("[OWNER ROUTE STOPPED] route=Owner VIP1364 To Partner28 contract=-1003726286301:1364:-1003786932333:28 "
-           "reason=ChannelPrivateError RETRY=False NOT_DELIVERED=True")
+STOPPED = (
+    "[OWNER ROUTE STOPPED] route=Owner VIP1364 To Partner28 contract=-1003726286301:1364:-1003786932333:28 "
+    "reason=ChannelPrivateError RETRY=False NOT_DELIVERED=True"
+)
 FLOOD = "Sleeping for 75s (0:01:15) on GetHistoryRequest flood wait"
 SMALL_FLOOD = "Sleeping for 3s (0:00:03) on GetRepliesRequest flood wait"
 
@@ -138,7 +145,9 @@ class RunLoopTests(unittest.TestCase):
 
         async def go():
             with tempfile.TemporaryDirectory() as tmp:
-                monitor = hm.HealthMonitor("ALT", tmp, clock=lambda: datetime(2026, 11, 4, 7, 0, tzinfo=hm.TZ).timestamp())
+                monitor = hm.HealthMonitor(
+                    "ALT", tmp, clock=lambda: datetime(2026, 11, 4, 7, 0, tzinfo=hm.TZ).timestamp()
+                )
                 monitor.outbox.append("hello")
                 hm.asyncio.sleep = fast_sleep
                 try:
@@ -148,6 +157,7 @@ class RunLoopTests(unittest.TestCase):
                     task.cancel()
                 finally:
                     hm.asyncio.sleep = real_sleep
+
         asyncio.run(go())
         self.assertEqual(sent, [("me", "hello")])
 

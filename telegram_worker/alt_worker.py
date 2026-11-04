@@ -15,7 +15,6 @@ import asyncio
 import json
 import os
 
-
 OLD_PAIR106_SOURCE_CHAT = -1002438454194
 NEW_PAIR106_SOURCE_CHAT = -1004347858259
 
@@ -24,10 +23,7 @@ RETIRED2530_TOPIC = 2530
 
 NEW_TOPIC_SOURCE_CHAT = -1004349952583
 NEW_TOPIC_DEST_CHAT = -1004367822325
-NEW_TOPIC_ROUTES = (
-    (5246, 7248),
-    (5247, 7250),
-)
+NEW_TOPIC_ROUTES = ((5246, 7248), (5247, 7250))
 
 # Owner request 2026-11-03: Select Signals topic -> relay topic 8323 (MAIN
 # formats 8323 into VIP12289), with the latest 30 posts imported once.
@@ -36,7 +32,6 @@ SELECT_SOURCE_TOPIC = 7194
 SELECT_DEST_TOPIC = 8323
 SELECT_LAST_COUNT = 30
 SELECT_LAST_STATE_FILE = "alt_select7194_to_relay8323_last30_v1.json"
-
 
 
 def _swap_replaced_source_in_env() -> int:
@@ -64,17 +59,11 @@ def _swap_replaced_source_in_env() -> int:
     # Preserve whether the Railway variable was configured as one route object
     # or a route list. The legacy loader accepts either shape.
     migrated = items if isinstance(parsed, list) else items[0]
-    os.environ["ALT_ROUTES_JSON"] = json.dumps(
-        migrated,
-        separators=(",", ":"),
-    )
+    os.environ["ALT_ROUTES_JSON"] = json.dumps(migrated, separators=(",", ":"))
     return changed
 
 
 _SOURCE_ROUTE_SWAPS = _swap_replaced_source_in_env()
-
-
-
 
 
 def _hard_stop_2530_in_env() -> int:
@@ -102,25 +91,15 @@ def _hard_stop_2530_in_env() -> int:
 
         try:
             source_chat = int(item.get("source_chat", 0))
-            source_topic = (
-                int(item["source_topic"])
-                if item.get("source_topic") not in (None, "")
-                else None
-            )
+            source_topic = int(item["source_topic"]) if item.get("source_topic") not in (None, "") else None
             dest_chat = int(item.get("dest_chat", 0))
             dest_topic = int(item.get("dest_topic", 0))
         except Exception:
             kept.append(item)
             continue
 
-        retired_source = (
-            source_chat == RETIRED2530_CHAT
-            and source_topic == RETIRED2530_TOPIC
-        )
-        retired_dest = (
-            dest_chat == RETIRED2530_CHAT
-            and dest_topic == RETIRED2530_TOPIC
-        )
+        retired_source = source_chat == RETIRED2530_CHAT and source_topic == RETIRED2530_TOPIC
+        retired_dest = dest_chat == RETIRED2530_CHAT and dest_topic == RETIRED2530_TOPIC
 
         if retired_source or retired_dest:
             removed += 1
@@ -128,10 +107,7 @@ def _hard_stop_2530_in_env() -> int:
 
         kept.append(item)
 
-    os.environ["ALT_ROUTES_JSON"] = json.dumps(
-        kept,
-        separators=(",", ":"),
-    )
+    os.environ["ALT_ROUTES_JSON"] = json.dumps(kept, separators=(",", ":"))
     return removed
 
 
@@ -187,10 +163,7 @@ def _ensure_new_topic_routes_in_env() -> int:
             items.append(route)
             added += 1
 
-    os.environ["ALT_ROUTES_JSON"] = json.dumps(
-        items,
-        separators=(",", ":"),
-    )
+    os.environ["ALT_ROUTES_JSON"] = json.dumps(items, separators=(",", ":"))
     return added
 
 
@@ -202,10 +175,7 @@ _NEW_TOPIC_ROUTES_ADDED = _ensure_new_topic_routes_in_env()
 # the old Telegram group.
 from telegram_worker import alt_worker_legacy as _legacy
 from telegram_worker.alt_reply_hardening import install_alt_reply_hardening
-from telegram_worker.alt_new_topics7248_7250_last20 import (
-    run_alt_new_topics_last20_once,
-)
-
+from telegram_worker.alt_new_topics7248_7250_last20 import run_alt_new_topics_last20_once
 
 # Fail closed if a configured route somehow still points at the retired source.
 _retired_routes = [
@@ -214,10 +184,7 @@ _retired_routes = [
     if int(route.get("source_chat", 0)) == OLD_PAIR106_SOURCE_CHAT
 ]
 if _retired_routes:
-    raise RuntimeError(
-        "Retired Telegram source still present after migration: "
-        f"{_retired_routes}"
-    )
+    raise RuntimeError("Retired Telegram source still present after migration: " f"{_retired_routes}")
 
 install_alt_reply_hardening(_legacy, logger=_legacy.log)
 
@@ -234,10 +201,7 @@ _retired2530_runtime = [
     )
 ]
 if _retired2530_runtime:
-    raise RuntimeError(
-        "FORCE STOP 2530 FAILED; routes remain: "
-        f"{_retired2530_runtime}"
-    )
+    raise RuntimeError("FORCE STOP 2530 FAILED; routes remain: " f"{_retired2530_runtime}")
 
 _legacy.log.warning(
     "[ALT TOPIC2530 FORCE STOP ACTIVE] "
@@ -263,14 +227,9 @@ ROUTES = _legacy.ROUTES
 SOURCE_CHATS = _legacy.SOURCE_CHATS
 
 
-
-
 async def _run_new_topics_last20_guarded():
     try:
-        await run_alt_new_topics_last20_once(
-            _legacy,
-            logger=_legacy.log,
-        )
+        await run_alt_new_topics_last20_once(_legacy, logger=_legacy.log)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -286,14 +245,7 @@ async def _run_select_last30_guarded():
         await run_alt_new_topics_last20_once(
             _legacy,
             logger=_legacy.log,
-            contracts=(
-                (
-                    SELECT_SOURCE_CHAT,
-                    SELECT_SOURCE_TOPIC,
-                    NEW_TOPIC_DEST_CHAT,
-                    SELECT_DEST_TOPIC,
-                ),
-            ),
+            contracts=((SELECT_SOURCE_CHAT, SELECT_SOURCE_TOPIC, NEW_TOPIC_DEST_CHAT, SELECT_DEST_TOPIC),),
             count=SELECT_LAST_COUNT,
             state_file=SELECT_LAST_STATE_FILE,
         )
@@ -312,23 +264,19 @@ async def main():
     from telegram_worker.health_monitor import install_health_monitor
 
     liveness.LoopWatchdog("ExposedFX ALT", _legacy.DATA_DIR, _legacy.log).start()
-    _legacy.log.warning("[ALT RUNTIME] telethon=%s python=%s liveness=True json_logs=True",
-                        __import__("telethon").__version__, __import__("sys").version.split()[0])
+    _legacy.log.warning(
+        "[ALT RUNTIME] telethon=%s python=%s liveness=True json_logs=True",
+        __import__("telethon").__version__,
+        __import__("sys").version.split()[0],
+    )
     install_health_monitor("ExposedFX ALT", _legacy.client, _legacy.DATA_DIR)
-    new_topics_last20_task = asyncio.create_task(
-        _run_new_topics_last20_guarded()
-    )
-    select_last30_task = asyncio.create_task(
-        _run_select_last30_guarded()
-    )
+    new_topics_last20_task = asyncio.create_task(_run_new_topics_last20_guarded())
+    select_last30_task = asyncio.create_task(_run_select_last30_guarded())
     try:
         await _legacy.main()
         liveness.exit_disconnected("ExposedFX ALT", _legacy.DATA_DIR, _legacy.log)
     finally:
-        for task in (
-            new_topics_last20_task,
-            select_last30_task,
-        ):
+        for task in (new_topics_last20_task, select_last30_task):
             if not task.done():
                 task.cancel()
 

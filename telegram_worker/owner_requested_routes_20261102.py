@@ -3,6 +3,7 @@
 Runs inside the already-authorized MAIN process; posts go through the delivery engine.
 No new Telegram session, whole-chat fallback, deletion, or credential changes.
 """
+
 import asyncio
 import json
 import logging
@@ -47,10 +48,12 @@ def route_identity(route):
 
 def topic_id(message):
     reply = getattr(message, "reply_to", None)
-    return (getattr(reply, "reply_to_top_id", None)
-            or getattr(message, "reply_to_top_id", None)
-            or getattr(reply, "reply_to_msg_id", None)
-            or getattr(message, "reply_to_msg_id", None))
+    return (
+        getattr(reply, "reply_to_top_id", None)
+        or getattr(message, "reply_to_top_id", None)
+        or getattr(reply, "reply_to_msg_id", None)
+        or getattr(message, "reply_to_msg_id", None)
+    )
 
 
 def mapped_ids(worker, route, unit):
@@ -75,9 +78,14 @@ async def rpc(call):
 
 async def verify_roots(worker, route):
     for side in ("source", "dest"):
-        root = await rpc(lambda: worker.client.get_messages(
-            route[side + "_chat"], ids=route[side + "_topic"]))
-        if not root or not getattr(root, "action", None) or type(root.action).__name__ != "MessageActionTopicCreate":
+        root = await rpc(
+            lambda: worker.client.get_messages(route[side + "_chat"], ids=route[side + "_topic"])
+        )
+        if (
+            not root
+            or not getattr(root, "action", None)
+            or type(root.action).__name__ != "MessageActionTopicCreate"
+        ):
             raise RuntimeError("Owner topic unavailable: " + side)
 
 
@@ -109,14 +117,17 @@ def _copyable(worker, message, route):
 
 def units(worker, route, messages, count=None):
     """Oldest-first logical posts; an album is one unit and is never split."""
-    messages = sorted((m for m in messages if _copyable(worker, m, route)),
-                      key=lambda m: int(getattr(m, "id", 0) or 0))
+    messages = sorted(
+        (m for m in messages if _copyable(worker, m, route)), key=lambda m: int(getattr(m, "id", 0) or 0)
+    )
     result, used = [], set()
     for message in messages:
         if int(message.id) in used:
             continue
         grouped_id = getattr(message, "grouped_id", None)
-        unit = [m for m in messages if grouped_id and getattr(m, "grouped_id", None) == grouped_id] or [message]
+        unit = [m for m in messages if grouped_id and getattr(m, "grouped_id", None) == grouped_id] or [
+            message
+        ]
         used.update(int(m.id) for m in unit)
         result.append(unit)
     result = result[-50:]
@@ -129,22 +140,44 @@ async def bootstrap_route(worker, route, count, entry, state, path):
         return
     await verify_roots(worker, route)
     if not entry.get("selected_units"):
-        messages = list(await rpc(lambda: worker.client.get_messages(
-            route["source_chat"], reply_to=route["source_topic"], limit=1000)) or [])
+        messages = list(
+            await rpc(
+                lambda: worker.client.get_messages(
+                    route["source_chat"], reply_to=route["source_topic"], limit=1000
+                )
+            )
+            or []
+        )
         # Topic API is authoritative; positive metadata for a different topic
         # is rejected too. No whole-chat fallback.
-        messages = [m for m in messages if int(m.id) != route["source_topic"]
-                    and (topic_id(m) in (None, route["source_topic"]))]
+        messages = [
+            m
+            for m in messages
+            if int(m.id) != route["source_topic"] and (topic_id(m) in (None, route["source_topic"]))
+        ]
         selected = units(worker, route, messages, count)
         if not selected:
             raise RuntimeError("Owner source returned no copyable posts")
-        entry.update(status="running", selected_units=[[int(m.id) for m in u] for u in selected],
-                     requested=count, selected=len(selected), completed={}, sent=0,
-                     existing=0, filtered=0, last_source_id=0, started_at=time.time())
+        entry.update(
+            status="running",
+            selected_units=[[int(m.id) for m in u] for u in selected],
+            requested=count,
+            selected=len(selected),
+            completed={},
+            sent=0,
+            existing=0,
+            filtered=0,
+            last_source_id=0,
+            started_at=time.time(),
+        )
         state[key] = entry
         save_state(path, state)
-        log.warning("[OWNER BACKFILL SELECTED] contract=%s requested=%s selected=%s FIRST_ROUTE_PRIORITY=True",
-                    key, count, len(selected))
+        log.warning(
+            "[OWNER BACKFILL SELECTED] contract=%s requested=%s selected=%s FIRST_ROUTE_PRIORITY=True",
+            key,
+            count,
+            len(selected),
+        )
     for ids in entry["selected_units"]:
         token = ",".join(str(i) for i in ids)
         if token in entry["completed"]:
@@ -159,16 +192,27 @@ async def bootstrap_route(worker, route, count, entry, state, path):
         entry[outcome] += 1
         entry["last_source_id"] = max(entry["last_source_id"], max(ids))
         save_state(path, state)
-        log.warning("[OWNER BACKFILL POST] contract=%s outcome=%s progress=%s/%s",
-                    key, outcome, len(entry["completed"]), entry["selected"])
+        log.warning(
+            "[OWNER BACKFILL POST] contract=%s outcome=%s progress=%s/%s",
+            key,
+            outcome,
+            len(entry["completed"]),
+            entry["selected"],
+        )
         await asyncio.sleep(0.4)
     dest_ids = sorted({i for value in entry["completed"].values() for i in value["dest_ids"]})
     entry["verified_destination_messages"] = await verify_copies(worker, route, dest_ids)
     entry.update(status="done", completed_at=time.time())
     save_state(path, state)
-    log.warning("[OWNER BACKFILL DONE] contract=%s selected=%s sent=%s existing=%s filtered=%s verified_messages=%s",
-                key, entry["selected"], entry["sent"], entry["existing"], entry["filtered"],
-                entry["verified_destination_messages"])
+    log.warning(
+        "[OWNER BACKFILL DONE] contract=%s selected=%s sent=%s existing=%s filtered=%s verified_messages=%s",
+        key,
+        entry["selected"],
+        entry["sent"],
+        entry["existing"],
+        entry["filtered"],
+        entry["verified_destination_messages"],
+    )
 
 
 def stop(worker, route, entry, state, path, reason):
@@ -185,21 +229,28 @@ def stop(worker, route, entry, state, path, reason):
 async def live_cycle(worker, route, entry, state, path):
     checkpoint = int(entry["last_source_id"])
     # Oldest unseen first, rather than truncating a recent-history catch-up.
-    messages = [m async for m in worker.client.iter_messages(
-        route["source_chat"], reply_to=route["source_topic"], min_id=checkpoint,
-        reverse=True, limit=50)]
+    messages = [
+        m
+        async for m in worker.client.iter_messages(
+            route["source_chat"], reply_to=route["source_topic"], min_id=checkpoint, reverse=True, limit=50
+        )
+    ]
     if messages and getattr(messages[-1], "grouped_id", None):
         # A page boundary may cut a ten-item album. Read the exact topic's
         # neighbouring IDs and include only members of that same album.
         last = messages[-1]
-        neighbours = await rpc(lambda: worker.client.get_messages(
-            route["source_chat"], reply_to=route["source_topic"],
-            min_id=max(checkpoint, int(last.id) - 10), max_id=int(last.id) + 11,
-            limit=30))
+        neighbours = await rpc(
+            lambda: worker.client.get_messages(
+                route["source_chat"],
+                reply_to=route["source_topic"],
+                min_id=max(checkpoint, int(last.id) - 10),
+                max_id=int(last.id) + 11,
+                limit=30,
+            )
+        )
         combined = {int(m.id): m for m in messages}
         for candidate in neighbours or []:
-            if (getattr(candidate, "grouped_id", None) == last.grouped_id
-                    and int(candidate.id) > checkpoint):
+            if getattr(candidate, "grouped_id", None) == last.grouped_id and int(candidate.id) > checkpoint:
                 combined[int(candidate.id)] = candidate
         messages = sorted(combined.values(), key=lambda m: int(m.id))
     selected = units(worker, route, messages)
@@ -217,8 +268,12 @@ async def live_cycle(worker, route, entry, state, path):
         if destinations:
             entry["last_live_dest_ids"] = destinations
         save_state(path, state)
-        log.warning("[OWNER LIVE POST] contract=%s outcome=%s source_id=%s",
-                    policy.identity(route), outcome, entry["last_source_id"])
+        log.warning(
+            "[OWNER LIVE POST] contract=%s outcome=%s source_id=%s",
+            policy.identity(route),
+            outcome,
+            entry["last_source_id"],
+        )
 
 
 async def run_owner_requested_routes(worker):
@@ -258,8 +313,10 @@ async def run_owner_requested_routes(worker):
                     break
                 log.warning("[OWNER BACKFILL WAIT] contract=%s error=%s", key, type(exc).__name__)
                 await asyncio.sleep(15)
-    log.warning("[OWNER REQUESTED LIVE READY] active_routes=%s SEQUENTIAL_BACKFILLS_COMPLETE=True EVENT_WAKE=True",
-                len(active))
+    log.warning(
+        "[OWNER REQUESTED LIVE READY] active_routes=%s SEQUENTIAL_BACKFILLS_COMPLETE=True EVENT_WAKE=True",
+        len(active),
+    )
     # Speed (owner request 3 Nov 2026): a NewMessage in a route's exact source
     # topic wakes that route at once; a full sweep every LIVE_POLL_SECONDS
     # remains the backstop for any missed update.
@@ -305,9 +362,10 @@ async def run_owner_requested_routes(worker):
                 if reason and stop(worker, route, entry, state, path, reason):
                     active.remove(route)
                 else:
-                    log.warning("[OWNER LIVE WAIT] contract=%s error=%s", policy.identity(route), type(exc).__name__)
+                    log.warning(
+                        "[OWNER LIVE WAIT] contract=%s error=%s", policy.identity(route), type(exc).__name__
+                    )
         try:
             await asyncio.wait_for(wake.wait(), LIVE_POLL_SECONDS)
         except asyncio.TimeoutError:
             pass
-

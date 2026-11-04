@@ -147,5 +147,7 @@ ALT `/data-alt`: session, message map, route checkpoints, last-N import state,
   State files are forward-compatible; nothing needs undoing.
 - **New Telegram session:** generate it with an interactive login on a trusted
   machine, store it only in Railway variables, never in chat or git.
-- **Before any change:** `python scripts/check_forwarding_contracts.py` and
-  `python -m unittest discover -s tests` must pass.
+- **Before any change:** `python scripts/check_forwarding_contracts.py`,
+  `python -m unittest discover -s tests` and
+  `black --check --skip-magic-trailing-comma -l 110 telegram_worker scripts tests`
+  must pass (CI runs all three plus pyflakes on the live workers and engine).

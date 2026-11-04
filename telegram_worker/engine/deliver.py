@@ -16,6 +16,7 @@ Log lines keep the legacy markers ("[FASTVIP COPIED] ...") so the health
 monitor, the daily digest and existing log searches see engine deliveries
 exactly like legacy ones, with "engine=True lag=<s>" appended.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -36,8 +37,18 @@ from .replies import reply_parent_ids, reply_target
 from .rules import is_real_media, text_of
 
 log = logging.getLogger("imperium-worker")
-TRANSIENT = ("timeout", "timed out", "connection", "server disconnected", "temporarily", "transport",
-             "network", "request failed", "mirror structure", "mirror album structure")
+TRANSIENT = (
+    "timeout",
+    "timed out",
+    "connection",
+    "server disconnected",
+    "temporarily",
+    "transport",
+    "network",
+    "request failed",
+    "mirror structure",
+    "mirror album structure",
+)
 
 
 def is_transient(exc: Exception) -> bool:
@@ -66,8 +77,16 @@ def structure_problem(source, sent, expected_text: str):
 
 
 class Deliverer:
-    def __init__(self, worker, planner: Planner, attempts: int = 3, sleep_cap: int = 120,
-                 sleep=asyncio.sleep, clock=time.time, alert=None):
+    def __init__(
+        self,
+        worker,
+        planner: Planner,
+        attempts: int = 3,
+        sleep_cap: int = 120,
+        sleep=asyncio.sleep,
+        clock=time.time,
+        alert=None,
+    ):
         self.worker = worker
         self.client = worker.client
         self.planner = planner
@@ -88,8 +107,13 @@ class Deliverer:
         plan = await self.plan(legacy_route, route, unit, ensure_reply=True, check_ledger=live)
         if isinstance(plan, Skip):
             if plan.reason == "partial_album_mapping":
-                log.error("[FASTVIP DEST FAILED] route=%s ids=%s dest=%s RuntimeError: partial album mapping "
-                          "engine=True", route.name, ids, dest)
+                log.error(
+                    "[FASTVIP DEST FAILED] route=%s ids=%s dest=%s RuntimeError: partial album mapping "
+                    "engine=True",
+                    route.name,
+                    ids,
+                    dest,
+                )
                 return False
             _log_skip(route, ids, plan.reason)
             return True
@@ -100,17 +124,38 @@ class Deliverer:
             if error:
                 ledger = getattr(self.worker, "FASTVIP_PERMANENT_FAILURES", None)
                 saved = ledger.record(legacy_route, ids, error) if ledger else False
-                log.error("[FASTVIP ROUTE IMPAIRED - NOT DELIVERED] route=%s ids=%s dest=%s error=%s "
-                          "PERMANENT=True RETRY=False LEDGER_SAVED=%s engine=True", route.name, ids, dest, error, saved)
+                log.error(
+                    "[FASTVIP ROUTE IMPAIRED - NOT DELIVERED] route=%s ids=%s dest=%s error=%s "
+                    "PERMANENT=True RETRY=False LEDGER_SAVED=%s engine=True",
+                    route.name,
+                    ids,
+                    dest,
+                    error,
+                    saved,
+                )
                 self._alert_impaired(legacy_route, route, error, dest)
                 return True
-            log.exception("[FASTVIP DEST FAILED] route=%s ids=%s dest=%s %s: %s engine=True",
-                          route.name, ids, dest, type(exc).__name__, exc)
+            log.exception(
+                "[FASTVIP DEST FAILED] route=%s ids=%s dest=%s %s: %s engine=True",
+                route.name,
+                ids,
+                dest,
+                type(exc).__name__,
+                exc,
+            )
             return False
         lag = max(0.0, self.clock() - unit[0].date.timestamp()) if getattr(unit[0], "date", None) else 0.0
         kind = f"ALBUM items={len(unit)}" if plan.kind == "album" else "SINGLE"
-        log.warning("[FASTVIP COPIED] route=%s source=%s_%s ids=%s kind=%s dest=%s engine=True lag=%.1fs",
-                    route.name, route.source_chat, route.source_topic, ids, kind, dest, lag)
+        log.warning(
+            "[FASTVIP COPIED] route=%s source=%s_%s ids=%s kind=%s dest=%s engine=True lag=%.1fs",
+            route.name,
+            route.source_chat,
+            route.source_topic,
+            ids,
+            kind,
+            dest,
+            lag,
+        )
         return bool(_as_list(sent))
 
     async def copy_unit(self, owner_routes, legacy_route: Dict, route: Route, unit: Sequence):
@@ -140,8 +185,13 @@ class Deliverer:
         # destination (exact text/media match), then resolve the target again.
         from telegram_worker.reply_hardening import ensure_reply_mapping
 
-        resolved = await ensure_reply_mapping(self.worker, unit[0], legacy_route,
-                                              registry=self.planner.context.get("emoji_registry"), logger=log)
+        resolved = await ensure_reply_mapping(
+            self.worker,
+            unit[0],
+            legacy_route,
+            registry=self.planner.context.get("emoji_registry"),
+            logger=log,
+        )
         if not resolved and route.formatter == "imperium_vip":
             await self._recover_signal_parent(legacy_route, route, unit[0])
         target = reply_target(unit[0], route, self.planner.maps)
@@ -155,7 +205,8 @@ class Deliverer:
         """
         from telegram_worker.imperium_vip_formatter import parse_xauusd_signal
         from telegram_worker.imperium_vip_inline_hook import (
-            MAX_REPLY_PARENT_RECOVERY_AGE_SECONDS, format_imperium_vip_text,
+            MAX_REPLY_PARENT_RECOVERY_AGE_SECONDS,
+            format_imperium_vip_text,
         )
 
         parents = reply_parent_ids(message, route)
@@ -164,8 +215,12 @@ class Deliverer:
         try:
             parent = await self.client.get_messages(route.source_chat, ids=parents[0])
         except Exception as exc:
-            log.warning("[IMPERIUM VIP REPLY PARENT FETCH FAILED] parent=%s %s: %s engine=True",
-                        parents[0], type(exc).__name__, exc)
+            log.warning(
+                "[IMPERIUM VIP REPLY PARENT FETCH FAILED] parent=%s %s: %s engine=True",
+                parents[0],
+                type(exc).__name__,
+                exc,
+            )
             return None
         text = (getattr(parent, "message", None) or getattr(parent, "raw_text", None) or "") if parent else ""
         if not text or not parse_xauusd_signal(text):
@@ -175,8 +230,12 @@ class Deliverer:
         except Exception:
             age = None
         if age is None or age > MAX_REPLY_PARENT_RECOVERY_AGE_SECONDS:
-            log.warning("[IMPERIUM VIP REPLY PARENT TOO OLD] parent=%s age=%s max=%s engine=True",
-                        parents[0], age, MAX_REPLY_PARENT_RECOVERY_AGE_SECONDS)
+            log.warning(
+                "[IMPERIUM VIP REPLY PARENT TOO OLD] parent=%s age=%s max=%s engine=True",
+                parents[0],
+                age,
+                MAX_REPLY_PARENT_RECOVERY_AGE_SECONDS,
+            )
             return None
         registry = self.planner.context.get("emoji_registry")
         if format_imperium_vip_text(text, getattr(parent, "entities", None), registry)[2] != "signal":
@@ -186,8 +245,13 @@ class Deliverer:
             return None
         sent = await self.send(legacy_route, route, [parent], parent_plan)
         dest_id = getattr(_as_list(sent)[0], "id", None) if _as_list(sent) else None
-        log.warning("[IMPERIUM VIP REPLY PARENT RECOVERED BY COPY] source_parent=%s dest_parent=%s age=%.1fs "
-                    "signal_only=True engine=True", parents[0], dest_id, age)
+        log.warning(
+            "[IMPERIUM VIP REPLY PARENT RECOVERED BY COPY] source_parent=%s dest_parent=%s age=%.1fs "
+            "signal_only=True engine=True",
+            parents[0],
+            dest_id,
+            age,
+        )
         return dest_id
 
     async def send(self, legacy_route, route: Route, unit, plan: Send):
@@ -198,8 +262,14 @@ class Deliverer:
             except FloodWaitError as exc:
                 last_exc = exc
                 wait = min(int(exc.seconds) + 1, self.sleep_cap)
-                log.warning("[copy retry floodwait] attempt=%s/%s wait=%ss route=%s msg=%s engine=True",
-                            attempt, self.attempts, wait, route.name, unit[0].id)
+                log.warning(
+                    "[copy retry floodwait] attempt=%s/%s wait=%ss route=%s msg=%s engine=True",
+                    attempt,
+                    self.attempts,
+                    wait,
+                    route.name,
+                    unit[0].id,
+                )
                 await self.sleep(wait)
             except Exception as exc:
                 last_exc = exc
@@ -209,8 +279,15 @@ class Deliverer:
                     raise
                 if attempt < self.attempts and is_transient(exc):
                     wait = min(2 * attempt, self.sleep_cap)
-                    log.warning("[copy retry transient] attempt=%s/%s wait=%ss route=%s msg=%s error=%s engine=True",
-                                attempt, self.attempts, wait, route.name, unit[0].id, exc)
+                    log.warning(
+                        "[copy retry transient] attempt=%s/%s wait=%ss route=%s msg=%s error=%s engine=True",
+                        attempt,
+                        self.attempts,
+                        wait,
+                        route.name,
+                        unit[0].id,
+                        exc,
+                    )
                     await self.sleep(wait)
                     continue
                 raise
@@ -223,8 +300,10 @@ class Deliverer:
             sent = await self._send_file(route, unit, rendered.media, plan, rendered)
             if len(rendered.media) > 1 and len(_as_list(sent)) != len(rendered.media):
                 await self._delete(route, sent, "album_item_count_mismatch")
-                raise RuntimeError(f"mirror album structure mismatch: expected={len(rendered.media)} "
-                                   f"sent={len(_as_list(sent))}")
+                raise RuntimeError(
+                    f"mirror album structure mismatch: expected={len(rendered.media)} "
+                    f"sent={len(_as_list(sent))}"
+                )
             items = _as_list(sent)
             for source, copy_ in zip(rendered.messages, items):
                 self.worker.remember_message(_original(unit, source), copy_, legacy_route, save=False)
@@ -238,36 +317,56 @@ class Deliverer:
             problem = structure_problem(rendered.messages[0], sent, rendered.text)
             if problem:
                 await self._delete(route, sent, problem)
-                log.error("[mirror structure repair rejected CLOSED] route=%s source_msg=%s reason=%s engine=True",
-                          route.name, unit[0].id, problem)
+                log.error(
+                    "[mirror structure repair rejected CLOSED] route=%s source_msg=%s reason=%s engine=True",
+                    route.name,
+                    unit[0].id,
+                    problem,
+                )
                 raise RuntimeError("mirror structure mismatch after repair: " + problem)
-            log.info("[mirror structure repair ok] route=%s source_msg=%s engine=True", route.name, unit[0].id)
+            log.info(
+                "[mirror structure repair ok] route=%s source_msg=%s engine=True", route.name, unit[0].id
+            )
         self.worker.remember_message(unit[0], sent, legacy_route)
         return sent
 
     async def _send_single(self, route: Route, unit, plan: Send, rendered):
         if plan.kind == "media":
             return await self._send_file(route, unit, rendered.media[0], plan, rendered)
-        return await self.client.send_message(route.dest_chat, rendered.text, formatting_entities=rendered.entities,
-                                              parse_mode=None, reply_to=plan.reply_to, link_preview=True)
+        return await self.client.send_message(
+            route.dest_chat,
+            rendered.text,
+            formatting_entities=rendered.entities,
+            parse_mode=None,
+            reply_to=plan.reply_to,
+            link_preview=True,
+        )
 
     async def _send_file(self, route: Route, unit, file, plan: Send, rendered):
         caption = rendered.text or None
-        kwargs = dict(caption=caption, formatting_entities=rendered.entities if caption else None,
-                      parse_mode=None, reply_to=plan.reply_to)
+        kwargs = dict(
+            caption=caption,
+            formatting_entities=rendered.entities if caption else None,
+            parse_mode=None,
+            reply_to=plan.reply_to,
+        )
         try:
             return await self.client.send_file(route.dest_chat, file, **kwargs)
         except Exception as exc:
             if isinstance(exc, FloodWaitError) or policy.permanent_access_error(exc):
                 raise
-            log.warning("[media direct copy failed] msg=%s route=%s: %s engine=True", unit[0].id, route.name, exc)
+            log.warning(
+                "[media direct copy failed] msg=%s route=%s: %s engine=True", unit[0].id, route.name, exc
+            )
         cache = Path(self.worker.DATA_DIR) / "media_cache"
         cache.mkdir(parents=True, exist_ok=True)
         sources = [m for m in rendered.messages if is_real_media(m)]
         paths = []
         try:
             for message in sources:
-                path = await message.download_media(file=str(cache / f"engine_{route.dest_topic}_{message.id}"))
+                path = await message.download_media(
+                    file=str(cache / f"engine_{route.dest_topic}_{message.id}")
+                )
                 if path:
                     paths.append(path)
             if not paths or len(paths) != len(sources):
@@ -289,18 +388,29 @@ class Deliverer:
             return
         try:
             await self.client.delete_messages(route.dest_chat, ids)
-            log.warning("[mirror structure repair] deleted bad copy ids=%s route=%s reason=%s engine=True",
-                        ids, route.name, reason)
+            log.warning(
+                "[mirror structure repair] deleted bad copy ids=%s route=%s reason=%s engine=True",
+                ids,
+                route.name,
+                reason,
+            )
         except Exception as exc:
-            log.warning("[mirror structure repair delete failed] ids=%s route=%s reason=%s: %s engine=True",
-                        ids, route.name, reason, exc)
+            log.warning(
+                "[mirror structure repair delete failed] ids=%s route=%s reason=%s: %s engine=True",
+                ids,
+                route.name,
+                reason,
+                exc,
+            )
 
     def _alert_impaired(self, legacy_route, route: Route, error: str, dest: str):
         throttle = getattr(self.worker, "FASTVIP_IMPAIRED_ALERTS", None)
         if throttle and throttle.ready(route_key(legacy_route)):
             try:
-                self.alert(f"⚠️ <b>Route impaired</b>: {route.name}\n<code>{error}</code> at {dest}. "
-                           "New messages get one attempt each; nothing is retried.")
+                self.alert(
+                    f"⚠️ <b>Route impaired</b>: {route.name}\n<code>{error}</code> at {dest}. "
+                    "New messages get one attempt each; nothing is retried."
+                )
             except Exception:
                 pass
 
@@ -320,8 +430,14 @@ RETIRED_MARKERS = {
 def _log_skip(route: Route, ids, reason: str):
     marker = RETIRED_MARKERS.get(reason)
     if marker:
-        log.warning("%s route=%s ids=%s dest=%s_%s engine=True", marker, route.name, ids,
-                    route.dest_chat, route.dest_topic)
+        log.warning(
+            "%s route=%s ids=%s dest=%s_%s engine=True",
+            marker,
+            route.name,
+            ids,
+            route.dest_chat,
+            route.dest_topic,
+        )
     else:
         log.info("[ENGINE SKIP] route=%s ids=%s reason=%s", route.name, ids, reason)
 

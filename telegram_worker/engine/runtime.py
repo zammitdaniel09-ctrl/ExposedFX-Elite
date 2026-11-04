@@ -5,6 +5,7 @@ FASTVIP2 (worker_fixed.fast_vip_deliver_route) and the owner routes
 every live MAIN route shares the same rules, rendering, reply resolution,
 retries and message map.
 """
+
 from __future__ import annotations
 
 import logging
@@ -41,9 +42,12 @@ class DeliveryEngine:
             maps=MessageMap(lambda: getattr(worker, "message_map", {}) or {}),
             permanently_failed=self._permanently_failed,
         )
-        self.deliverer = Deliverer(worker, self.planner,
-                                   attempts=int(getattr(worker, "COPY_RETRY_ATTEMPTS", 3) or 3),
-                                   sleep_cap=int(getattr(worker, "COPY_RETRY_SLEEP_CAP_SECONDS", 120) or 120))
+        self.deliverer = Deliverer(
+            worker,
+            self.planner,
+            attempts=int(getattr(worker, "COPY_RETRY_ATTEMPTS", 3) or 3),
+            sleep_cap=int(getattr(worker, "COPY_RETRY_SLEEP_CAP_SECONDS", 120) or 120),
+        )
 
     def _permanently_failed(self, legacy_route, ids) -> bool:
         ledger = getattr(self.worker, "FASTVIP_PERMANENT_FAILURES", None)
@@ -61,6 +65,9 @@ class DeliveryEngine:
 def install_engine(worker) -> DeliveryEngine:
     engine = DeliveryEngine(worker)
     worker.DELIVERY_ENGINE = engine
-    log.warning("[DELIVERY ENGINE READY] routes=%s formatters=%s", len(getattr(worker, "ROUTES", []) or []),
-                sorted({formatter_for(Route.from_legacy(r)) for r in getattr(worker, "ROUTES", []) or []}))
+    log.warning(
+        "[DELIVERY ENGINE READY] routes=%s formatters=%s",
+        len(getattr(worker, "ROUTES", []) or []),
+        sorted({formatter_for(Route.from_legacy(r)) for r in getattr(worker, "ROUTES", []) or []}),
+    )
     return engine

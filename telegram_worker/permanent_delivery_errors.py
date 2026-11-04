@@ -17,32 +17,31 @@ import re
 import time
 from pathlib import Path
 
-
-PERMANENT_ERROR_NAMES = frozenset({
-    "ChatSendPlainForbiddenError",
-    "ChatWriteForbiddenError",
-    "ChatSendMediaForbiddenError",
-    "ChatSendPhotosForbiddenError",
-    "ChatSendVideosForbiddenError",
-    "ChatSendDocsForbiddenError",
-    "ChatSendAudiosForbiddenError",
-    "ChatSendVoicesForbiddenError",
-    "ChatSendRoundvideosForbiddenError",
-    "ChatSendStickersForbiddenError",
-    "ChatSendGifsForbiddenError",
-    "ChatSendPollForbiddenError",
-    "ChatSendInlineForbiddenError",
-    "ChatAdminRequiredError",
-    "ChatRestrictedError",
-    "UserBannedInChannelError",
-    "ChannelPrivateError",
-})
+PERMANENT_ERROR_NAMES = frozenset(
+    {
+        "ChatSendPlainForbiddenError",
+        "ChatWriteForbiddenError",
+        "ChatSendMediaForbiddenError",
+        "ChatSendPhotosForbiddenError",
+        "ChatSendVideosForbiddenError",
+        "ChatSendDocsForbiddenError",
+        "ChatSendAudiosForbiddenError",
+        "ChatSendVoicesForbiddenError",
+        "ChatSendRoundvideosForbiddenError",
+        "ChatSendStickersForbiddenError",
+        "ChatSendGifsForbiddenError",
+        "ChatSendPollForbiddenError",
+        "ChatSendInlineForbiddenError",
+        "ChatAdminRequiredError",
+        "ChatRestrictedError",
+        "UserBannedInChannelError",
+        "ChannelPrivateError",
+    }
+)
 
 DESTINATION_NOT_RESOLVABLE = "DestinationNotResolvable"
 
-_MISSING_ENTITY = re.compile(
-    r"Could not find the input entity for PeerChannel\(channel_id=(\d+)\)"
-)
+_MISSING_ENTITY = re.compile(r"Could not find the input entity for PeerChannel\(channel_id=(\d+)\)")
 
 
 def _channel_id(chat_id):
@@ -100,9 +99,7 @@ class PermanentFailureLedger:
         except Exception:
             # Keep an unreadable ledger for inspection instead of overwriting it.
             try:
-                self.path.replace(
-                    self.path.with_name(f"{self.path.name}.unreadable-{int(time.time())}")
-                )
+                self.path.replace(self.path.with_name(f"{self.path.name}.unreadable-{int(time.time())}"))
             except OSError:
                 pass
             return {}
@@ -121,10 +118,9 @@ class PermanentFailureLedger:
                 entries[str(int(value))] = {"error": str(error_name), "ts": stamp}
 
         if len(entries) > self.max_per_route:
-            newest = sorted(
-                entries.items(),
-                key=lambda item: (item[1].get("ts", 0), int(item[0])),
-            )[-self.max_per_route:]
+            newest = sorted(entries.items(), key=lambda item: (item[1].get("ts", 0), int(item[0])))[
+                -self.max_per_route :
+            ]
             self._data[route_key(route)] = dict(newest)
 
         return self._save()

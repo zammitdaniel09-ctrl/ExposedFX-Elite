@@ -12,6 +12,7 @@ Both now end the process with a non-zero status so Railway restarts it, after
 leaving a marker that the health monitor turns into a Saved Messages notice on
 the next start ("restarted itself because ...").
 """
+
 import asyncio
 import json
 import logging
@@ -30,7 +31,9 @@ EXIT_STALLED = 70
 def write_marker(data_dir, service, reason):
     try:
         path = Path(data_dir) / MARKER_FILE
-        path.write_text(json.dumps({"service": service, "reason": reason, "ts": time.time()}), encoding="utf-8")
+        path.write_text(
+            json.dumps({"service": service, "reason": reason, "ts": time.time()}), encoding="utf-8"
+        )
     except Exception:
         pass
 
@@ -52,8 +55,15 @@ def take_marker(data_dir):
 class LoopWatchdog:
     """A thread outside the event loop that exits the process if the loop stalls."""
 
-    def __init__(self, service, data_dir, logger, stall_seconds=STALL_SECONDS,
-                 clock=time.monotonic, exit_process=os._exit):
+    def __init__(
+        self,
+        service,
+        data_dir,
+        logger,
+        stall_seconds=STALL_SECONDS,
+        clock=time.monotonic,
+        exit_process=os._exit,
+    ):
         self.service = service
         self.data_dir = data_dir
         self.log = logger
@@ -71,8 +81,9 @@ class LoopWatchdog:
         stalled = self.clock() - self.last_tick
         if stalled <= self.stall_seconds:
             return False
-        self.log.critical("[LIVENESS STALL] service=%s loop_stalled=%.0fs action=exit_for_restart",
-                          self.service, stalled)
+        self.log.critical(
+            "[LIVENESS STALL] service=%s loop_stalled=%.0fs action=exit_for_restart", self.service, stalled
+        )
         write_marker(self.data_dir, self.service, f"event loop stalled for {stalled:.0f}s")
         for handler in logging.getLogger().handlers:
             try:

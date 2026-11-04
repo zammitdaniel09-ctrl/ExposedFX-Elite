@@ -5,7 +5,6 @@
 import re
 from typing import Optional, Dict, List
 
-
 SYMBOL_ALIASES = {
     "GOLD": "XAUUSD",
     "XAU": "XAUUSD",
@@ -25,14 +24,7 @@ SYMBOL_ALIASES = {
     "USDJPY": "USDJPY",
 }
 
-IGNORE_WORDS = [
-    "BELOW",
-    "ABOVE",
-    "BIAS",
-    "WATCH",
-    "IDEA",
-    "ANALYSIS",
-]
+IGNORE_WORDS = ["BELOW", "ABOVE", "BIAS", "WATCH", "IDEA", "ANALYSIS"]
 
 
 def clean_text(text: str) -> str:
@@ -113,19 +105,27 @@ def find_tps(text: str) -> List[float]:
 def find_entry_zone(text: str, direction: str, sl: Optional[float], tps: List[float]) -> Optional[tuple]:
     t = text.upper()
 
-    m = re.search(r"\b(ENTRY|ENTRIES|ZONE)\s*[:\-]?\s*([0-9]{3,6}(?:\.\d+)?)\s*(?:-|TO)?\s*([0-9]{3,6}(?:\.\d+)?)?", t)
+    m = re.search(
+        r"\b(ENTRY|ENTRIES|ZONE)\s*[:\-]?\s*([0-9]{3,6}(?:\.\d+)?)\s*(?:-|TO)?\s*([0-9]{3,6}(?:\.\d+)?)?", t
+    )
     if m:
         a = float(m.group(2))
         b = float(m.group(3)) if m.group(3) else a
         return (min(a, b), max(a, b))
 
-    m = re.search(r"\b(BUY|BUYS|SELL|SELLS|LONG|SHORT)\b.*?\b(?:XAUUSD|XAU|GOLD|NAS100|NAS|BTCUSD|BTC|EURUSD|GBPUSD|USDJPY)?\b\D{0,25}([0-9]{3,6}(?:\.\d+)?)\s*(?:-|TO)\s*([0-9]{3,6}(?:\.\d+)?)", t)
+    m = re.search(
+        r"\b(BUY|BUYS|SELL|SELLS|LONG|SHORT)\b.*?\b(?:XAUUSD|XAU|GOLD|NAS100|NAS|BTCUSD|BTC|EURUSD|GBPUSD|USDJPY)?\b\D{0,25}([0-9]{3,6}(?:\.\d+)?)\s*(?:-|TO)\s*([0-9]{3,6}(?:\.\d+)?)",
+        t,
+    )
     if m:
         a = float(m.group(2))
         b = float(m.group(3))
         return (min(a, b), max(a, b))
 
-    m = re.search(r"\b(BUY|BUYS|SELL|SELLS|LONG|SHORT)\b.*?\b(?:XAUUSD|XAU|GOLD|NAS100|NAS|BTCUSD|BTC|EURUSD|GBPUSD|USDJPY)?\b\D{0,25}([0-9]{3,6}(?:\.\d+)?)", t)
+    m = re.search(
+        r"\b(BUY|BUYS|SELL|SELLS|LONG|SHORT)\b.*?\b(?:XAUUSD|XAU|GOLD|NAS100|NAS|BTCUSD|BTC|EURUSD|GBPUSD|USDJPY)?\b\D{0,25}([0-9]{3,6}(?:\.\d+)?)",
+        t,
+    )
     if m:
         p = float(m.group(2))
         if sl and abs(p - sl) < 0.00001:
@@ -137,7 +137,9 @@ def find_entry_zone(text: str, direction: str, sl: Optional[float], tps: List[fl
     return None
 
 
-def validate(direction: str, entry_low: float, entry_high: float, sl: float, tps: List[float]) -> Optional[str]:
+def validate(
+    direction: str, entry_low: float, entry_high: float, sl: float, tps: List[float]
+) -> Optional[str]:
     mid = (entry_low + entry_high) / 2
     tp1 = tps[0] if tps else None
 

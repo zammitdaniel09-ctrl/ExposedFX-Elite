@@ -9,7 +9,6 @@ from pathlib import Path
 
 import requests
 
-
 DATA_DIR = Path(os.environ.get("DATA_DIR") or "data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -130,10 +129,7 @@ async def _auto_install_vip_emoji_registry(log=None):
             try:
                 from telegram_worker.reply_hardening import install_reply_hardening
 
-                reply_state = install_reply_hardening(
-                    main_module,
-                    logger=log,
-                )
+                reply_state = install_reply_hardening(main_module, logger=log)
                 if main_module is not None:
                     setattr(main_module, "GLOBAL_REPLY_HARDENING", reply_state)
                 if log:
@@ -143,11 +139,7 @@ async def _auto_install_vip_emoji_registry(log=None):
                     )
             except Exception as exc:
                 if log:
-                    log.exception(
-                        "[GLOBAL REPLY HARDENING INSTALL FAILED] %s: %s",
-                        type(exc).__name__,
-                        exc,
-                    )
+                    log.exception("[GLOBAL REPLY HARDENING INSTALL FAILED] %s: %s", type(exc).__name__, exc)
                 await asyncio.sleep(2)
                 continue
 
@@ -159,14 +151,9 @@ async def _auto_install_vip_emoji_registry(log=None):
             # ----------------------------------------------------------
             if getattr(main_module, "TOPIC1_KILL_SWITCH_TASK", None) is None:
                 try:
-                    from telegram_worker.topic1_kill_switch import (
-                        install_topic1_kill_switch,
-                    )
+                    from telegram_worker.topic1_kill_switch import install_topic1_kill_switch
 
-                    topic1_state = install_topic1_kill_switch(
-                        main_module,
-                        logger=log,
-                    )
+                    topic1_state = install_topic1_kill_switch(main_module, logger=log)
                     if main_module is not None:
                         setattr(main_module, "TOPIC1_KILL_SWITCH_STATE", topic1_state)
                     if log:
@@ -177,11 +164,7 @@ async def _auto_install_vip_emoji_registry(log=None):
                         )
                 except Exception as exc:
                     if log:
-                        log.exception(
-                            "[TOPIC1 KILL SWITCH INSTALL FAILED] %s: %s",
-                            type(exc).__name__,
-                            exc,
-                        )
+                        log.exception("[TOPIC1 KILL SWITCH INSTALL FAILED] %s: %s", type(exc).__name__, exc)
                     await asyncio.sleep(2)
                     continue
 
@@ -189,10 +172,7 @@ async def _auto_install_vip_emoji_registry(log=None):
             # if VIP custom-emoji formatting is disabled.
             if os.environ.get("VIP_EMOJI_REGISTRY_ENABLED", "1").strip() != "1":
                 if log:
-                    log.info(
-                        "[VIP EMOJI REGISTRY] disabled; global reply hardening "
-                        "remains active"
-                    )
+                    log.info("[VIP EMOJI REGISTRY] disabled; global reply hardening " "remains active")
                 return
 
             try:
@@ -202,32 +182,17 @@ async def _auto_install_vip_emoji_registry(log=None):
                 )
             except Exception as exc:
                 if log:
-                    log.exception(
-                        "[VIP EMOJI REGISTRY IMPORT FAILED] %s: %s",
-                        type(exc).__name__,
-                        exc,
-                    )
+                    log.exception("[VIP EMOJI REGISTRY IMPORT FAILED] %s: %s", type(exc).__name__, exc)
                 # Reply hardening/bootstrap are already installed. Keep retrying
                 # only the optional formatter dependency.
                 await asyncio.sleep(2)
                 continue
 
-            scan_limit = max(
-                1,
-                int(os.environ.get("EMOJI_REGISTRY_SCAN_LIMIT", "500")),
-            )
+            scan_limit = max(1, int(os.environ.get("EMOJI_REGISTRY_SCAN_LIMIT", "500")))
 
-            registry = CommunityEmojiRegistry(
-                DATA_DIR,
-                logger=log,
-            )
+            registry = CommunityEmojiRegistry(DATA_DIR, logger=log)
 
-            await install_saved_messages_emoji_collector(
-                client,
-                registry,
-                logger=log,
-                scan_limit=scan_limit,
-            )
+            await install_saved_messages_emoji_collector(client, registry, logger=log, scan_limit=scan_limit)
 
             if main_module is not None:
                 setattr(main_module, "EMOJI_REGISTRY", registry)
@@ -244,15 +209,9 @@ async def _auto_install_vip_emoji_registry(log=None):
             inline_state = None
 
             try:
-                from telegram_worker.imperium_vip_inline_hook import (
-                    install_imperium_vip_inline_hook,
-                )
+                from telegram_worker.imperium_vip_inline_hook import install_imperium_vip_inline_hook
 
-                inline_state = install_imperium_vip_inline_hook(
-                    main_module,
-                    registry,
-                    logger=log,
-                )
+                inline_state = install_imperium_vip_inline_hook(main_module, registry, logger=log)
 
                 if main_module is not None:
                     setattr(main_module, "IMPERIUM_VIP_FORMATTER", inline_state)
@@ -267,11 +226,7 @@ async def _auto_install_vip_emoji_registry(log=None):
 
             except Exception as exc:
                 if log:
-                    log.exception(
-                        "[IMPERIUM VIP INLINE HOOK INSTALL FAILED] %s: %s",
-                        type(exc).__name__,
-                        exc,
-                    )
+                    log.exception("[IMPERIUM VIP INLINE HOOK INSTALL FAILED] %s: %s", type(exc).__name__, exc)
 
             # Emergency formatter fallback only. Reply hardening does not depend
             # on this path and remains installed regardless.
@@ -282,17 +237,11 @@ async def _auto_install_vip_emoji_registry(log=None):
                     )
 
                     destination_poller_state = await install_imperium_vip_destination_poller(
-                        client,
-                        registry,
-                        logger=log,
+                        client, registry, logger=log
                     )
 
                     if main_module is not None:
-                        setattr(
-                            main_module,
-                            "IMPERIUM_VIP_DESTINATION_POLLER",
-                            destination_poller_state,
-                        )
+                        setattr(main_module, "IMPERIUM_VIP_DESTINATION_POLLER", destination_poller_state)
 
                     if log:
                         log.warning(
@@ -304,9 +253,7 @@ async def _auto_install_vip_emoji_registry(log=None):
                 except Exception as exc:
                     if log:
                         log.exception(
-                            "[IMPERIUM VIP FORMATTER FALLBACK FAILED] %s: %s",
-                            type(exc).__name__,
-                            exc,
+                            "[IMPERIUM VIP FORMATTER FALLBACK FAILED] %s: %s", type(exc).__name__, exc
                         )
 
             return
@@ -315,11 +262,7 @@ async def _auto_install_vip_emoji_registry(log=None):
             raise
         except Exception as exc:
             if log:
-                log.warning(
-                    "[VIP/REPLY INSTALL WAIT/RETRY] %s: %s",
-                    type(exc).__name__,
-                    exc,
-                )
+                log.warning("[VIP/REPLY INSTALL WAIT/RETRY] %s: %s", type(exc).__name__, exc)
             await asyncio.sleep(2)
 
 
@@ -384,14 +327,12 @@ async def start_runtime_guard(service_name: str, log=None):
         except Exception as exc:
             if log:
                 log.warning(
-                    f"Runtime lock check failed for {service_name}: "
-                    f"{type(exc).__name__}: {exc}; retrying"
+                    f"Runtime lock check failed for {service_name}: " f"{type(exc).__name__}: {exc}; retrying"
                 )
             await asyncio.sleep(1)
 
     lock_file.write_text(
-        json.dumps({"pid": pid, "deployment": os.environ.get("RAILWAY_DEPLOYMENT_ID", "")}),
-        encoding="utf-8",
+        json.dumps({"pid": pid, "deployment": os.environ.get("RAILWAY_DEPLOYMENT_ID", "")}), encoding="utf-8"
     )
     lock_file.touch()
     atexit.register(_remove_own_lock, lock_file, pid)
@@ -401,12 +342,14 @@ async def start_runtime_guard(service_name: str, log=None):
             while True:
                 try:
                     heartbeat_file.write_text(
-                        json.dumps({
-                            "service": service_name,
-                            "pid": pid,
-                            "ts": time.time(),
-                            "owner": os.environ.get("SESSION_OWNER", service_name),
-                        }),
+                        json.dumps(
+                            {
+                                "service": service_name,
+                                "pid": pid,
+                                "ts": time.time(),
+                                "owner": os.environ.get("SESSION_OWNER", service_name),
+                            }
+                        ),
                         encoding="utf-8",
                     )
                     if _lock_pid(lock_file) == pid:
@@ -423,10 +366,7 @@ async def start_runtime_guard(service_name: str, log=None):
     if is_main_vip:
         connect_delay = 0
     else:
-        connect_delay = max(
-            0,
-            int(os.environ.get("TELEGRAM_CONNECT_DELAY_SECONDS", "0")),
-        )
+        connect_delay = max(0, int(os.environ.get("TELEGRAM_CONNECT_DELAY_SECONDS", "0")))
 
     if connect_delay:
         if log:

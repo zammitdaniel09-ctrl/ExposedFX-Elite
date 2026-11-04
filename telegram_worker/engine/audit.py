@@ -7,6 +7,7 @@ plan is compared with the copy that is actually in the destination: text,
 entities, media kind and reply target. Read-only; runs once per engine
 version and logs one summary line per route.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -46,8 +47,9 @@ def compare(plan, source, dest) -> List[str]:
         fields.append("text")
     if plan.entities != entity_keys(dest.entities if dest.message else None):
         fields.append("entities")
-    if (plan.kind == "media") != (_media_kind(dest) is not None) or \
-            (plan.kind == "media" and _media_kind(source) != _media_kind(dest)):
+    if (plan.kind == "media") != (_media_kind(dest) is not None) or (
+        plan.kind == "media" and _media_kind(source) != _media_kind(dest)
+    ):
         fields.append("media")
     if plan.reply_to != _reply_to(dest):
         fields.append("reply_to")
@@ -88,9 +90,15 @@ async def audit_route(client, planner, legacy_route: Dict, formatter: str, limit
             result["mismatch"] += 1
             result.update(f"field:{f}" for f in fields)
             if len(examples) < 3:
-                examples.append({"source": source.id, "dest": dest.id, "fields": fields,
-                                 "engine": (plan.text[:50] if isinstance(plan, Send) else str(plan)),
-                                 "delivered": (dest.message or "")[:50]})
+                examples.append(
+                    {
+                        "source": source.id,
+                        "dest": dest.id,
+                        "fields": fields,
+                        "engine": (plan.text[:50] if isinstance(plan, Send) else str(plan)),
+                        "delivered": (dest.message or "")[:50],
+                    }
+                )
         else:
             result["match"] += 1
     return {**result, "examples": examples}
@@ -117,13 +125,23 @@ async def run_replay_audit(worker, planner, delay_seconds: float = 90.0) -> Opti
             outcome = {"error": f"{type(exc).__name__}: {exc}"}
         report[route.name] = outcome
         level = logging.WARNING if outcome.get("mismatch") or outcome.get("error") else logging.INFO
-        log.log(level, "[ENGINE REPLAY AUDIT] route=%s checked=%s match=%s mismatch=%s detail=%s",
-                route.name, outcome.get("checked", 0), outcome.get("match", 0), outcome.get("mismatch", 0),
-                json.dumps({k: v for k, v in outcome.items() if k not in ("checked", "match", "mismatch")},
-                           ensure_ascii=False))
+        log.log(
+            level,
+            "[ENGINE REPLAY AUDIT] route=%s checked=%s match=%s mismatch=%s detail=%s",
+            route.name,
+            outcome.get("checked", 0),
+            outcome.get("match", 0),
+            outcome.get("mismatch", 0),
+            json.dumps(
+                {k: v for k, v in outcome.items() if k not in ("checked", "match", "mismatch")},
+                ensure_ascii=False,
+            ),
+        )
         await asyncio.sleep(1.0)
     try:
-        path.write_text(json.dumps({"version": AUDIT_VERSION, "report": report}, ensure_ascii=False), encoding="utf-8")
+        path.write_text(
+            json.dumps({"version": AUDIT_VERSION, "report": report}, ensure_ascii=False), encoding="utf-8"
+        )
     except Exception:
         pass
     total = sum(r.get("checked", 0) for r in report.values())

@@ -1,4 +1,5 @@
 """Decide what one source post becomes on one route: a Send or a Skip."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from .rules import Rules
 @dataclass(frozen=True)
 class Facts:
     """Delivery state read before anything is sent for this post."""
+
     all_mapped: bool
     any_mapped: bool
     permanently_failed: bool = False
@@ -26,18 +28,26 @@ class Planner:
     permanently_failed: Optional[Callable[[Dict, Sequence[int]], bool]] = None
     context: Dict[str, Any] = field(default_factory=dict)
 
-    def facts(self, route: Route, unit: Sequence, legacy_route: Optional[Dict] = None,
-              check_ledger: bool = False) -> Facts:
+    def facts(
+        self, route: Route, unit: Sequence, legacy_route: Optional[Dict] = None, check_ledger: bool = False
+    ) -> Facts:
         ids = [int(m.id) for m in unit]
         return Facts(
             all_mapped=self.maps.all_mapped(route, unit),
             any_mapped=self.maps.any_mapped(route, unit),
-            permanently_failed=bool(check_ledger and self.permanently_failed
-                                    and self.permanently_failed(legacy_route or {}, ids)),
+            permanently_failed=bool(
+                check_ledger and self.permanently_failed and self.permanently_failed(legacy_route or {}, ids)
+            ),
         )
 
-    def plan(self, route: Route, unit: Sequence, legacy_route: Optional[Dict] = None,
-             facts: Optional[Facts] = None, check_ledger: bool = False) -> Plan:
+    def plan(
+        self,
+        route: Route,
+        unit: Sequence,
+        legacy_route: Optional[Dict] = None,
+        facts: Optional[Facts] = None,
+        check_ledger: bool = False,
+    ) -> Plan:
         unit = sorted(unit, key=lambda m: int(m.id))
         facts = facts or self.facts(route, unit, legacy_route, check_ledger)
         if facts.all_mapped:

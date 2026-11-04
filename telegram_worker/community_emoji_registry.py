@@ -7,7 +7,6 @@ from typing import Dict, Any, List, Tuple
 from telethon import events
 from telethon.tl.types import MessageEntityCustomEmoji
 
-
 # One or many assignments can be placed in the same Saved Message, e.g.
 # GreenTick = <emoji>
 # Boom = <emoji>
@@ -15,10 +14,7 @@ from telethon.tl.types import MessageEntityCustomEmoji
 # Warning = <emoji>
 #
 # Keep this line-based. Telegram entity offsets refer to the exact full message.
-_ASSIGNMENT_LINE_RE = re.compile(
-    r"^[ \t]*([A-Za-z][A-Za-z0-9_-]{0,63})[ \t]*=[ \t]*(.*?)[ \t]*$",
-    re.M,
-)
+_ASSIGNMENT_LINE_RE = re.compile(r"^[ \t]*([A-Za-z][A-Za-z0-9_-]{0,63})[ \t]*=[ \t]*(.*?)[ \t]*$", re.M)
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z][A-Za-z0-9_-]{0,63})\}")
 
 
@@ -61,8 +57,7 @@ class CommunityEmojiRegistry:
     def save(self):
         temp = self.path.with_suffix(".tmp")
         temp.write_text(
-            json.dumps(self.entries, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
+            json.dumps(self.entries, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
         )
         temp.replace(self.path)
 
@@ -101,11 +96,11 @@ class CommunityEmojiRegistry:
             return True, result
 
         # Convert this line's RHS character span into Telegram UTF-16 offsets.
-        rhs_start_utf16 = _utf16_len(raw_text[:match.start(2)])
-        rhs_end_utf16 = _utf16_len(raw_text[:match.end(2)])
+        rhs_start_utf16 = _utf16_len(raw_text[: match.start(2)])
+        rhs_end_utf16 = _utf16_len(raw_text[: match.end(2)])
 
         custom_entities = []
-        for entity in (getattr(message, "entities", None) or []):
+        for entity in getattr(message, "entities", None) or []:
             if not isinstance(entity, MessageEntityCustomEmoji):
                 continue
 
@@ -133,9 +128,7 @@ class CommunityEmojiRegistry:
             self.save()
 
             self.log.warning(
-                "[COMMUNITY EMOJI SAVED] alias=%s type=custom document_id=%s",
-                alias,
-                document_id,
+                "[COMMUNITY EMOJI SAVED] alias=%s type=custom document_id=%s", alias, document_id
             )
             return True, f"saved_custom:{alias}:{document_id}"
 
@@ -148,11 +141,7 @@ class CommunityEmojiRegistry:
                 document_id = int(entity.document_id)
                 document_ids.append(document_id)
                 sequence_entities.append(
-                    {
-                        "document_id": document_id,
-                        "offset": relative_offset,
-                        "length": int(entity.length),
-                    }
+                    {"document_id": document_id, "offset": relative_offset, "length": int(entity.length)}
                 )
 
             self.entries[alias] = {
@@ -181,11 +170,7 @@ class CommunityEmojiRegistry:
             }
             self.save()
 
-            self.log.warning(
-                "[COMMUNITY EMOJI SAVED] alias=%s type=unicode text=%r",
-                alias,
-                right_side_clean,
-            )
+            self.log.warning("[COMMUNITY EMOJI SAVED] alias=%s type=unicode text=%r", alias, right_side_clean)
             return True, f"saved_unicode:{alias}"
 
         return False, f"no_emoji_found:{alias}"
@@ -251,7 +236,7 @@ class CommunityEmojiRegistry:
         cursor = 0
 
         for match in _PLACEHOLDER_RE.finditer(template or ""):
-            literal = template[cursor:match.start()]
+            literal = template[cursor : match.start()]
             output_parts.append(literal)
 
             alias = match.group(1)
@@ -271,9 +256,7 @@ class CommunityEmojiRegistry:
                 output_parts.append(fallback)
                 entities.append(
                     MessageEntityCustomEmoji(
-                        offset=base_offset,
-                        length=_utf16_len(fallback),
-                        document_id=int(entry["document_id"]),
+                        offset=base_offset, length=_utf16_len(fallback), document_id=int(entry["document_id"])
                     )
                 )
 
@@ -300,10 +283,7 @@ class CommunityEmojiRegistry:
 
 
 async def install_saved_messages_emoji_collector(
-    client,
-    registry: CommunityEmojiRegistry,
-    logger=None,
-    scan_limit: int = 500,
+    client, registry: CommunityEmojiRegistry, logger=None, scan_limit: int = 500
 ):
     """Attach the live Saved Messages collector to the logged-in account."""
     log = logger or registry.log
@@ -325,21 +305,12 @@ async def install_saved_messages_emoji_collector(
                 log.warning("[COMMUNITY EMOJI INVALID] %s", result)
 
         except Exception as exc:
-            log.exception(
-                "[COMMUNITY EMOJI LIVE CAPTURE FAILED] %s: %s",
-                type(exc).__name__,
-                exc,
-            )
+            log.exception("[COMMUNITY EMOJI LIVE CAPTURE FAILED] %s: %s", type(exc).__name__, exc)
 
-    client.add_event_handler(
-        _handler,
-        events.NewMessage(outgoing=True),
-    )
+    client.add_event_handler(_handler, events.NewMessage(outgoing=True))
 
     log.warning(
-        "[COMMUNITY EMOJI COLLECTOR READY] saved_messages_user_id=%s scan_limit=%s",
-        me_id,
-        scan_limit,
+        "[COMMUNITY EMOJI COLLECTOR READY] saved_messages_user_id=%s scan_limit=%s", me_id, scan_limit
     )
 
     return _handler

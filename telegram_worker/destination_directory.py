@@ -3,6 +3,7 @@
 Owner request 3 Nov 2026: list the groups/channels and their topics so routes
 can be kept or stopped by name. Reads titles only; never sends or edits.
 """
+
 import asyncio
 import hashlib
 import json
@@ -70,9 +71,11 @@ async def _topic_titles(worker, chat, topics):
 
 
 def _signature(entries):
-    return hashlib.sha256(json.dumps(
-        sorted([list(k), sorted(map(str, v))] for k, v in entries.items()), default=str,
-    ).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(sorted([list(k), sorted(map(str, v))] for k, v in entries.items()), default=str).encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
 
 async def log_destination_directory(worker):
@@ -99,7 +102,11 @@ async def log_destination_directory(worker):
             for status, c, topic in sorted(k for k in entries if k[1] == chat):
                 log.warning(
                     "[DEST DIRECTORY] status=%s chat=%s chat_title=%r topic=%s topic_title=%r routes=%s",
-                    status, chat, chat_title, topic, titles.get(topic, "") if topic else "",
+                    status,
+                    chat,
+                    chat_title,
+                    topic,
+                    titles.get(topic, "") if topic else "",
                     " | ".join(sorted(set(str(x) for x in entries[(status, c, topic)]))),
                 )
             await asyncio.sleep(0.3)

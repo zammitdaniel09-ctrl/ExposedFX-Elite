@@ -1,4 +1,5 @@
 """ALT backend fixes 4 Nov 2026: incremental watchdog fetch and the dialogs-ready gate."""
+
 import ast
 import asyncio
 import logging
@@ -12,7 +13,9 @@ TREE = ast.parse((ROOT / "telegram_worker/alt_worker_legacy.py").read_text(encod
 
 def load_functions(*names, **extra):
     ns = {"asyncio": asyncio, "log": logging.getLogger("alt-test"), **extra}
-    nodes = [n for n in TREE.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
+    nodes = [
+        n for n in TREE.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names
+    ]
     assert len(nodes) == len(names)
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "<alt>", "exec"), ns)
     return ns
@@ -36,15 +39,18 @@ class AltBackendFixTests(unittest.IsolatedAsyncioTestCase):
         await ns["_owner_original_fetch_route_messages"](topic, 500, min_id=7946)
         await ns["_owner_original_fetch_route_messages"](whole, 500, min_id=12)
         await ns["_owner_original_fetch_route_messages"](whole, 20)
-        self.assertEqual(client.calls, [
-            (-100111, {"limit": 500, "reply_to": 7194, "min_id": 7946}),
-            (-100222, {"limit": 500, "min_id": 12}),
-            (-100222, {"limit": 20, "min_id": 0}),
-        ])
+        self.assertEqual(
+            client.calls,
+            [
+                (-100111, {"limit": 500, "reply_to": 7194, "min_id": 7946}),
+                (-100222, {"limit": 500, "min_id": 12}),
+                (-100222, {"limit": 20, "min_id": 0}),
+            ],
+        )
 
     def test_watchdog_passes_its_checkpoint(self):
-        source = (ROOT / "telegram_worker/alt_worker_legacy.py").read_text(encoding="utf-8")
-        self.assertIn("WATCHDOG_LIMIT,\n                    min_id=last_id,", source)
+        source = " ".join((ROOT / "telegram_worker/alt_worker_legacy.py").read_text(encoding="utf-8").split())
+        self.assertIn("fetch_route_messages(route, WATCHDOG_LIMIT, min_id=last_id)", source)
 
     async def test_copies_wait_for_dialogs_then_proceed(self):
         ready = asyncio.Event()
@@ -56,7 +62,9 @@ class AltBackendFixTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(waiter, 1)
 
     async def test_dialog_wait_is_bounded(self):
-        ns = load_functions("wait_dialogs_ready", DIALOGS_READY=asyncio.Event(), DIALOGS_READY_WAIT_SECONDS=0.1)
+        ns = load_functions(
+            "wait_dialogs_ready", DIALOGS_READY=asyncio.Event(), DIALOGS_READY_WAIT_SECONDS=0.1
+        )
         await asyncio.wait_for(ns["wait_dialogs_ready"](), 1)
 
 

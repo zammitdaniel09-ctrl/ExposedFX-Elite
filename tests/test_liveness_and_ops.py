@@ -1,4 +1,5 @@
 """Iteration 4 ops: liveness exits, restart notice, JSON logs, instant lock takeover."""
+
 import asyncio
 import json
 import logging
@@ -25,9 +26,14 @@ class LoopWatchdogTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.now = [100.0]
         self.exits = []
-        self.dog = liveness.LoopWatchdog("ExposedFX TEST", self.tmp.name, logging.getLogger("t"),
-                                         stall_seconds=120, clock=lambda: self.now[0],
-                                         exit_process=self.exits.append)
+        self.dog = liveness.LoopWatchdog(
+            "ExposedFX TEST",
+            self.tmp.name,
+            logging.getLogger("t"),
+            stall_seconds=120,
+            clock=lambda: self.now[0],
+            exit_process=self.exits.append,
+        )
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -74,10 +80,16 @@ class DigestTests(unittest.TestCase):
     def test_engine_lag_and_extra_lines_reach_the_digest(self):
         with tempfile.TemporaryDirectory() as tmp:
             monitor = health_monitor.HealthMonitor("ExposedFX TEST", tmp)
-            monitor.observe(logging.WARNING, "[FASTVIP COPIED] route=Relay7248 To VIP10877 source=-1004367822325_7248 "
-                                             "ids=[1] kind=SINGLE dest=-1003726286301_10877 engine=True lag=0.8s")
-            monitor.observe(logging.WARNING, "[FASTVIP COPIED] route=Relay7248 To VIP10877 source=-1004367822325_7248 "
-                                             "ids=[2] kind=SINGLE dest=-1003726286301_10877")
+            monitor.observe(
+                logging.WARNING,
+                "[FASTVIP COPIED] route=Relay7248 To VIP10877 source=-1004367822325_7248 "
+                "ids=[1] kind=SINGLE dest=-1003726286301_10877 engine=True lag=0.8s",
+            )
+            monitor.observe(
+                logging.WARNING,
+                "[FASTVIP COPIED] route=Relay7248 To VIP10877 source=-1004367822325_7248 "
+                "ids=[2] kind=SINGLE dest=-1003726286301_10877",
+            )
             monitor.extras.append(lambda: "Engine shadow (match/seen): Relay7248 To VIP10877: 2/2")
             digest = monitor.digest()
             self.assertIn("• Relay7248 To VIP10877: 2 · 0.8s", digest)
@@ -87,8 +99,15 @@ class DigestTests(unittest.TestCase):
 class JsonLogTests(unittest.TestCase):
     def test_railway_line_has_real_severity_and_original_text(self):
         formatter = log_setup.RailwayJsonFormatter("imperium-telegram-worker")
-        record = logging.LogRecord("imperium-worker", logging.WARNING, __file__, 1,
-                                   "[FASTVIP COPIED] route=%s", ("Relay508 To VIP7",), None)
+        record = logging.LogRecord(
+            "imperium-worker",
+            logging.WARNING,
+            __file__,
+            1,
+            "[FASTVIP COPIED] route=%s",
+            ("Relay508 To VIP7",),
+            None,
+        )
         line = json.loads(formatter.format(record))
         self.assertEqual(line["level"], "warn")
         self.assertEqual(line["message"], "[FASTVIP COPIED] route=Relay508 To VIP7")
@@ -135,8 +154,9 @@ class RuntimeLockTests(unittest.TestCase):
         self.lock.write_text(json.dumps({"pid": 1, "deployment": "old-deploy"}), encoding="utf-8")
 
         async def run():
-            with patch.object(runtime_guard, "DATA_DIR", Path(self.tmp.name)), \
-                 patch.dict(os.environ, {"RAILWAY_DEPLOYMENT_ID": "new-deploy"}):
+            with patch.object(runtime_guard, "DATA_DIR", Path(self.tmp.name)), patch.dict(
+                os.environ, {"RAILWAY_DEPLOYMENT_ID": "new-deploy"}
+            ):
                 started = asyncio.get_running_loop().time()
                 task = await asyncio.wait_for(runtime_guard.start_runtime_guard("svc"), timeout=5)
                 elapsed = asyncio.get_running_loop().time() - started

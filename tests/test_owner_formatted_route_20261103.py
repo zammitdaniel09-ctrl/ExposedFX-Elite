@@ -1,4 +1,5 @@
 """Library-format route 8323 -> VIP12289: parsing, rendering and replay of real provider posts."""
+
 import asyncio
 import sys
 import tempfile
@@ -25,8 +26,10 @@ BUY_3892 = "🔥 GOLD TRADE IDEA\n\n🟢 BUY GOLD NOW @ 3892\n\n❌ SL: 3889\n�
 BUY_3904 = "🔥 GOLD TRADE IDEA\n\n🟢 BUY XAUUSD NOW @ 3904\n\n❌ SL: 3889\n✅ TP1: 3911\n✅ TP2: 3917\n✅ TP3: 3923\n✅ TP4: 3928\n✅ TP5: 3937"
 BUY_3942 = "💰 Trade idea – GOLD (XAUUSD)\n\n🟢 BUY GOLD @ 3942\n\n❌ SL: 3924\n✅ TP1: 3949\n✅ TP2: 3958\n✅ TP3: 3965\n✅ TP4: 3976\n✅ TP5: 3985"
 SELL_3928 = "💰 Trade idea – GOLD (XAUUSD)\n\n🔴 SELL XAUUSD NOW @ 3928\n\n❌ SL: 3945\n✅ TP1: 3920\n✅ TP2: 3914\n✅ TP3: 3910\n✅ TP4: 3902\n✅ TP5: 3897"
-RECAP = ("📊 Today’s Recap – Mon 2 Nov\n\n✅ Wins: 8 ❌ Losses: 0\n🎯 2 trade hit all targets\n💰 Net: + 810 pips\n\n"
-         "A positive day – rest up, we go again tomorrow 🙌\nResults use the posted levels, before spreads and fees.")
+RECAP = (
+    "📊 Today’s Recap – Mon 2 Nov\n\n✅ Wins: 8 ❌ Losses: 0\n🎯 2 trade hit all targets\n💰 Net: + 810 pips\n\n"
+    "A positive day – rest up, we go again tomorrow 🙌\nResults use the posted levels, before spreads and fees."
+)
 CHATTER = [
     RECAP,
     "Hey traders, good morning! How's everyone feeling about today? 💪",
@@ -42,8 +45,11 @@ CHATTER = [
 
 
 def message(mid, text, parent=None, minutes=0):
-    reply = (SimpleNamespace(reply_to_top_id=SOURCE_TOPIC, reply_to_msg_id=parent) if parent
-             else SimpleNamespace(reply_to_top_id=None, reply_to_msg_id=SOURCE_TOPIC))
+    reply = (
+        SimpleNamespace(reply_to_top_id=SOURCE_TOPIC, reply_to_msg_id=parent)
+        if parent
+        else SimpleNamespace(reply_to_top_id=None, reply_to_msg_id=SOURCE_TOPIC)
+    )
     when = datetime(2026, 11, 2, tzinfo=timezone.utc) + timedelta(minutes=minutes)
     return SimpleNamespace(id=mid, message=text, media=None, date=when, reply_to=reply)
 
@@ -64,8 +70,15 @@ class FakeClient:
                 yield row
 
     async def send_message(self, chat, text, formatting_entities=None, reply_to=None, link_preview=True):
-        self.sent.append(SimpleNamespace(chat=chat, text=text, entities=formatting_entities, reply_to=reply_to,
-                                         id=50000 + len(self.sent)))
+        self.sent.append(
+            SimpleNamespace(
+                chat=chat,
+                text=text,
+                entities=formatting_entities,
+                reply_to=reply_to,
+                id=50000 + len(self.sent),
+            )
+        )
         return self.sent[-1]
 
 
@@ -110,12 +123,22 @@ def replay_rows():
 
 class ParsingTests(unittest.TestCase):
     def test_signals_parse(self):
-        self.assertEqual(fmt.parse_signal(BUY_3895), {
-            "symbol": "XAUUSD", "direction": "BUY", "order_type": "MARKET", "entry": ["3895"],
-            "sl": "3885", "tps": ["3899", "3909", "3913", "3917", "3928"]})
+        self.assertEqual(
+            fmt.parse_signal(BUY_3895),
+            {
+                "symbol": "XAUUSD",
+                "direction": "BUY",
+                "order_type": "MARKET",
+                "entry": ["3895"],
+                "sl": "3885",
+                "tps": ["3899", "3909", "3913", "3917", "3928"],
+            },
+        )
         sell = fmt.parse_signal(SELL_3928)
-        self.assertEqual((sell["direction"], sell["entry"], sell["sl"], sell["tps"][-1]),
-                         ("SELL", ["3928"], "3945", "3897"))
+        self.assertEqual(
+            (sell["direction"], sell["entry"], sell["sl"], sell["tps"][-1]),
+            ("SELL", ["3928"], "3945", "3897"),
+        )
         self.assertEqual(fmt.parse_signal(BUY_3942)["entry"], ["3942"])
 
     def test_pending_order_types(self):
@@ -147,9 +170,18 @@ class ParsingTests(unittest.TestCase):
                 self.assertIsNone(fmt.parse_recap(text), text)
 
     def test_recap_parses(self):
-        self.assertEqual(fmt.parse_recap(RECAP), {
-            "period": "DAILY", "label": "MON 2 NOV", "wins": 8, "losses": 0,
-            "all_targets": 2, "breakevens": None, "net_pips": 810.0})
+        self.assertEqual(
+            fmt.parse_recap(RECAP),
+            {
+                "period": "DAILY",
+                "label": "MON 2 NOV",
+                "wins": 8,
+                "losses": 0,
+                "all_targets": 2,
+                "breakevens": None,
+                "net_pips": 810.0,
+            },
+        )
         week = fmt.parse_recap("📊 Weekly Recap\nWins: 20 Losses: 5\nBreakevens: 3\nNet: −1,240 pips")
         self.assertEqual((week["period"], week["breakevens"], week["net_pips"]), ("WEEKLY", 3, -1240.0))
 
@@ -161,16 +193,19 @@ class RenderTests(unittest.TestCase):
             self.assertGreater(entity.length, 0)
             self.assertLessEqual(entity.offset + entity.length, size)
             if isinstance(entity, MessageEntityCustomEmoji):
-                units = text.encode("utf-16-le")[entity.offset * 2:(entity.offset + entity.length) * 2]
+                units = text.encode("utf-16-le")[entity.offset * 2 : (entity.offset + entity.length) * 2]
                 self.assertIn(units.decode("utf-16-le"), {char for char, _ in fmt.EMOJI.values()})
 
     def test_signal_matches_library_layout(self):
         text, entities = fmt.render_signal(fmt.parse_signal(BUY_3895))
-        self.assertEqual(text, "☄️ XAUUSD — BUY NOW ☄️\n\nEntry: 3895\nStop Loss: 3885\n\n"
-                               "⭐️ TP1: 3899\n⭐️ TP2: 3909\n⭐️ TP3: 3913\n"
-                               "⭐️ TP4: 3917\n⭐️ TP5: 3928\n\n"
-                               "☠️ Breakeven: SL to entry at TP1\n"
-                               "⚠️ Risk max 1% · Not financial advice")
+        self.assertEqual(
+            text,
+            "☄️ XAUUSD — BUY NOW ☄️\n\nEntry: 3895\nStop Loss: 3885\n\n"
+            "⭐️ TP1: 3899\n⭐️ TP2: 3909\n⭐️ TP3: 3913\n"
+            "⭐️ TP4: 3917\n⭐️ TP5: 3928\n\n"
+            "☠️ Breakeven: SL to entry at TP1\n"
+            "⚠️ Risk max 1% · Not financial advice",
+        )
         self.assert_entities_valid(text, entities)
         self.assertEqual(sum(isinstance(e, MessageEntityCustomEmoji) for e in entities), 9)
 
@@ -184,8 +219,10 @@ class RenderTests(unittest.TestCase):
         signal = fmt.parse_signal(BUY_3892)
         progress = {}
         tp1 = fmt.resolve_update({"kind": "tp", "tp": 1, "all": False}, signal, progress)
-        self.assertEqual(fmt.render_update(tp1, signal)[0].splitlines(),
-                         ["✅ TP1 HIT · 3907", "\U0001f381 +150 pips secured"])
+        self.assertEqual(
+            fmt.render_update(tp1, signal)[0].splitlines(),
+            ["✅ TP1 HIT · 3907", "\U0001f381 +150 pips secured"],
+        )
         be = fmt.resolve_update(fmt.classify_update("🔒 Move SL to entry (3982) 🙌"), signal, progress)
         self.assertEqual(be["price"], "3892")  # provider typo 3982 ignored
         sell = fmt.parse_signal(SELL_3928)
@@ -197,26 +234,46 @@ class RenderTests(unittest.TestCase):
 
     def test_recap_matches_library_style(self):
         text, entities = fmt.render_recap(fmt.parse_recap(RECAP))
-        self.assertEqual(text, "☄️ DAILY RECAP · MON 2 NOV ☄️\n\n"
-                               "✅ Wins: 8\n❌ Losses: 0\n\U0001f4a5 All targets hit: 2\n"
-                               "⭐️ Win rate: 100%\n\U0001f381 Net: +810 pips\n\n"
-                               "A green day · rest up, we go again\n"
-                               "⚠️ Posted levels, before spreads and fees · Not financial advice")
+        self.assertEqual(
+            text,
+            "☄️ DAILY RECAP · MON 2 NOV ☄️\n\n"
+            "✅ Wins: 8\n❌ Losses: 0\n\U0001f4a5 All targets hit: 2\n"
+            "⭐️ Win rate: 100%\n\U0001f381 Net: +810 pips\n\n"
+            "A green day · rest up, we go again\n"
+            "⚠️ Posted levels, before spreads and fees · Not financial advice",
+        )
         self.assert_entities_valid(text, entities)
-        red, _ = fmt.render_recap({"period": "WEEKLY", "label": "", "wins": 1, "losses": 3,
-                                   "all_targets": None, "breakevens": 2, "net_pips": -120.0})
+        red, _ = fmt.render_recap(
+            {
+                "period": "WEEKLY",
+                "label": "",
+                "wins": 1,
+                "losses": 3,
+                "all_targets": None,
+                "breakevens": 2,
+                "net_pips": -120.0,
+            }
+        )
         self.assertIn("WEEKLY RECAP ☄", red)
         self.assertIn("Net: -120 pips", red)
         self.assertIn("A red week", red)
 
     def test_every_update_kind_renders(self):
         signal = fmt.parse_signal(BUY_3904)
-        for update in ({"kind": "tp", "tp": 2, "price": "3917"}, {"kind": "all", "tp": 5, "price": "3937"},
-                       {"kind": "set_be", "price": "3904"}, {"kind": "move_sl", "tp": 1, "price": "3911"},
-                       {"kind": "move_sl", "tp": None, "price": "3900"}, {"kind": "be_hit", "price": "3904"},
-                       {"kind": "sl_hit", "price": "3889"}, {"kind": "entry_triggered", "price": "3904"},
-                       {"kind": "close", "price": "3920"}, {"kind": "close", "price": None},
-                       {"kind": "cancel", "price": "3889"}, {"kind": "entry_updated", "price": "3900"}):
+        for update in (
+            {"kind": "tp", "tp": 2, "price": "3917"},
+            {"kind": "all", "tp": 5, "price": "3937"},
+            {"kind": "set_be", "price": "3904"},
+            {"kind": "move_sl", "tp": 1, "price": "3911"},
+            {"kind": "move_sl", "tp": None, "price": "3900"},
+            {"kind": "be_hit", "price": "3904"},
+            {"kind": "sl_hit", "price": "3889"},
+            {"kind": "entry_triggered", "price": "3904"},
+            {"kind": "close", "price": "3920"},
+            {"kind": "close", "price": None},
+            {"kind": "cancel", "price": "3889"},
+            {"kind": "entry_updated", "price": "3900"},
+        ):
             text, entities = fmt.render_update(update, signal)
             self.assert_entities_valid(text, entities)
 
@@ -238,6 +295,7 @@ class ReplayTests(unittest.TestCase):
             if not state.get("initialized"):
                 await route_module.initialize(self.worker, state, self.path)
             await route_module.cycle(self.worker, state, self.path)
+
         asyncio.run(go())
 
     def new_state(self):

@@ -1,4 +1,5 @@
 """Owner stop policy: transient-looking reasons need repeated strikes before a route stops."""
+
 import importlib.util
 import logging
 import tempfile
@@ -7,7 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("policy_confirm_test", ROOT / "telegram_worker/owner_forwarding_policy.py")
+spec = importlib.util.spec_from_file_location(
+    "policy_confirm_test", ROOT / "telegram_worker/owner_forwarding_policy.py"
+)
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
 

@@ -75,10 +75,7 @@ def _load_json(path):
 
 def _save_json(path, value):
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(value, sort_keys=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
+    tmp.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
     tmp.replace(path)
 
 
@@ -154,10 +151,7 @@ def _unit_ids(unit):
 
 def _unit_already_mapped(unit, message_map):
     ids = _unit_ids(unit)
-    return bool(ids) and all(
-        _normalise_dest_ids(message_map.get(str(mid)))
-        for mid in ids
-    )
+    return bool(ids) and all(_normalise_dest_ids(message_map.get(str(mid))) for mid in ids)
 
 
 def _build_units(messages):
@@ -179,8 +173,7 @@ def _build_units(messages):
             if grouped_id in used_groups:
                 continue
             unit = sorted(
-                grouped.get(grouped_id, [message]),
-                key=lambda item: int(getattr(item, "id", 0) or 0),
+                grouped.get(grouped_id, [message]), key=lambda item: int(getattr(item, "id", 0) or 0)
             )
             used_groups.add(grouped_id)
             units.append(unit)
@@ -197,11 +190,7 @@ async def _with_floodwait(call, logger, label, attempts=5):
         except FloodWaitError as exc:
             wait_for = max(1, int(exc.seconds)) + 1
             logger.warning(
-                "[WHOLECHAT FLOODWAIT] label=%s attempt=%s/%s wait=%ss",
-                label,
-                attempt,
-                attempts,
-                wait_for,
+                "[WHOLECHAT FLOODWAIT] label=%s attempt=%s/%s wait=%ss", label, attempt, attempts, wait_for
             )
             await asyncio.sleep(wait_for)
     raise RuntimeError("Flood-wait retry budget exhausted: " + label)
@@ -209,10 +198,7 @@ async def _with_floodwait(call, logger, label, attempts=5):
 
 async def _reload_unit(client, ids, logger):
     messages = await _with_floodwait(
-        lambda: client.get_messages(
-            SOURCE_CHAT,
-            ids=[int(value) for value in ids],
-        ),
+        lambda: client.get_messages(SOURCE_CHAT, ids=[int(value) for value in ids]),
         logger,
         "reload:" + ",".join(str(v) for v in ids),
     )
@@ -226,11 +212,7 @@ async def _reload_unit(client, ids, logger):
 def _remember_sent(unit, sent, message_map):
     sent_items = sent if isinstance(sent, list) else [sent]
     sent_items = [item for item in sent_items if item is not None]
-    sent_ids = [
-        int(getattr(item, "id", 0) or 0)
-        for item in sent_items
-        if int(getattr(item, "id", 0) or 0)
-    ]
+    sent_ids = [int(getattr(item, "id", 0) or 0) for item in sent_items if int(getattr(item, "id", 0) or 0)]
     if not sent_ids:
         return
 
@@ -245,9 +227,7 @@ def _remember_sent(unit, sent, message_map):
     for source in unit:
         sid = int(getattr(source, "id", 0) or 0)
         if sid:
-            message_map[str(sid)] = (
-                sent_ids[0] if len(sent_ids) == 1 else sent_ids
-            )
+            message_map[str(sid)] = sent_ids[0] if len(sent_ids) == 1 else sent_ids
 
 
 async def _resolve_parent_signal_text(client, message, logger, max_hops=4):
@@ -262,10 +242,7 @@ async def _resolve_parent_signal_text(client, message, logger, max_hops=4):
 
     for hop in range(max_hops):
         candidates = _source_reply_ids(current)
-        parent_id = next(
-            (value for value in candidates if value not in seen),
-            None,
-        )
+        parent_id = next((value for value in candidates if value not in seen), None)
         if not parent_id:
             return None
 
@@ -275,12 +252,7 @@ async def _resolve_parent_signal_text(client, message, logger, max_hops=4):
 
         try:
             parent = await _with_floodwait(
-                lambda: client.get_messages(
-                    SOURCE_CHAT,
-                    ids=int(parent_id),
-                ),
-                logger,
-                f"rr-parent:{parent_id}",
+                lambda: client.get_messages(SOURCE_CHAT, ids=int(parent_id)), logger, f"rr-parent:{parent_id}"
             )
         except Exception as exc:
             logger.warning(
@@ -318,17 +290,8 @@ async def _send_single(client, message, message_map, data_dir, registry, logger)
     _remember_signal_text(message)
     parent_text = None
     if not parse_samgtrades_signal(text) and _source_reply_ids(message):
-        parent_text = await _resolve_parent_signal_text(
-            client,
-            message,
-            logger,
-        )
-    text, entities, format_kind = format_samgtrades_text(
-        text,
-        entities,
-        registry,
-        parent_text=parent_text,
-    )
+        parent_text = await _resolve_parent_signal_text(client, message, logger)
+    text, entities, format_kind = format_samgtrades_text(text, entities, registry, parent_text=parent_text)
     if format_kind:
         logger.warning(
             "[WHOLECHAT HOUSE FORMAT] kind=%s source_msg=%s source=%s dest=%s",
@@ -380,15 +343,11 @@ async def _send_single(client, message, message_map, data_dir, registry, logger)
         cache_dir = data_dir / "wholechat_media_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         downloaded = await message.download_media(
-            file=str(
-                cache_dir
-                / f"{SOURCE_CHAT}_{getattr(message, 'id', 0)}"
-            )
+            file=str(cache_dir / f"{SOURCE_CHAT}_{getattr(message, 'id', 0)}")
         )
         if not downloaded:
             raise RuntimeError(
-                "Could not download media for source message "
-                + str(getattr(message, "id", None))
+                "Could not download media for source message " + str(getattr(message, "id", None))
             )
         try:
             return await _with_floodwait(
@@ -448,39 +407,18 @@ async def _send_single(client, message, message_map, data_dir, registry, logger)
 
 
 async def _send_album(client, unit, message_map, data_dir, registry, logger):
-    files = [
-        message.media
-        for message in unit
-        if getattr(message, "media", None)
-    ]
+    files = [message.media for message in unit if getattr(message, "media", None)]
     if not files:
-        return await _send_single(
-            client,
-            unit[0],
-            message_map,
-            data_dir,
-            registry,
-            logger,
-        )
+        return await _send_single(client, unit[0], message_map, data_dir, registry, logger)
 
-    caption_message = next(
-        (message for message in unit if _message_text(message)),
-        unit[0],
-    )
+    caption_message = next((message for message in unit if _message_text(message)), unit[0])
     caption = _message_text(caption_message)
     entities = _entities(caption_message)
     parent_text = None
     if not parse_samgtrades_signal(caption) and _source_reply_ids(caption_message):
-        parent_text = await _resolve_parent_signal_text(
-            client,
-            caption_message,
-            logger,
-        )
+        parent_text = await _resolve_parent_signal_text(client, caption_message, logger)
     caption, entities, format_kind = format_samgtrades_text(
-        caption,
-        entities,
-        registry,
-        parent_text=parent_text,
+        caption, entities, registry, parent_text=parent_text
     )
     if format_kind:
         logger.warning(
@@ -508,10 +446,7 @@ async def _send_album(client, unit, message_map, data_dir, registry, logger):
         )
     except Exception as exc:
         logger.warning(
-            "[WHOLECHAT ALBUM DIRECT FAILED] source_ids=%s %s: %s",
-            _unit_ids(unit),
-            type(exc).__name__,
-            exc,
+            "[WHOLECHAT ALBUM DIRECT FAILED] source_ids=%s %s: %s", _unit_ids(unit), type(exc).__name__, exc
         )
         if reply_to is not None:
             try:
@@ -538,19 +473,13 @@ async def _send_album(client, unit, message_map, data_dir, registry, logger):
             if not getattr(message, "media", None):
                 continue
             path = await message.download_media(
-                file=str(
-                    cache_dir
-                    / f"album_{SOURCE_CHAT}_{getattr(message, 'id', 0)}"
-                )
+                file=str(cache_dir / f"album_{SOURCE_CHAT}_{getattr(message, 'id', 0)}")
             )
             if path:
                 downloaded.append(path)
 
         if not downloaded:
-            raise RuntimeError(
-                "Album download returned no files source_ids="
-                + str(_unit_ids(unit))
-            )
+            raise RuntimeError("Album download returned no files source_ids=" + str(_unit_ids(unit)))
 
         return await _with_floodwait(
             lambda: client.send_file(
@@ -572,54 +501,22 @@ async def _send_album(client, unit, message_map, data_dir, registry, logger):
                 pass
 
 
-async def _deliver_unit(
-    client,
-    unit,
-    message_map,
-    map_path,
-    data_dir,
-    registry,
-    lock,
-    logger,
-    reason,
-):
+async def _deliver_unit(client, unit, message_map, map_path, data_dir, registry, lock, logger, reason):
     if not unit:
         return "empty"
 
     async with lock:
         if _unit_already_mapped(unit, message_map):
-            logger.info(
-                "[WHOLECHAT ALREADY MAPPED] reason=%s source_ids=%s",
-                reason,
-                _unit_ids(unit),
-            )
+            logger.info("[WHOLECHAT ALREADY MAPPED] reason=%s source_ids=%s", reason, _unit_ids(unit))
             return "existing"
 
         if len(unit) > 1 and getattr(unit[0], "grouped_id", None):
-            sent = await _send_album(
-                client,
-                unit,
-                message_map,
-                data_dir,
-                registry,
-                logger,
-            )
+            sent = await _send_album(client, unit, message_map, data_dir, registry, logger)
         else:
-            sent = await _send_single(
-                client,
-                unit[0],
-                message_map,
-                data_dir,
-                registry,
-                logger,
-            )
+            sent = await _send_single(client, unit[0], message_map, data_dir, registry, logger)
 
         if sent is None:
-            logger.info(
-                "[WHOLECHAT SKIP UNSUPPORTED] reason=%s source_ids=%s",
-                reason,
-                _unit_ids(unit),
-            )
+            logger.info("[WHOLECHAT SKIP UNSUPPORTED] reason=%s source_ids=%s", reason, _unit_ids(unit))
             return "skipped"
 
         _remember_sent(unit, sent, message_map)
@@ -656,38 +553,24 @@ async def _restyle_one(client, dest, source, registry, logger):
     if not parse_samgtrades_signal(text) and _source_reply_ids(source):
         parent_text = await _resolve_parent_signal_text(client, source, logger)
     new_text, new_entities, kind = format_samgtrades_text(
-        text,
-        _entities(source),
-        registry,
-        parent_text=parent_text,
+        text, _entities(source), registry, parent_text=parent_text
     )
     if not kind:
         return "passthrough"
-    if (
-        new_text == _message_text(dest)
-        and _entity_signature(new_entities) == _entity_signature(_entities(dest))
+    if new_text == _message_text(dest) and _entity_signature(new_entities) == _entity_signature(
+        _entities(dest)
     ):
         return "unchanged"
     try:
         await _with_floodwait(
-            lambda: client.edit_message(
-                DEST_CHAT,
-                int(dest.id),
-                new_text,
-                formatting_entities=new_entities,
-            ),
+            lambda: client.edit_message(DEST_CHAT, int(dest.id), new_text, formatting_entities=new_entities),
             logger,
             f"restyle:{dest.id}",
         )
     except MessageNotModifiedError:
         return "unchanged"
     except Exception as exc:
-        logger.warning(
-            "[WHOLECHAT RESTYLE SKIPPED] dest_msg=%s %s: %s",
-            dest.id,
-            type(exc).__name__,
-            exc,
-        )
+        logger.warning("[WHOLECHAT RESTYLE SKIPPED] dest_msg=%s %s: %s", dest.id, type(exc).__name__, exc)
         return "not_editable"
     return "edited"
 
@@ -711,21 +594,16 @@ async def _restyle_recent_once(client, message_map, data_dir, registry, logger):
             by_dest[ids[0]] = int(source_id)
 
     recent = await _with_floodwait(
-        lambda: client.get_messages(DEST_CHAT, limit=RESTYLE_COUNT),
-        logger,
-        "restyle-dest",
+        lambda: client.get_messages(DEST_CHAT, limit=RESTYLE_COUNT), logger, "restyle-dest"
     )
     recent = sorted(
-        (m for m in recent or [] if m is not None and int(m.id) in by_dest),
-        key=lambda m: int(m.id),
+        (m for m in recent or [] if m is not None and int(m.id) in by_dest), key=lambda m: int(m.id)
     )
     source_ids = [by_dest[int(m.id)] for m in recent]
     sources = {}
     if source_ids:
         fetched = await _with_floodwait(
-            lambda: client.get_messages(SOURCE_CHAT, ids=source_ids),
-            logger,
-            "restyle-source",
+            lambda: client.get_messages(SOURCE_CHAT, ids=source_ids), logger, "restyle-source"
         )
         fetched = fetched if isinstance(fetched, list) else [fetched]
         sources = {int(m.id): m for m in fetched if m is not None}
@@ -735,13 +613,7 @@ async def _restyle_recent_once(client, message_map, data_dir, registry, logger):
     for dest in recent:
         if str(dest.id) in done:
             continue
-        outcome = await _restyle_one(
-            client,
-            dest,
-            sources.get(by_dest[int(dest.id)]),
-            registry,
-            logger,
-        )
+        outcome = await _restyle_one(client, dest, sources.get(by_dest[int(dest.id)]), registry, logger)
         counts[outcome] = counts.get(outcome, 0) + 1
         done.add(str(dest.id))
         state.update(status="running", done=sorted(done), counts=counts)
@@ -752,10 +624,7 @@ async def _restyle_recent_once(client, message_map, data_dir, registry, logger):
     state.update(status="done", counts=counts, completed_at=time.time())
     _save_json(path, state)
     logger.warning(
-        "[WHOLECHAT RESTYLE LAST100 DONE] dest=%s relayed_posts=%s counts=%s",
-        DEST_CHAT,
-        len(recent),
-        counts,
+        "[WHOLECHAT RESTYLE LAST100 DONE] dest=%s relayed_posts=%s counts=%s", DEST_CHAT, len(recent), counts
     )
     return state
 
@@ -767,16 +636,11 @@ async def _restyle_recent_guarded(client, message_map, data_dir, registry, logge
         raise
     except Exception as exc:
         logger.exception(
-            "[WHOLECHAT RESTYLE FAILED SAFE] %s: %s LIVE_UNAFFECTED=True",
-            type(exc).__name__,
-            exc,
+            "[WHOLECHAT RESTYLE FAILED SAFE] %s: %s LIVE_UNAFFECTED=True", type(exc).__name__, exc
         )
 
 
-async def run_wholechat_4281603170_to_3743381585(
-    main_module,
-    logger=None,
-):
+async def run_wholechat_4281603170_to_3743381585(main_module, logger=None):
     logger = logger or log
     client = getattr(main_module, "client", None)
     if client is None:
@@ -792,9 +656,7 @@ async def run_wholechat_4281603170_to_3743381585(
         await asyncio.sleep(0.25)
         registry = getattr(main_module, "EMOJI_REGISTRY", None)
     else:
-        raise RuntimeError(
-            "SamGtrades house formatter is waiting for the VIP custom-emoji registry"
-        )
+        raise RuntimeError("SamGtrades house formatter is waiting for the VIP custom-emoji registry")
 
     logger.warning(
         "[WHOLECHAT HOUSE FORMATTER READY] source=%s dest=%s "
@@ -814,16 +676,8 @@ async def run_wholechat_4281603170_to_3743381585(
     lock = asyncio.Lock()
     bootstrap_ready = asyncio.Event()
 
-    source_entity = await _with_floodwait(
-        lambda: client.get_entity(SOURCE_CHAT),
-        logger,
-        "source-access",
-    )
-    dest_entity = await _with_floodwait(
-        lambda: client.get_entity(DEST_CHAT),
-        logger,
-        "dest-access",
-    )
+    source_entity = await _with_floodwait(lambda: client.get_entity(SOURCE_CHAT), logger, "source-access")
+    dest_entity = await _with_floodwait(lambda: client.get_entity(DEST_CHAT), logger, "dest-access")
 
     logger.warning(
         "[WHOLECHAT RELAY ACCESS OK] source=%s title=%r dest=%s title=%r",
@@ -840,114 +694,60 @@ async def run_wholechat_4281603170_to_3743381585(
                 return
             await bootstrap_ready.wait()
             await _deliver_unit(
-                client,
-                [message],
-                message_map,
-                map_path,
-                data_dir,
-                registry,
-                lock,
-                logger,
-                "live",
+                client, [message], message_map, map_path, data_dir, registry, lock, logger, "live"
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception(
-                "[WHOLECHAT LIVE FAILED] %s: %s",
-                type(exc).__name__,
-                exc,
-            )
+            logger.exception("[WHOLECHAT LIVE FAILED] %s: %s", type(exc).__name__, exc)
 
     async def on_album(event):
         try:
             await bootstrap_ready.wait()
             unit = list(getattr(event, "messages", None) or [])
             await _deliver_unit(
-                client,
-                unit,
-                message_map,
-                map_path,
-                data_dir,
-                registry,
-                lock,
-                logger,
-                "live-album",
+                client, unit, message_map, map_path, data_dir, registry, lock, logger, "live-album"
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception(
-                "[WHOLECHAT LIVE ALBUM FAILED] %s: %s",
-                type(exc).__name__,
-                exc,
-            )
+            logger.exception("[WHOLECHAT LIVE ALBUM FAILED] %s: %s", type(exc).__name__, exc)
 
-    client.add_event_handler(
-        on_new_message,
-        events.NewMessage(chats=SOURCE_CHAT),
-    )
-    client.add_event_handler(
-        on_album,
-        events.Album(chats=SOURCE_CHAT),
-    )
+    client.add_event_handler(on_new_message, events.NewMessage(chats=SOURCE_CHAT))
+    client.add_event_handler(on_album, events.Album(chats=SOURCE_CHAT))
 
-    setattr(
-        main_module,
-        "WHOLECHAT_4281603170_NEW_HANDLER",
-        on_new_message,
-    )
-    setattr(
-        main_module,
-        "WHOLECHAT_4281603170_ALBUM_HANDLER",
-        on_album,
-    )
+    setattr(main_module, "WHOLECHAT_4281603170_NEW_HANDLER", on_new_message)
+    setattr(main_module, "WHOLECHAT_4281603170_ALBUM_HANDLER", on_album)
 
     def start_restyle():
         setattr(
             main_module,
             "WHOLECHAT_4281603170_RESTYLE_TASK",
-            asyncio.create_task(
-                _restyle_recent_guarded(client, message_map, data_dir, registry, logger)
-            ),
+            asyncio.create_task(_restyle_recent_guarded(client, message_map, data_dir, registry, logger)),
         )
 
     if state.get("status") == "done":
         bootstrap_ready.set()
         start_restyle()
         logger.warning(
-            "[WHOLECHAT LAST50 STATE SKIP] already_done=True "
-            "selected=%s sent=%s existing=%s skipped=%s",
+            "[WHOLECHAT LAST50 STATE SKIP] already_done=True " "selected=%s sent=%s existing=%s skipped=%s",
             state.get("selected", 0),
             state.get("sent", 0),
             state.get("existing", 0),
             state.get("skipped", 0),
         )
         logger.warning(
-            "[WHOLECHAT RELAY READY] source=%s dest=%s "
-            "live=True last50_complete=True",
+            "[WHOLECHAT RELAY READY] source=%s dest=%s " "live=True last50_complete=True",
             SOURCE_CHAT,
             DEST_CHAT,
         )
-        return {
-            "source": SOURCE_CHAT,
-            "dest": DEST_CHAT,
-            "live": True,
-            "last50_complete": True,
-        }
+        return {"source": SOURCE_CHAT, "dest": DEST_CHAT, "live": True, "last50_complete": True}
 
-    selected_units = (
-        state.get("selected_units")
-        if state.get("status") == "running"
-        else None
-    )
+    selected_units = state.get("selected_units") if state.get("status") == "running" else None
 
     if not selected_units:
         history = await _with_floodwait(
-            lambda: client.get_messages(
-                SOURCE_CHAT,
-                limit=SOURCE_FETCH_LIMIT,
-            ),
+            lambda: client.get_messages(SOURCE_CHAT, limit=SOURCE_FETCH_LIMIT),
             logger,
             "source-last50-history",
         )
@@ -957,9 +757,7 @@ async def run_wholechat_4281603170_to_3743381585(
 
         if not selected_units:
             bootstrap_ready.set()
-            raise RuntimeError(
-                "Source returned no copyable messages for last-50 bootstrap"
-            )
+            raise RuntimeError("Source returned no copyable messages for last-50 bootstrap")
 
         state = {
             "status": "running",
@@ -999,23 +797,14 @@ async def run_wholechat_4281603170_to_3743381585(
                 skipped_count += 1
                 outcome = "skipped"
                 logger.warning(
-                    "[WHOLECHAT LAST50 SOURCE MISSING] "
-                    "post=%s/%s source_ids=%s",
+                    "[WHOLECHAT LAST50 SOURCE MISSING] " "post=%s/%s source_ids=%s",
                     index,
                     len(selected_units),
                     ids,
                 )
             else:
                 outcome = await _deliver_unit(
-                    client,
-                    unit,
-                    message_map,
-                    map_path,
-                    data_dir,
-                    registry,
-                    lock,
-                    logger,
-                    "last50",
+                    client, unit, message_map, map_path, data_dir, registry, lock, logger, "last50"
                 )
                 if outcome == "sent":
                     sent_count += 1
@@ -1051,8 +840,7 @@ async def run_wholechat_4281603170_to_3743381585(
         _save_json(state_path, state)
 
         logger.warning(
-            "[WHOLECHAT LAST50 DONE] source=%s dest=%s "
-            "selected=%s sent=%s existing=%s skipped=%s",
+            "[WHOLECHAT LAST50 DONE] source=%s dest=%s " "selected=%s sent=%s existing=%s skipped=%s",
             SOURCE_CHAT,
             DEST_CHAT,
             len(selected_units),
@@ -1065,8 +853,7 @@ async def run_wholechat_4281603170_to_3743381585(
 
     start_restyle()
     logger.warning(
-        "[WHOLECHAT RELAY READY] source=%s dest=%s "
-        "live=True last50_complete=%s",
+        "[WHOLECHAT RELAY READY] source=%s dest=%s " "live=True last50_complete=%s",
         SOURCE_CHAT,
         DEST_CHAT,
         state.get("status") == "done",

@@ -1,7 +1,6 @@
 """Engine executor edge cases: repairs, media fallback, VIP7 parent recovery and impaired-route alerts."""
 
 import asyncio
-import importlib.util
 import sys
 import tempfile
 import types
@@ -16,7 +15,9 @@ from telethon.tl.types import MessageMediaPhoto, Photo
 ROOT = Path(__file__).resolve().parents[1]
 package = sys.modules.setdefault("telegram_worker", types.ModuleType("telegram_worker"))
 package.__path__ = [str(ROOT / "telegram_worker")]
-if importlib.util.find_spec("requests") is None:  # CI installs only telethon; runtime_guard imports it
+try:
+    import requests  # noqa: F401  (CI installs only telethon; runtime_guard imports it)
+except ImportError:
     sys.modules["requests"] = types.ModuleType("requests")
 from telegram_worker import owner_forwarding_policy as policy
 from telegram_worker import reply_hardening, runtime_guard

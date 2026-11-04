@@ -165,12 +165,14 @@ class RuntimeLockTests(unittest.TestCase):
                 started = asyncio.get_running_loop().time()
                 task = await asyncio.wait_for(runtime_guard.start_runtime_guard("svc"), timeout=5)
                 elapsed = asyncio.get_running_loop().time() - started
+                owner = json.loads(self.lock.read_text(encoding="utf-8"))  # before the guard stops
                 if isinstance(task, asyncio.Task):
                     task.cancel()
-                return elapsed
+                return elapsed, owner
 
-        self.assertLess(asyncio.run(run()), 2.0)
-        self.assertEqual(json.loads(self.lock.read_text(encoding="utf-8"))["deployment"], "new-deploy")
+        elapsed, owner = asyncio.run(run())
+        self.assertLess(elapsed, 2.0)
+        self.assertEqual(owner["deployment"], "new-deploy")
 
 
 if __name__ == "__main__":

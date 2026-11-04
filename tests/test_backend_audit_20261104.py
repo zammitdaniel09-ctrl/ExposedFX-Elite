@@ -17,7 +17,6 @@ ROOT = Path(__file__).resolve().parents[1]
 package = sys.modules.setdefault("telegram_worker", types.ModuleType("telegram_worker"))
 package.__path__ = [str(ROOT / "telegram_worker")]
 from telegram_worker import destination_directory as dd
-from telegram_worker import relay7250_retired_cleanup as cleanup
 
 try:
     import requests  # noqa: F401  (CI installs only telethon)
@@ -103,23 +102,6 @@ class AlertTests(unittest.TestCase):
 
 
 class StartupCostTests(unittest.TestCase):
-    def test_clean_7250_cleanup_skips_history_read(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            Path(tmp, cleanup.CLEANUP_FILE).write_text(json.dumps(
-                {"mapped_posts_matched": 0, "errors": [], "uncertain": [], "deleted": []}), encoding="utf-8")
-            calls = []
-
-            class Client:
-                async def get_messages(self, *args, **kwargs):
-                    calls.append(args)
-                    return []
-
-            main = SimpleNamespace(client=Client(), DATA_DIR=tmp, log=logging.getLogger("t"),
-                                   message_map={f"{cleanup.SRC_CHAT}:5:{cleanup.DEST_CHAT}:{cleanup.DEST_TOPIC}": 9})
-            result = asyncio.run(cleanup.cleanup_relay7250_to_vip10877_once(main))
-            self.assertEqual(result["mapped_posts_matched"], 0)
-            self.assertEqual(calls, [])
-
     def test_unchanged_destination_directory_makes_no_calls(self):
         calls = []
 
@@ -177,7 +159,8 @@ class RepoHygieneTests(unittest.TestCase):
                     names = [node.module]
                 for name in names:
                     target = name.split(".")[0]
-                    self.assertTrue((package_dir / f"{target}.py").exists(), f"{path.name} imports {name}")
+                    self.assertTrue((package_dir / f"{target}.py").exists() or (package_dir / target).is_dir(),
+                                    f"{path.name} imports {name}")
 
 
 if __name__ == "__main__":

@@ -214,7 +214,12 @@ class _LogHandler(logging.Handler):
 
 
 def install_health_monitor(service, client, data_dir):
+    from telegram_worker.liveness import take_marker
+
     monitor = HealthMonitor(service, data_dir)
+    previous = take_marker(data_dir)
+    if previous:
+        monitor.outbox.append(f"♻️ {service} restarted itself\nReason: {previous.get('reason')}")
     logging.getLogger().addHandler(_LogHandler(monitor))
     monitor.task = asyncio.create_task(monitor.run(client))
     log.warning("[HEALTH MONITOR READY] service=%s alerts=saved_messages digest=%02d:00 Europe/Malta",

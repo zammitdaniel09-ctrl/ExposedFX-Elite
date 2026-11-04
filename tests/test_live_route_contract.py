@@ -47,6 +47,13 @@ class LiveRouteContractTests(unittest.TestCase):
                          (RELAY, 8323, VIP, 12289))
         self.assertEqual((wholechat.SOURCE_CHAT, wholechat.DEST_CHAT), (-1004281603170, -1003743381585))
 
+    def test_retired_destinations_have_no_route(self):
+        # Retired 4 Nov 2026 with their one-time guards: partner -1003885074241
+        # (topics 4660/4663/4665) and VIP topic 5.
+        dests = {(r["dest_chat"], r.get("dest_topic")) for r in ROUTES}
+        self.assertFalse({d for d in dests if d[0] == -1003885074241})
+        self.assertNotIn((VIP, 5), dests)
+
     def test_paused_destinations_stay_paused(self):
         self.assertTrue(PAUSED_DESTINATIONS <= set(policy.STOPPED_DEST_CHATS))
         self.assertFalse({r["dest_chat"] for r in ROUTES} & PAUSED_DESTINATIONS)

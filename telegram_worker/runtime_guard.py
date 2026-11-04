@@ -54,11 +54,40 @@ def _post_alert(text: str):
         return False
 
 
+def _lock_owner(lock_file: Path):
+    """Lock content: {"pid", "deployment"} (current) or a bare pid (legacy)."""
+    try:
+        raw = lock_file.read_text(encoding="utf-8").strip()
+    except Exception:
+        return {}
+    try:
+        value = json.loads(raw)
+    except Exception:
+        return {}
+    if isinstance(value, int):
+        return {"pid": value}
+    return value if isinstance(value, dict) else {}
+
+
 def _lock_pid(lock_file: Path):
     try:
-        return int(lock_file.read_text(encoding="utf-8").strip())
+        return int(_lock_owner(lock_file).get("pid"))
     except Exception:
         return None
+
+
+LEGACY_LOCK_TAKEOVER_SECONDS = 12  # MAIN heartbeats every 5s: two missed beats
+
+
+def _previous_holder_is_gone(lock_file: Path, age: float = 0.0):
+    """Railway never runs two deployments of a volume-backed service at once
+    (docs: "services with an attached volume cannot run two deployments at
+    once"), so a lock written by any Railway deployment belongs to a process
+    that has already stopped. A legacy pid-only lock is taken over once it has
+    missed two heartbeats instead of waiting the full stale threshold."""
+    if not os.environ.get("RAILWAY_DEPLOYMENT_ID"):
+        return False
+    return bool(_lock_owner(lock_file).get("deployment")) or age >= LEGACY_LOCK_TAKEOVER_SECONDS
 
 
 def _remove_own_lock(lock_file: Path, pid: int):
@@ -71,14 +100,12 @@ def _remove_own_lock(lock_file: Path, pid: int):
 
 
 async def _auto_install_vip_emoji_registry(log=None):
-    """Install route contracts/replies first, then VIP emoji/formatter layers.
+    """Install reply hardening first, then the VIP emoji/formatter layers.
 
-    Reply preservation and the requested route bootstrap must not depend on the
-    emoji registry. As soon as the Telegram user session is authorised, every
-    main-worker route gets the hardened reply mapper/copy wrappers and the
-    owner-requested route contract is enforced. The Imperium 508 -> VIP7
-    formatter is installed afterwards when its Saved Messages emoji registry
-    is available.
+    Reply preservation must not depend on the emoji registry. As soon as the
+    Telegram user session is authorised, every main-worker route gets the
+    hardened reply mapper/copy wrappers. The Imperium 508 -> VIP7 formatter is
+    installed afterwards when its Saved Messages emoji registry is available.
     """
     while True:
         try:
@@ -96,43 +123,6 @@ async def _auto_install_vip_emoji_registry(log=None):
             if not await client.is_user_authorized():
                 await asyncio.sleep(0.5)
                 continue
-
-            # ----------------------------------------------------------
-            # REQUESTED ROUTE CONTRACT
-            # - confirms the exact requested source -> destination pairs
-            # - removes any forwarding route into hub topic 68237
-            # ----------------------------------------------------------
-            if getattr(main_module, "REQUESTED_ROUTE_CONTRACT_STATE", None) is None:
-                try:
-                    from telegram_worker.requested_route_bootstrap import (
-                        enforce_requested_route_contracts,
-                    )
-
-                    route_contract_state = enforce_requested_route_contracts(
-                        main_module,
-                        logger=log,
-                    )
-                    if main_module is not None:
-                        setattr(
-                            main_module,
-                            "REQUESTED_ROUTE_CONTRACT_STATE",
-                            route_contract_state,
-                        )
-                    if log:
-                        log.warning(
-                            "[REQUESTED ROUTE CONTRACT READY] "
-                            f"confirmed={route_contract_state.get('confirmed')} "
-                            f"missing={len(route_contract_state.get('missing') or [])} "
-                            f"duplicates={len(route_contract_state.get('duplicates') or [])} "
-                            "dest_68237_forwarding=True source=-1004367822325_2583"
-                        )
-                except Exception as exc:
-                    if log:
-                        log.exception(
-                            "[REQUESTED ROUTE CONTRACT INSTALL FAILED] %s: %s",
-                            type(exc).__name__,
-                            exc,
-                        )
 
             # ----------------------------------------------------------
             # GLOBAL REPLY LAYER - independent of all VIP formatting.
@@ -195,50 +185,13 @@ async def _auto_install_vip_emoji_registry(log=None):
                     await asyncio.sleep(2)
                     continue
 
-            # ----------------------------------------------------------
-            # ONE-TIME EMPTY DESTINATION LAST50 BOOTSTRAP
-            # Uses the already-hardened normal copy path, therefore historical
-            # imports retain normal message maps/reply/media behaviour. The task
-            # itself decides which requested destination topics are empty.
-            # ----------------------------------------------------------
-            if getattr(main_module, "REQUESTED_LAST50_TASK", None) is None:
-                try:
-                    from telegram_worker.requested_route_bootstrap import (
-                        run_requested_empty_topic_last50,
-                    )
-
-                    requested_last50_task = asyncio.create_task(
-                        run_requested_empty_topic_last50(
-                            main_module,
-                            logger=log,
-                        )
-                    )
-                    setattr(
-                        main_module,
-                        "REQUESTED_LAST50_TASK",
-                        requested_last50_task,
-                    )
-                    if log:
-                        log.warning(
-                            "[REQUESTED LAST50 TASK READY] "
-                            "empty_destinations_only=True count=50 "
-                            "persistent_progress=True preserve_copy_pipeline=True"
-                        )
-                except Exception as exc:
-                    if log:
-                        log.exception(
-                            "[REQUESTED LAST50 TASK INSTALL FAILED] %s: %s",
-                            type(exc).__name__,
-                            exc,
-                        )
-
-            # Reply preservation and requested-route handling stay active even
+            # Reply preservation stays active even
             # if VIP custom-emoji formatting is disabled.
             if os.environ.get("VIP_EMOJI_REGISTRY_ENABLED", "1").strip() != "1":
                 if log:
                     log.info(
                         "[VIP EMOJI REGISTRY] disabled; global reply hardening "
-                        "and requested-route bootstrap remain active"
+                        "remains active"
                     )
                 return
 
@@ -373,10 +326,9 @@ async def _auto_install_vip_emoji_registry(log=None):
 async def start_runtime_guard(service_name: str, log=None):
     """Persistent-volume singleton/heartbeat guard.
 
-    For the main VIP worker we deliberately use a fast 5s heartbeat and a 45s
-    stale threshold. 45s is long enough to coexist safely with an older
-    deployment that may only heartbeat every 30s, while reducing dead-worker
-    takeover from several minutes to at most ~45s.
+    A lock left by an earlier Railway deployment is taken over at once (the
+    platform guarantees it has stopped); a legacy pid-only lock still waits
+    for the 45s stale threshold (MAIN heartbeats every 5s).
 
     The heartbeat starts immediately after this process claims the lock. This
     is important: a startup/connect delay must never leave a claimed lock
@@ -398,6 +350,15 @@ async def start_runtime_guard(service_name: str, log=None):
         try:
             now = time.time()
             age = max(0.0, now - lock_file.stat().st_mtime)
+
+            if _previous_holder_is_gone(lock_file, age):
+                if log:
+                    log.warning(
+                        f"[RUNTIME LOCK TAKEOVER] service={service_name} "
+                        f"previous_deployment={_lock_owner(lock_file).get('deployment')} "
+                        f"age={age:.1f}s reason=volume_exclusive WAIT=0s"
+                    )
+                break
 
             if age >= stale_seconds:
                 if log:
@@ -428,7 +389,10 @@ async def start_runtime_guard(service_name: str, log=None):
                 )
             await asyncio.sleep(1)
 
-    lock_file.write_text(str(pid), encoding="utf-8")
+    lock_file.write_text(
+        json.dumps({"pid": pid, "deployment": os.environ.get("RAILWAY_DEPLOYMENT_ID", "")}),
+        encoding="utf-8",
+    )
     lock_file.touch()
     atexit.register(_remove_own_lock, lock_file, pid)
 

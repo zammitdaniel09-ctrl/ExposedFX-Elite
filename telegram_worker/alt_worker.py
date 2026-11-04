@@ -396,8 +396,12 @@ async def _run_select_last30_guarded():
 
 
 async def main():
+    from telegram_worker import liveness
     from telegram_worker.health_monitor import install_health_monitor
 
+    liveness.LoopWatchdog("ExposedFX ALT", _legacy.DATA_DIR, _legacy.log).start()
+    _legacy.log.warning("[ALT RUNTIME] telethon=%s python=%s liveness=True json_logs=True",
+                        __import__("telethon").__version__, __import__("sys").version.split()[0])
     install_health_monitor("ExposedFX ALT", _legacy.client, _legacy.DATA_DIR)
     split_history_task = asyncio.create_task(
         _run_split_pair_last100_guarded()
@@ -409,7 +413,8 @@ async def main():
         _run_select_last30_guarded()
     )
     try:
-        return await _legacy.main()
+        await _legacy.main()
+        liveness.exit_disconnected("ExposedFX ALT", _legacy.DATA_DIR, _legacy.log)
     finally:
         for task in (
             split_history_task,

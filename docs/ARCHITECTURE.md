@@ -19,8 +19,9 @@ paths decide who restarts:
 - MAIN: everything except `telegram_worker/alt_*.py`, `tests/test_alt_*.py`
   and this file.
 - ALT: `telegram_worker/alt_*.py`, `owner_forwarding_policy.py`,
-  `health_monitor.py`, `__init__.py`, `runtime_guard.py`, `requirements.txt`
-  (the only modules ALT imports). Add a module here if ALT starts importing it.
+  `health_monitor.py`, `liveness.py`, `log_setup.py`, `__init__.py`,
+  `runtime_guard.py`, `requirements.txt` (the only modules ALT imports). Add a
+  module here if ALT starts importing it.
 - server: `server/**`, `requirements.txt`.
 
 The old `alt-worker` branch is frozen as a rollback point (Railway → ALT →
@@ -74,6 +75,18 @@ Custom emoji ids come from the owner's Saved Messages (`community_emoji_registry
    and runs every unit test (MAIN and ALT) on each push.
 
 ## Monitoring
+
+Logs are one JSON object per line on Railway (`log_setup.py`), so the log
+explorer shows real severities (`warn` for notices, `error` only for errors)
+and `@logger:imperium-worker` style filters work.
+
+`liveness.py` (both workers) restarts a worker that has stopped working
+without crashing: if Telegram drops the connection for good, or the event loop
+stalls for 120 s, the process exits non-zero so Railway starts a fresh one,
+and the next start sends "♻️ … restarted itself" with the reason to that
+account's Saved Messages. A redeploy no longer waits for the old run's lock:
+Railway never runs two copies of a volume-backed service, so the lock left by
+an earlier deployment is taken over at once (`runtime_guard.py`).
 
 `health_monitor.py` (both workers) reads each worker's own log lines and
 messages that account's Saved Messages only when something needs attention:

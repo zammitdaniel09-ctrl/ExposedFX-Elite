@@ -12,7 +12,6 @@ from pathlib import Path
 from telethon import events
 from telethon.errors import FloodWaitError
 from telegram_worker import owner_forwarding_policy as policy
-from telegram_worker.requested_route_bootstrap import _build_units
 
 log = logging.getLogger("owner-routes-20261102")
 TARGETS = (
@@ -109,9 +108,25 @@ async def copy_unit(worker, route, unit):
     return "filtered", after
 
 
+def _copyable(worker, message, route):
+    if message is None or int(getattr(message, "id", 0) or 0) == route.get("source_topic"):
+        return False
+    return bool(worker.text_of(message) or worker.is_real_media(message))
+
+
 def units(worker, route, messages, count=None):
-    # _build_units preserves complete albums and excludes topic roots.
-    result = _build_units(worker, route, messages)
+    """Oldest-first logical posts; an album is one unit and is never split."""
+    messages = sorted((m for m in messages if _copyable(worker, m, route)),
+                      key=lambda m: int(getattr(m, "id", 0) or 0))
+    result, used = [], set()
+    for message in messages:
+        if int(message.id) in used:
+            continue
+        grouped_id = getattr(message, "grouped_id", None)
+        unit = [m for m in messages if grouped_id and getattr(m, "grouped_id", None) == grouped_id] or [message]
+        used.update(int(m.id) for m in unit)
+        result.append(unit)
+    result = result[-50:]
     return result[-count:] if count else result
 
 

@@ -1,8 +1,8 @@
 """Telegram worker package bootstrap.
 
-For the main imperium-telegram-worker this schedules owner-requested one-time
-bootstrap jobs and live sidecars after the Telegram session and global reply
-hardening are ready.
+For the main imperium-telegram-worker this starts the SamGtrades whole-chat
+relay once the Telegram session and global reply hardening are ready.
+Completed one-time jobs were retired on 4 Nov 2026 (see archive/README.md).
 """
 
 import asyncio
@@ -12,7 +12,6 @@ import sys
 from telethon.errors import ChannelPrivateError
 
 from . import runtime_guard as _runtime_guard
-from . import owner_forwarding_policy as _owner_policy
 
 
 # Access denied / missing entity hashes will not improve by retrying every
@@ -66,19 +65,6 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                         )
                     await asyncio.sleep(10)
 
-    async def _run_downstream_3743381585_to_3216105903_with_retry(
-        main_module,
-        log=None,
-    ):
-        if log:
-            log.warning("[OWNER DOWNSTREAM STOPPED] dest=-1003216105903 RETRY=False")
-        return
-
-    async def _run_partner_3885074241_last20_with_retry(main_module, log=None):
-        if log:
-            log.warning("[OWNER PAID PARTNER STOPPED] dest=-1003885074241_4660 RETRY=False")
-        return
-
     async def _wait_and_run_owner_tasks(log=None):
         while True:
             try:
@@ -101,108 +87,6 @@ if not getattr(_runtime_guard, "_FORCE_82617_WRAPPED", False):
                     and client.is_connected()
                     and await client.is_user_authorized()
                 ):
-                    if not getattr(
-                        main_module,
-                        "PARTNER_DEAD_DESTINATION_GUARD_INSTALLED",
-                        False,
-                    ):
-                        from .partner_dead_destination_guard import (
-                            install_partner_dead_destination_guard,
-                        )
-
-                        guard_state = install_partner_dead_destination_guard(
-                            main_module,
-                            logger=log,
-                        )
-                        if log:
-                            log.warning(
-                                "[PARTNER DEAD GUARD READY] "
-                                "dest_chat=-1003885074241 "
-                                "topics=4663,4665 "
-                                "routes_removed=%s purge_started=True",
-                                guard_state.get("removed_route_count", 0),
-                            )
-
-                    if -1002385852838 not in _owner_policy.STOPPED_SOURCE_CHATS and getattr(
-                        main_module,
-                        "FORCE_82617_LAST50_TASK",
-                        None,
-                    ) is None:
-                        from .force_82617_last50 import run_force_82617_last50
-
-                        task = asyncio.create_task(
-                            run_force_82617_last50(
-                                main_module,
-                                logger=log,
-                            )
-                        )
-                        setattr(
-                            main_module,
-                            "FORCE_82617_LAST50_TASK",
-                            task,
-                        )
-                        if log:
-                            log.warning(
-                                "[82617 LAST50 TASK READY] "
-                                "source=-1002385852838_62159 "
-                                "dest=-1003918958200_82617 "
-                                "count=50 force_nonempty=True "
-                                "skip_already_mapped=True "
-                                "preserve_copy_pipeline=True"
-                            )
-
-                    if getattr(
-                        main_module,
-                        "PARTNER_3885074241_LAST20_TASK",
-                        None,
-                    ) is None:
-                        partner_task = asyncio.create_task(
-                            _run_partner_3885074241_last20_with_retry(
-                                main_module,
-                                log,
-                            )
-                        )
-                        setattr(
-                            main_module,
-                            "PARTNER_3885074241_LAST20_TASK",
-                            partner_task,
-                        )
-                        if log:
-                            log.warning(
-                                "[PARTNER LAST20 TASK READY] "
-                                "routes=1 count=20 "
-                                "dest_chat=-1003885074241 "
-                                "sources=-1003726286301_1364 "
-                                "dest_topics=4660 "
-                                "live_routes=True persistent_progress=True"
-                            )
-
-                    if getattr(
-                        main_module,
-                        "WHOLECHAT_3743381585_TO_3216105903_TASK",
-                        None,
-                    ) is None:
-                        downstream_task = asyncio.create_task(
-                            _run_downstream_3743381585_to_3216105903_with_retry(
-                                main_module,
-                                log,
-                            )
-                        )
-                        setattr(
-                            main_module,
-                            "WHOLECHAT_3743381585_TO_3216105903_TASK",
-                            downstream_task,
-                        )
-                        if log:
-                            log.warning(
-                                "[DOWNSTREAM RELAY TASK READY] "
-                                "source=-1003743381585 "
-                                "dest=-1003216105903 "
-                                "past_messages=1 live=True "
-                                "whole_source=True whole_destination=True "
-                                "preserve_source_format=True"
-                            )
-
                     if getattr(
                         main_module,
                         "WHOLECHAT_4281603170_TO_3743381585_TASK",

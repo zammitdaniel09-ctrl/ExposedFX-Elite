@@ -14,13 +14,10 @@ from pathlib import Path
 log = logging.getLogger("destination-directory")
 
 # Destinations written outside routes.py.
-EXTRA_ACTIVE = (
-    (-1003726286301, 12289, "Owner Relay8323 To VIP12289 Formatted"),
-    (-1003743381585, None, "SamGtrades whole-chat relay"),
-)
+EXTRA_ACTIVE = ((-1003743381585, None, "SamGtrades whole-chat relay"),)
 # Relay-group topics the ALT account writes into; MAIN reads them as sources.
 ALT_RELAY_CHAT = -1004367822325
-ALT_RELAY_TOPICS = (106, 2, 508, 115, 2583, 2585, 7248, 7250, 8323)
+ALT_RELAY_TOPICS = (106, 2, 508, 115, 2583, 2585, 7248, 7250)
 PAUSED_ARCHIVE = Path(__file__).resolve().parents[1] / "docs" / "paused_routes_20261103.md"
 STATE_FILE = "destination_directory_v1.json"
 

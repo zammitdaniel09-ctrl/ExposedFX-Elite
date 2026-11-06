@@ -37,23 +37,17 @@ STATE_FILE = "health_monitor_v1.json"
 SUCCESS = (
     re.compile(r"\[FASTVIP COPIED\] route=(?P<route>.+?) source=\S+ .*?(?:lag=(?P<lag>[\d.]+)s|$)"),
     re.compile(r"\[OWNER LIVE POST\] contract=(?P<route>\S+) outcome=sent"),
-    re.compile(
-        r"\[OWNER FORMATTED POST\] contract=(?P<route>\S+) source_id=\S+ "
-        r"outcome=(?:signal|update|recap) lag=(?P<lag>[\d.]+)s"
-    ),
     re.compile(r"\[WHOLECHAT SENT\] reason=\S+ source=\S+ dest=(?P<route>\S+)"),
     re.compile(r"\[ALT COPIED\] route=(?P<route>.+?) (?:source_msg|ids)=.*?(?:lag=(?P<lag>[\d.]+)s|$)"),
 )
 FAILURE = (
     re.compile(r"\[FASTVIP DEST FAILED\] route=(?P<route>.+?) ids=.*? dest=\S+ (?P<error>\w+)"),
     re.compile(r"\[OWNER LIVE WAIT\] contract=(?P<route>\S+) error=(?P<error>\S+)"),
-    re.compile(r"\[OWNER FORMATTED LIVE WAIT\] contract=(?P<route>\S+) error=(?P<error>\S+)"),
     re.compile(r"\[(?P<route>WHOLECHAT) LIVE(?: ALBUM)? FAILED\] (?P<error>\w+)"),
     re.compile(r"\[ALT COPY FAILED\] route=(?P<route>.+?) ids=\[.*?\] (?P<error>\w+)"),
 )
 STOPPED = (
     re.compile(r"\[OWNER ROUTE STOPPED\] route=(?P<name>.*?) contract=(?P<route>\S+) reason=(?P<error>\S+)"),
-    re.compile(r"\[OWNER FORMATTED STOPPED\] contract=(?P<route>\S+)"),
 )
 FLOOD = (
     re.compile(r"\[copy retry floodwait\] attempt=\S+ wait=(?P<seconds>\d+)s route=(?P<route>.+?) msg="),

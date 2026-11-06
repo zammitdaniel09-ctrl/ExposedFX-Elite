@@ -34,7 +34,7 @@ class AltBackendFixTests(unittest.IsolatedAsyncioTestCase):
     async def test_watchdog_fetch_asks_only_for_newer_messages(self):
         client = FakeClient()
         ns = load_functions("_owner_original_fetch_route_messages", client=client)
-        topic = dict(source_chat=-100111, source_topic=7194)
+        topic = dict(source_chat=-100111, source_topic=5247)
         whole = dict(source_chat=-100222, source_topic=None)
         await ns["_owner_original_fetch_route_messages"](topic, 500, min_id=7946)
         await ns["_owner_original_fetch_route_messages"](whole, 500, min_id=12)
@@ -42,7 +42,7 @@ class AltBackendFixTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             client.calls,
             [
-                (-100111, {"limit": 500, "reply_to": 7194, "min_id": 7946}),
+                (-100111, {"limit": 500, "reply_to": 5247, "min_id": 7946}),
                 (-100222, {"limit": 500, "min_id": 12}),
                 (-100222, {"limit": 20, "min_id": 0}),
             ],

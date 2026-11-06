@@ -40,7 +40,7 @@ def register_shutdown_hook(hook: Callable[[], Awaitable[Any]]) -> None:
 
 
 class SendGuard:
-    """Sends in progress outside the intake (owner routes, 8323 formatter, SamGtrades relay).
+    """Sends in progress outside the intake (owner routes, SamGtrades relay).
 
     Wrap a send and the write that records it in `async with SENDS.sending():`.
     On SIGTERM the shutdown waits (bounded) for those in flight, so a post

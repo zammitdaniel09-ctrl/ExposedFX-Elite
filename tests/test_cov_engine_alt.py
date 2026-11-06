@@ -22,12 +22,12 @@ from telegram_worker import owner_forwarding_policy as policy
 from telegram_worker.engine import alt as alt_engine
 
 RELAY = -1004367822325
-SELECT = {
-    "name": "NewAccount Select7194 To Relay8323",
-    "source_chat": -1004410975295,
-    "source_topic": 7194,
+BLACKLINE = {
+    "name": "NewAccount Topic5247 To Relay7250",
+    "source_chat": -1004349952583,
+    "source_topic": 5247,
     "dest_chat": RELAY,
-    "dest_topic": 8323,
+    "dest_topic": 7250,
     "loop_guard_peers": [RELAY],
 }
 ARABIC = {
@@ -133,7 +133,7 @@ class AltHarness(unittest.TestCase):
             client=self.client,
             DATA_DIR=self.tmp.name,
             message_map={},
-            ROUTES=[SELECT, ARABIC],
+            ROUTES=[BLACKLINE, ARABIC],
             FILTER_USERNAME_MENTIONS=True,
             FILTER_LINKS=True,
         )
@@ -183,9 +183,9 @@ class AltWorkerAdapterTests(AltHarness):
         self.assertEqual(worker.DATA_DIR, self.tmp.name)
         self.assertIs(worker.message_map, self.legacy.message_map)
         self.assertIsNone(worker.EMOJI_REGISTRY)
-        worker.remember_message(post(5, "TP1"), SimpleNamespace(id=777), SELECT, save=False)
-        self.assertEqual(self.legacy.message_map, {f"{SELECT['source_chat']}:5:{RELAY}:8323": 777})
-        self.assertEqual(self.checkpoints[SELECT["name"]], 5, "remember() also advances the checkpoint")
+        worker.remember_message(post(5, "TP1"), SimpleNamespace(id=777), BLACKLINE, save=False)
+        self.assertEqual(self.legacy.message_map, {f"{BLACKLINE['source_chat']}:5:{RELAY}:7250": 777})
+        self.assertEqual(self.checkpoints[BLACKLINE["name"]], 5, "remember() also advances the checkpoint")
         worker.save_map()
         self.assertEqual(len(self.legacy.message_map), 1, "save_map is a no-op: remember() saved")
 
@@ -200,7 +200,7 @@ class AltWorkerAdapterTests(AltHarness):
         self.legacy.FILTER_LINKS = False
         engine = alt_engine.AltEngine(self.legacy)
         with self.assertLogs(ALT_LOG, "WARNING") as logs:
-            self.assertTrue(asyncio.run(engine.deliver(SELECT, [post(7, "chart at example.com")], "push")))
+            self.assertTrue(asyncio.run(engine.deliver(BLACKLINE, [post(7, "chart at example.com")], "push")))
         self.assertIn("[ALT COPIED]", logs.output[0])
         self.assertEqual([c[2] for c in self.client.calls], ["chart at example.com"])
         self.assertEqual(self.filtered, [])
@@ -210,70 +210,71 @@ class AltFailureContractTests(AltHarness):
     def test_unexpected_send_error_is_logged_once_and_left_for_the_watchdog(self):
         self.client.fail = [RuntimeError("unexpected payload")]
         with self.assertLogs(ALT_LOG, "ERROR") as logs:
-            self.assertFalse(self.deliver(SELECT, [post(40, "TP3 hit")]))
+            self.assertFalse(self.deliver(BLACKLINE, [post(40, "TP3 hit")]))
         self.assertEqual(len(self.client.calls), 1, "one attempt per call")
         self.assertEqual((self.legacy.message_map, self.checkpoints), ({}, {}))
         line = logs.records[0].getMessage()
         self.assertEqual(
             line,
-            f"[ALT COPY FAILED] route={SELECT['name']} ids=[40] RuntimeError: unexpected payload engine=True",
+            f"[ALT COPY FAILED] route={BLACKLINE['name']} ids=[40] RuntimeError: unexpected payload engine=True",
         )
         with tempfile.TemporaryDirectory() as tmp:
             monitor = health_monitor.HealthMonitor("ExposedFX ALT", tmp)
             monitor.observe(logging.ERROR, line)
-            self.assertEqual(monitor.state["routes"][SELECT["name"]]["fail"], 1, "health monitor sees it")
+            self.assertEqual(monitor.state["routes"][BLACKLINE["name"]]["fail"], 1, "health monitor sees it")
 
     def test_lost_write_access_stops_the_route_and_later_posts_are_only_checkpointed(self):
         self.client.fail = [ChatWriteForbiddenError(request=None)]
         with self.assertLogs(level="WARNING") as logs:  # the stop is logged by the shared Deliverer
-            self.assertFalse(self.deliver(SELECT, [post(41, "TP1 hit")]))
+            self.assertFalse(self.deliver(BLACKLINE, [post(41, "TP1 hit")]))
         self.assertTrue(any("[OWNER ROUTE STOPPED]" in line for line in logs.output))
         self.assertTrue(any("[ALT COPY FAILED]" in line for line in logs.output))
-        self.assertTrue(policy.is_stopped(SELECT))
+        self.assertTrue(policy.is_stopped(BLACKLINE))
         with self.assertLogs(ALT_LOG, "INFO") as logs:
-            self.assertTrue(self.deliver(SELECT, [post(42, "TP2 hit")]))
+            self.assertTrue(self.deliver(BLACKLINE, [post(42, "TP2 hit")]))
         self.assertEqual(len(self.client.calls), 1, "nothing more is sent to a stopped route")
         self.assertIn(
-            f"[ALT ENGINE SKIP] route={SELECT['name']} ids=[42] reason=owner_stopped", logs.output[0]
+            f"[ALT ENGINE SKIP] route={BLACKLINE['name']} ids=[42] reason=owner_stopped", logs.output[0]
         )
-        self.assertEqual(self.checkpoints[SELECT["name"]], 42)
+        self.assertEqual(self.checkpoints[BLACKLINE["name"]], 42)
 
     def test_partially_mapped_album_fails_closed(self):
-        self.legacy.message_map[f"{SELECT['source_chat']}:61:{RELAY}:8323"] = 9500
+        self.legacy.message_map[f"{BLACKLINE['source_chat']}:61:{RELAY}:7250"] = 9500
         album = [post(61, "", media=True, grouped=3), post(60, "chart", media=True, grouped=3)]
         with self.assertLogs(ALT_LOG, "ERROR") as logs:
-            self.assertFalse(self.deliver(SELECT, album))
+            self.assertFalse(self.deliver(BLACKLINE, album))
         self.assertIn("[ALT PARTIAL ALBUM MAP - FAIL CLOSED] ids=[60, 61]", logs.output[0])
         self.assertEqual((self.client.calls, self.checkpoints), ([], {}), "not sent, not checkpointed")
 
     def test_empty_post_is_skipped_and_checkpointed(self):
         with self.assertLogs(ALT_LOG, "INFO") as logs:
-            self.assertTrue(self.deliver(SELECT, [post(70)]))
+            self.assertTrue(self.deliver(BLACKLINE, [post(70)]))
         self.assertIn("[ALT EMPTY MESSAGE SKIPPED] source_msg=70 engine=True", logs.output[0])
-        self.assertEqual((self.client.calls, self.checkpoints[SELECT["name"]]), ([], 70))
+        self.assertEqual((self.client.calls, self.checkpoints[BLACKLINE["name"]]), ([], 70))
 
     def test_already_copied_post_is_checkpointed_silently(self):
-        self.legacy.message_map[f"{SELECT['source_chat']}:80:{RELAY}:8323"] = 9800
+        self.legacy.message_map[f"{BLACKLINE['source_chat']}:80:{RELAY}:7250"] = 9800
         with self.assertNoLogs(ALT_LOG, "INFO"):
-            self.assertTrue(self.deliver(SELECT, [post(80, "TP1 hit")]))
-        self.assertEqual((self.client.calls, self.checkpoints[SELECT["name"]]), ([], 80))
+            self.assertTrue(self.deliver(BLACKLINE, [post(80, "TP1 hit")]))
+        self.assertEqual((self.client.calls, self.checkpoints[BLACKLINE["name"]]), ([], 80))
 
     def test_copied_line_carries_lag_and_preserved_reply(self):
         self.reply_target = 8400
         with self.assertLogs(ALT_LOG, "WARNING") as logs:
-            self.assertTrue(self.deliver(SELECT, [post(90, "TP1 hit")], reason="watchdog"))
+            self.assertTrue(self.deliver(BLACKLINE, [post(90, "TP1 hit")], reason="watchdog"))
         self.assertIn(
-            f"[ALT COPIED] route={SELECT['name']} ids=[90] kind=SINGLE reason=watchdog engine=True lag=12.5s",
+            f"[ALT COPIED] route={BLACKLINE['name']} ids=[90] kind=SINGLE reason=watchdog engine=True lag=12.5s",
             logs.output[0],
         )
         self.assertIn(
-            f"[ALT REPLY PRESERVED] route={SELECT['name']} source_child=90 dest_parent=8400", logs.output[1]
+            f"[ALT REPLY PRESERVED] route={BLACKLINE['name']} source_child=90 dest_parent=8400",
+            logs.output[1],
         )
         self.assertEqual(self.client.calls[0][3]["reply_to"], 8400)
 
     def test_post_without_a_date_reports_zero_lag(self):
         with self.assertLogs(ALT_LOG, "WARNING") as logs:
-            self.assertTrue(self.deliver(SELECT, [post(91, "TP2 hit", date=None)]))
+            self.assertTrue(self.deliver(BLACKLINE, [post(91, "TP2 hit", date=None)]))
         self.assertIn("lag=0.0s", logs.output[0])
         self.assertEqual(len(logs.output), 1, "topic-root reply is not reported as preserved")
 
@@ -281,21 +282,21 @@ class AltFailureContractTests(AltHarness):
 class AltReplayAuditTests(AltHarness):
     def setUp(self):
         super().setUp()
-        self.legacy.ROUTES = [SELECT, ARABIC, BROKEN]
-        src, dst = SELECT["source_chat"], RELAY
+        self.legacy.ROUTES = [BLACKLINE, ARABIC, BROKEN]
+        src, dst = BLACKLINE["source_chat"], RELAY
         for source_id, dest_id in ((10, 9010), (11, 9011), (12, 9012), (13, 9013)):
-            self.legacy.message_map[f"{src}:{source_id}:{RELAY}:8323"] = dest_id
+            self.legacy.message_map[f"{src}:{source_id}:{RELAY}:7250"] = dest_id
         self.legacy.message_map[f"{ARABIC['source_chat']}:20:{RELAY}:115"] = [9020, 9021]
         self.legacy.message_map[f"{BROKEN['source_chat']}:5:{RELAY}:999"] = 9005
         bold = [MessageEntityBold(0, 1)]
         self.client.stored.update(
             {
                 (src, 10): post(10, "Buy XAUUSD 4180"),
-                (dst, 9010): copy_in_relay(9010, "Buy XAUUSD 4180", 8323, bold),
+                (dst, 9010): copy_in_relay(9010, "Buy XAUUSD 4180", 7250, bold),
                 (src, 11): post(11, "TP1 hit"),
-                (dst, 9011): copy_in_relay(9011, "TP1", 8323, bold),
+                (dst, 9011): copy_in_relay(9011, "TP1", 7250, bold),
                 (src, 12): post(12, "", media=True, grouped=4),
-                (dst, 9012): copy_in_relay(9012, "", 8323, None),
+                (dst, 9012): copy_in_relay(9012, "", 7250, None),
                 (src, 13): post(13, "TP2 hit"),
                 (ARABIC["source_chat"], 20): post(20, "شراء الذهب"),
                 (dst, 9020): copy_in_relay(9020, "EN: شراء الذهب", 115, [MessageEntityBold(0, 3)]),
@@ -315,7 +316,7 @@ class AltReplayAuditTests(AltHarness):
         with self.assertLogs(ALT_LOG, "INFO") as logs:
             report = self.audit(delay_seconds=60.0)
         self.assertEqual(
-            report[SELECT["name"]],
+            report[BLACKLINE["name"]],
             {
                 "checked": 2,
                 "match": 1,
@@ -332,7 +333,7 @@ class AltReplayAuditTests(AltHarness):
         self.assertEqual(self.sleeps, [60.0, 1.0, 1.0, 1.0], "settle first, then pace the routes")
         self.assertEqual(self.client.calls, [], "read-only: nothing is sent")
         levels = {r.getMessage().split(" checked=")[0]: r.levelno for r in logs.records}
-        self.assertEqual(levels[f"[ALT ENGINE REPLAY AUDIT] route={SELECT['name']}"], logging.WARNING)
+        self.assertEqual(levels[f"[ALT ENGINE REPLAY AUDIT] route={BLACKLINE['name']}"], logging.WARNING)
         self.assertEqual(levels[f"[ALT ENGINE REPLAY AUDIT] route={ARABIC['name']}"], logging.INFO)
         self.assertEqual(levels[f"[ALT ENGINE REPLAY AUDIT] route={BROKEN['name']}"], logging.WARNING)
         self.assertIn("[ALT ENGINE REPLAY AUDIT DONE] routes=3 checked=3 match=2", logs.output[-1])
@@ -347,7 +348,7 @@ class AltReplayAuditTests(AltHarness):
         with self.assertLogs(ALT_LOG, "INFO"):
             report = self.audit(per_route=2)
         reads = dict(self.client.reads[::2])
-        self.assertEqual(reads[SELECT["source_chat"]], [12, 13])
+        self.assertEqual(reads[BLACKLINE["source_chat"]], [12, 13])
         self.assertEqual(
             reads[ARABIC["source_chat"]], list(range(32, 42)), "translation calls are capped at 10"
         )

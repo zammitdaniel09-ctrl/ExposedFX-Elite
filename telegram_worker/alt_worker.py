@@ -9,16 +9,6 @@ Routes come from route_table.py (ALT_ROUTES_JSON is no longer read).
 
 import asyncio
 
-NEW_TOPIC_DEST_CHAT = -1004367822325
-
-# Owner request 2026-11-03: Select Signals topic -> relay topic 8323 (MAIN
-# formats 8323 into VIP12289), with the latest 30 posts imported once.
-SELECT_SOURCE_CHAT = -1004410975295
-SELECT_SOURCE_TOPIC = 7194
-SELECT_DEST_TOPIC = 8323
-SELECT_LAST_COUNT = 30
-SELECT_LAST_STATE_FILE = "alt_select7194_to_relay8323_last30_v1.json"
-
 from telegram_worker import alt_worker_legacy as _legacy
 from telegram_worker.alt_reply_hardening import install_alt_reply_hardening
 from telegram_worker.alt_new_topics7248_7250_last20 import run_alt_new_topics_last20_once
@@ -45,25 +35,6 @@ async def _run_new_topics_last20_guarded():
         )
 
 
-async def _run_select_last30_guarded():
-    try:
-        await run_alt_new_topics_last20_once(
-            _legacy,
-            logger=_legacy.log,
-            contracts=((SELECT_SOURCE_CHAT, SELECT_SOURCE_TOPIC, NEW_TOPIC_DEST_CHAT, SELECT_DEST_TOPIC),),
-            count=SELECT_LAST_COUNT,
-            state_file=SELECT_LAST_STATE_FILE,
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        _legacy.log.exception(
-            "[ALT SELECT LAST30 FAILED SAFE] "
-            f"{type(exc).__name__}: {exc} "
-            "LIVE_FORWARDING_CONTINUES=True"
-        )
-
-
 async def main():
     from telegram_worker import liveness
     from telegram_worker.health_monitor import install_health_monitor
@@ -81,14 +52,12 @@ async def main():
     engine = install_alt_engine(_legacy)
     engine.audit_task = asyncio.create_task(run_alt_replay_audit(_legacy, engine))
     new_topics_last20_task = asyncio.create_task(_run_new_topics_last20_guarded())
-    select_last30_task = asyncio.create_task(_run_select_last30_guarded())
     try:
         await _legacy.main()
         liveness.exit_disconnected("ExposedFX ALT", _legacy.DATA_DIR, _legacy.log)
     finally:
-        for task in (new_topics_last20_task, select_last30_task):
-            if not task.done():
-                task.cancel()
+        if not new_topics_last20_task.done():
+            new_topics_last20_task.cancel()
 
 
 if __name__ == "__main__":

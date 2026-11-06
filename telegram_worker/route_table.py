@@ -19,8 +19,7 @@ into a retired topic or repeats a route, so a mistake fails at start-up, not in
 a destination. Old paused definitions: archive/telegram_worker/routes_before_table_20261104.py.
 
 worker  the Telegram account that sends: MAIN or ALT
-path    intake (live), owner (history), formatted (8323 library format),
-        wholechat (SamGtrades house style), relay (ALT)
+path    intake (live), owner (history), wholechat (SamGtrades house style), relay (ALT)
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 RELAY = -1004367822325  # VIP RELAY GROUP
 VIP = -1003726286301  # IMPERIUM FX VIP
 MARKET_MAKERS = -1003786932333
-WORKERS = {"MAIN": ("intake", "owner", "formatted", "wholechat"), "ALT": ("relay",)}
+WORKERS = {"MAIN": ("intake", "owner", "wholechat"), "ALT": ("relay",)}
 
 # Never written to (or read from, for 2530) by any route.
 RETIRED_DESTINATIONS = {(VIP, 5), (RELAY, 2530), (-1003885074241, 4663), (-1003885074241, 4665)}
@@ -114,7 +113,6 @@ TABLE: Tuple[RouteSpec, ...] = (
     relay("ARABIC VIP EN -> RELAY115", (-1002211486103, None), 115),  # T4T AE Scalping VIP, translated
     relay("NewAccount Topic5246 To Relay7248", (-1004349952583, 5246), 7248),  # Blackline B+SCALPING
     relay("NewAccount Topic5247 To Relay7250", (-1004349952583, 5247), 7250),  # Blackline B+XAU
-    relay("NewAccount Select7194 To Relay8323", (-1004410975295, 7194), 8323),  # SELECT SIGNALS
     # MAIN: live copies (relay topics and Market Slayers -> VIP)
     live("Private Live 3838973021 To 9", (-1003838973021, None), (VIP, 9), loop_guard=(VIP,)),
     live("VIP RELAY Topic106 To VIP11", (RELAY, 106), (VIP, 11)),
@@ -126,8 +124,7 @@ TABLE: Tuple[RouteSpec, ...] = (
     history("Owner VIP1364 To Partner28", (VIP, 1364), (MARKET_MAKERS, 28), last=20),
     history("Owner VIP10877 To Partner8", (VIP, 10877), (MARKET_MAKERS, 8), last=20),
     history("Owner VIP12161 To Partner24", (VIP, 12161), (MARKET_MAKERS, 24), last=20),
-    # MAIN: formatted and whole-chat relays (each has its own module)
-    RouteSpec("Owner Relay8323 To VIP12289 Formatted", "MAIN", "formatted", RELAY, 8323, VIP, 12289),
+    # MAIN: whole-chat relay (its own module)
     RouteSpec("SamGtrades To Exposed VIP", "MAIN", "wholechat", -1004281603170, None, -1003743381585, None),
 )
 

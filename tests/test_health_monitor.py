@@ -15,8 +15,10 @@ package.__path__ = [str(ROOT / "telegram_worker")]
 from telegram_worker import health_monitor as hm
 
 # Real lines from production logs (3-4 Nov 2026).
-FORMATTED = "[OWNER FORMATTED POST] contract=-1004367822325:8323:-1003726286301:12289 source_id=8519 outcome=update lag=0.7s"
-SKIPPED = "[OWNER FORMATTED POST] contract=-1004367822325:8323:-1003726286301:12289 source_id=8511 outcome=skipped lag=1.4s"
+OWNER_OK = "[OWNER LIVE POST] contract=-1004367822325:7250:-1003726286301:12161 outcome=sent source_id=5940"
+OWNER_SKIPPED = (
+    "[OWNER LIVE POST] contract=-1004367822325:7250:-1003726286301:12161 outcome=filtered source_id=5941"
+)
 FASTVIP_OK = "[FASTVIP COPIED] route=Relay508 To VIP7 source=-1004367822325_508 ids=[8170] kind=SINGLE"
 FASTVIP_FAIL = (
     "[FASTVIP DEST FAILED] route=Private Live 3838973021 To 9 ids=[24298] dest=-1003726286301_9 "
@@ -24,7 +26,8 @@ FASTVIP_FAIL = (
 )
 WHOLECHAT_OK = "[WHOLECHAT SENT] reason=live source=-1004281603170 dest=-1003743381585 source_ids=[2047]"
 ALT_OK = (
-    "[ALT COPIED] route=NewAccount Select7194 To Relay8323 source_msg=8106 dest_msg=8517 reason=telegram_push"
+    "[ALT COPIED] route=NewAccount Topic5247 To Relay7250 ids=[5940] kind=SINGLE reason=telegram_push "
+    "engine=True lag=0.7s"
 )
 ALT_FAIL = "[ALT COPY FAILED] route=ALT RELAY 1 ids=[2282, 2283] ChatWriteForbiddenError: no rights"
 STOPPED = (
@@ -57,13 +60,13 @@ class MonitorTests(unittest.TestCase):
             self.monitor.observe(level, line, has_exc)
 
     def test_successes_counted_per_route_with_lag(self):
-        self.feed(FORMATTED, FORMATTED, SKIPPED, FASTVIP_OK, WHOLECHAT_OK, ALT_OK)
+        self.feed(OWNER_OK, OWNER_OK, OWNER_SKIPPED, FASTVIP_OK, WHOLECHAT_OK, ALT_OK, ALT_OK)
         routes = self.monitor.state["routes"]
-        formatted = routes["-1004367822325:8323:-1003726286301:12289"]
-        self.assertEqual((formatted["ok"], formatted["lag_n"]), (2, 2))
+        self.assertEqual(routes["-1004367822325:7250:-1003726286301:12161"]["ok"], 2)
         self.assertEqual(routes["Relay508 To VIP7"]["ok"], 1)
         self.assertEqual(routes["-1003743381585"]["ok"], 1)
-        self.assertEqual(routes["NewAccount Select7194 To Relay8323"]["ok"], 1)
+        alt = routes["NewAccount Topic5247 To Relay7250"]
+        self.assertEqual((alt["ok"], alt["lag_n"]), (2, 2))
         self.assertEqual(list(self.monitor.outbox), [])
 
     def test_failures_alert_only_after_three_in_ten_minutes_and_reset_on_success(self):
@@ -105,7 +108,7 @@ class MonitorTests(unittest.TestCase):
         self.assertTrue(self.monitor.digest_due(tomorrow))
 
     def test_digest_once_per_day_after_eight_and_resets(self):
-        self.feed(FORMATTED, FASTVIP_OK, FASTVIP_FAIL)
+        self.feed(OWNER_OK, FASTVIP_OK, FASTVIP_FAIL)
         self.monitor.state["last_digest_day"] = "2026-11-03"
         self.assertTrue(self.monitor.digest_due())
         text = self.monitor.digest()
@@ -118,10 +121,10 @@ class MonitorTests(unittest.TestCase):
         self.assertFalse(self.monitor.digest_due(early))
 
     def test_counters_survive_restart(self):
-        self.feed(FORMATTED)
+        self.feed(OWNER_OK)
         self.monitor.save()
         again = hm.HealthMonitor("MAIN", self.tmp.name, clock=self.clock)
-        self.assertEqual(again.state["routes"]["-1004367822325:8323:-1003726286301:12289"]["ok"], 1)
+        self.assertEqual(again.state["routes"]["-1004367822325:7250:-1003726286301:12161"]["ok"], 1)
         self.assertEqual(again.state["restarts"], 2)
 
 

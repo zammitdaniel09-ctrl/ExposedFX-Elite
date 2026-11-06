@@ -36,7 +36,7 @@ Settings → Source → branch `alt-worker`).
 
 ```
 providers ──ALT──▶ VIP RELAY GROUP (-1004367822325) ──MAIN──▶ live destinations
-                         topics 2, 115, 7248, 7250, 8323
+                         topics 2, 115, 7248, 7250
 SamGtrades (-1004281603170) ──MAIN (whole chat, house format)──▶ Exposed | VIP
 Market Slayers VIP (-1003838973021) ──MAIN──▶ IMPERIUM FX VIP topic 9
 ```
@@ -58,14 +58,13 @@ post (nothing old is sent, except `history`'s last N); the account must already
 be in both chats. Filters, formatting, replies, edits, restart recovery and the
 replay audit apply automatically. **Remove a route:** delete its line.
 
-### ALT routes (5)
+### ALT routes (4)
 | Route | Source | Relay topic |
 |---|---|---|
 | ALT RELAY 1 | Private Circle G Trades | 2 |
 | ARABIC VIP EN -> RELAY115 | T4T AE Scalping VIP (translated to English) | 115 |
 | NewAccount Topic5246 To Relay7248 | Blackline / 5246 | 7248 B+SCALPING |
 | NewAccount Topic5247 To Relay7250 | Blackline / 5247 | 7250 B+XAU |
-| NewAccount Select7194 To Relay8323 | SELECT SIGNALS / 7194 | 8323 select trade ideas |
 
 ### MAIN routes
 | Path | Source | Destination | Format |
@@ -77,11 +76,9 @@ replay audit apply automatically. **Remove a route:** delete its line.
 | engine intake | relay 7248 | VIP EXTRA PARTNER 1 (10877) | copy |
 | owner routes (`owner_routes.py`) | relay 7250 | VIP EXTRA PARTNER [ 4 ] (12161) | copy |
 | owner routes | VIP 1364 / 10877 / 12161 | ᴍᴀʀᴋᴇᴛ ᴍᴀᴋᴇʀꜱ 28 / 8 / 24 | copy |
-| `owner_formatted_route.py` | relay 8323 | VIP EXTRA PARTNER [ 5 ] (12289) | library format (signals, updates, recaps) |
 | `samgtrades_relay.py` | Signals \| SamGtrades | Exposed \| VIP | house library format |
 
-Formatters: `library_signal_format.py` (EXTRA PARTNER [ 5 ]),
-`samgtrades_house_formatter.py` (Exposed | VIP), `imperium_vip_*` (VIP 7).
+Formatters: `samgtrades_house_formatter.py` (Exposed | VIP), `imperium_vip_*` (VIP 7).
 Custom emoji ids come from the owner's Saved Messages (`community_emoji_registry.py`):
 each start re-reads the newest 500; an alias whose assignment has scrolled further
 back keeps its saved value (only `Alias = DELETE` removes one).
@@ -142,8 +139,8 @@ is stored in `message_map.sqlite3` and moved only by the watchdog over posts it
 has seen, so a later success can never skip an earlier failure. On MAIN a post
 older than 10 minutes is not sent (stale signals mislead) and you get a Saved
 Messages notice; ALT has no age limit. A post that still fails an hour after
-its first failure is skipped with a notice. Owner routes, the 8323 formatter
-and the SamGtrades relay keep their own checkpoints, with the same one-hour
+its first failure is skipped with a notice. Owner routes and the SamGtrades
+relay keep their own checkpoints, with the same one-hour
 give-up; the SamGtrades relay also catches up posts made while the worker was
 down (deploys) and applies the 10-minute rule.
 
@@ -152,7 +149,7 @@ down (deploys) and applies the 10-minute rule.
 every delivery. `message_map.json` is still written every 5 minutes and when
 Railway stops the worker, so rolling back to older code starts from the
 current map; entries only the JSON has are merged back on the next start.
-On SIGTERM, sends already in flight (intake, owner routes, 8323 formatter,
+On SIGTERM, sends already in flight (intake, owner routes,
 SamGtrades relay) get up to 2 s to record their copy and no new send starts,
 so a deploy never sends a post twice.
 
@@ -165,7 +162,7 @@ media structure. A deleted source post deletes its copies on MAIN. A backup
 poller re-checks the newest Relay508 posts every 30 s for missed edit events.
 
 **No monkeypatching.** Startup is explicit in `worker_fixed.main()`: engine,
-owner routes, 8323 formatter, SamGtrades relay, health monitor, replay audit,
+owner routes, SamGtrades relay, health monitor, replay audit,
 intake. The one interception left is the owner send guard on
 `client._call`, the last line of defence for stopped chats.
 
@@ -180,7 +177,7 @@ without crashing: if Telegram drops the connection for good, or the event loop
 stalls for 120 s, the process exits non-zero so Railway starts a fresh one,
 and the next start sends "♻️ … restarted itself" with the reason to that
 account's Saved Messages. On MAIN, a background job that crashes (owner
-routes, 8323 formatter, SamGtrades relay, edit reconciler, weekly stats) is
+routes, SamGtrades relay, edit reconciler, weekly stats) is
 logged, alerted (🚨) and started again after 30 s instead of staying dead.
 A flood wait while loading the chat list at start is retried after the wait,
 and until then "chat not found" is not counted towards stopping a route. A redeploy no longer waits for the old run's lock:
@@ -214,7 +211,7 @@ deploy-crash notifications in the account settings.
 MAIN `/app/data`: session (rewritten from `SESSION_B64_*` at start),
 `message_map.sqlite3` (source→destination ids for replies/edits, plus the
 intake checkpoints) and its `message_map.json` snapshot (an unreadable file
-is copied to `message_map.corrupt-*.json`), owner route/formatter state,
+is copied to `message_map.corrupt-*.json`), owner route state,
 wholechat map, stop ledger, `health_monitor_v1.json`, `engine_shadow_v1.json`,
 `liveness_exit_v1.json` (only between a self-restart and the next start).
 ALT `/data-alt`: session, `message_map.sqlite3` + JSON snapshot, route checkpoints (`route_state.json`, kept for rollbacks), last-N import state,

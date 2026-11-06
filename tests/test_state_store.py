@@ -207,7 +207,7 @@ class StoreTests(unittest.TestCase):
 
 
 class SendGuardTests(unittest.TestCase):
-    """Sends outside the intake (owner routes, 8323 formatter, SamGtrades) finish before exit."""
+    """Sends outside the intake (owner routes, SamGtrades) finish before exit."""
 
     def test_shutdown_waits_for_a_send_in_flight_and_starts_no_new_one(self):
         import asyncio

@@ -11,7 +11,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 package = sys.modules.setdefault("telegram_worker", types.ModuleType("telegram_worker"))
 package.__path__ = [str(ROOT / "telegram_worker")]
-from telegram_worker import owner_formatted_route as formatted
 from telegram_worker import owner_forwarding_policy as policy
 from telegram_worker import route_table
 from telegram_worker import samgtrades_relay as wholechat
@@ -25,7 +24,6 @@ PAUSED_DESTINATIONS = {-1003216105903, -1003918958200, -1004442967052, -10038024
 class LiveRouteContractTests(unittest.TestCase):
     def test_every_main_route_comes_from_the_table(self):
         self.assertEqual(ROUTES, route_table.routes("MAIN", "intake", "owner"))
-        self.assertEqual(formatted.ROUTE, route_table.one(formatted.ROUTE["name"]).as_dict())
         sam = route_table.one("SamGtrades To Exposed VIP")
         self.assertEqual((wholechat.SOURCE_CHAT, wholechat.DEST_CHAT), (sam.source_chat, sam.dest_chat))
 

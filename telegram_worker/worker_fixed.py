@@ -1092,11 +1092,6 @@ async def main():
     owner_module.OWNER_REQUESTED_ROUTES_TASK = supervised(
         "owner_routes", lambda: run_owner_requested_routes(owner_module)
     )
-    from telegram_worker.owner_formatted_route import run_owner_formatted_route
-
-    owner_module.OWNER_FORMATTED_ROUTE_TASK = supervised(
-        "owner_formatted_route", lambda: run_owner_formatted_route(owner_module)
-    )
     from telegram_worker.health_monitor import install_health_monitor
 
     owner_module.HEALTH_MONITOR = install_health_monitor("ExposedFX MAIN", client, DATA_DIR)

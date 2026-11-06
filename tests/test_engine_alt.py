@@ -19,12 +19,12 @@ from telegram_worker import owner_forwarding_policy as policy
 from telegram_worker.engine import alt as alt_engine
 
 RELAY = -1004367822325
-SELECT = {
-    "name": "NewAccount Select7194 To Relay8323",
-    "source_chat": -1004410975295,
-    "source_topic": 7194,
+BLACKLINE = {
+    "name": "NewAccount Topic5247 To Relay7250",
+    "source_chat": -1004349952583,
+    "source_topic": 5247,
     "dest_chat": RELAY,
-    "dest_topic": 8323,
+    "dest_topic": 7250,
     "loop_guard_peers": [RELAY],
 }
 ARABIC = {
@@ -99,7 +99,7 @@ class AltEngineTests(unittest.TestCase):
             client=self.client,
             DATA_DIR=self.tmp.name,
             message_map={},
-            ROUTES=[SELECT, ARABIC],
+            ROUTES=[BLACKLINE, ARABIC],
             FILTER_USERNAME_MENTIONS=True,
             FILTER_LINKS=True,
         )
@@ -145,28 +145,30 @@ class AltEngineTests(unittest.TestCase):
         return asyncio.run(self.engine.deliver(route, unit, reason))
 
     def test_copy_is_exact_and_advances_the_checkpoint(self):
-        self.assertTrue(self.deliver(SELECT, [post(10, "Buy XAUUSD 4180")]))
+        self.assertTrue(self.deliver(BLACKLINE, [post(10, "Buy XAUUSD 4180")]))
         kind, chat, text, kwargs = self.client.calls[0]
         self.assertEqual(
             (kind, chat, text, kwargs["reply_to"], kwargs["link_preview"]),
-            ("text", RELAY, "Buy XAUUSD 4180", 8323, True),
+            ("text", RELAY, "Buy XAUUSD 4180", 7250, True),
         )
-        self.assertEqual(self.checkpoints[SELECT["name"]], 10)
-        self.assertTrue(self.deliver(SELECT, [post(10, "Buy XAUUSD 4180")]), "already copied is handled")
+        self.assertEqual(self.checkpoints[BLACKLINE["name"]], 10)
+        self.assertTrue(self.deliver(BLACKLINE, [post(10, "Buy XAUUSD 4180")]), "already copied is handled")
         self.assertEqual(len(self.client.calls), 1)
 
     def test_reply_target_comes_from_alt_reply_recovery(self):
         self.reply_target = 8400
-        self.deliver(SELECT, [post(11, "TP1 hit")])
+        self.deliver(BLACKLINE, [post(11, "TP1 hit")])
         self.assertEqual(self.client.calls[0][3]["reply_to"], 8400)
 
     def test_mentions_and_links_are_skipped_and_checkpointed(self):
-        self.assertTrue(self.deliver(SELECT, [post(12, "join t.me/x")]))
-        self.assertEqual((self.client.calls, self.filtered, self.checkpoints[SELECT["name"]]), ([], [12], 12))
+        self.assertTrue(self.deliver(BLACKLINE, [post(12, "join t.me/x")]))
+        self.assertEqual(
+            (self.client.calls, self.filtered, self.checkpoints[BLACKLINE["name"]]), ([], [12], 12)
+        )
 
     def test_alt_never_blocks_senders_or_forward_loops(self):
         forwarded = SimpleNamespace(from_id=PeerChannel(4367822325), saved_from_peer=None)
-        self.assertTrue(self.deliver(SELECT, [post(13, "TP2 hit", sender=7556281143, fwd=forwarded)]))
+        self.assertTrue(self.deliver(BLACKLINE, [post(13, "TP2 hit", sender=7556281143, fwd=forwarded)]))
         self.assertEqual(len(self.client.calls), 1, "MAIN's sender block and loop guard do not apply to ALT")
 
     def test_t4t_route_sends_the_translation_and_only_translates_what_legacy_did(self):
@@ -180,23 +182,23 @@ class AltEngineTests(unittest.TestCase):
         self.assertEqual(self.client.calls[0][3]["caption"], "EN: تحليل")
         self.assertEqual(self.translated.count(21), 1)
 
-    def test_untranslated_select_route_makes_no_translation_call(self):
-        self.deliver(SELECT, [post(30, "Sell now")])
+    def test_untranslated_route_makes_no_translation_call(self):
+        self.deliver(BLACKLINE, [post(30, "Sell now")])
         self.assertEqual(self.translated, [])
 
     def test_flood_wait_hands_the_post_back_to_the_watchdog_at_once(self):
         self.client.fail = [FloodWaitError(request=None, capture=40)]
         with self.assertLogs("imperium-alt-worker", "WARNING") as logs:
-            self.assertFalse(self.deliver(SELECT, [post(40, "TP3 hit")]))
+            self.assertFalse(self.deliver(BLACKLINE, [post(40, "TP3 hit")]))
         self.assertTrue(any("[ALT FLOODWAIT]" in line for line in logs.output))
-        self.assertNotIn(SELECT["name"], self.checkpoints, "not handled, so the watchdog retries it")
+        self.assertNotIn(BLACKLINE["name"], self.checkpoints, "not handled, so the watchdog retries it")
 
     def test_album_maps_every_item(self):
         album = [post(51, "", media=True, grouped=9), post(50, "chart", media=True, grouped=9)]
-        self.assertTrue(self.deliver(SELECT, album))
+        self.assertTrue(self.deliver(BLACKLINE, album))
         keys = sorted(k for k in self.legacy.message_map)
-        self.assertEqual(keys, [f"-1004410975295:50:{RELAY}:8323", f"-1004410975295:51:{RELAY}:8323"])
-        self.assertEqual(self.checkpoints[SELECT["name"]], 51)
+        self.assertEqual(keys, [f"-1004349952583:50:{RELAY}:7250", f"-1004349952583:51:{RELAY}:7250"])
+        self.assertEqual(self.checkpoints[BLACKLINE["name"]], 51)
 
 
 if __name__ == "__main__":
@@ -242,7 +244,7 @@ class AltDifferentialTests(unittest.TestCase):
             post(102, "", media=True),
             post(103, "SELL LIMIT 4192.4\nTP1 4188"),
         ]
-        for route in (SELECT, ARABIC):
+        for route in (BLACKLINE, ARABIC):
             for case in cases:
                 legacy_client, engine_client = Client(), Client()
                 with tempfile.TemporaryDirectory():

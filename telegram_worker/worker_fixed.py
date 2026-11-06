@@ -1098,6 +1098,12 @@ async def main():
     from telegram_worker.destination_directory import log_destination_directory
 
     owner_module.DESTINATION_DIRECTORY_TASK = asyncio.create_task(log_destination_directory(owner_module))
+    from telegram_worker.engine.topic_reset import reset_when_ready
+
+    # Owner request 6 Nov 2026: VIP topic 12289 starts on a fresh slate (runs once).
+    owner_module.TOPIC_RESET_TASK = asyncio.create_task(
+        reset_when_ready(client, -1003726286301, 12289, DATA_DIR)
+    )
     from telegram_worker.engine.audit import run_replay_audit
 
     owner_module.ENGINE_AUDIT_TASK = asyncio.create_task(

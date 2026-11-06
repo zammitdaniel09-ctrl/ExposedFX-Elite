@@ -15,6 +15,7 @@
                 checkpoints and ALT log markers; ALT's replay audit
     audit.py    replay audit: re-plans recent posts and compares them with
                 the copies in the destinations (read-only, once per version)
+    topic_reset.py  one-time reset of a topic (every post deleted, topic kept)
 
 It replaced the legacy copy pipeline on 4 Nov 2026 after shadow mode (git
 history: engine/shadow.py) and a replay audit matched the legacy output on

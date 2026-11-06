@@ -52,12 +52,17 @@ async def main():
     engine = install_alt_engine(_legacy)
     engine.audit_task = asyncio.create_task(run_alt_replay_audit(_legacy, engine))
     new_topics_last20_task = asyncio.create_task(_run_new_topics_last20_guarded())
+    from telegram_worker.alt_channel_export import export_guarded
+
+    # Owner request 6 Nov 2026: read-only export of the T4T channel for an analysis (runs once).
+    export_task = asyncio.create_task(export_guarded(_legacy.client, _legacy.DATA_DIR, _legacy.log))
     try:
         await _legacy.main()
         liveness.exit_disconnected("ExposedFX ALT", _legacy.DATA_DIR, _legacy.log)
     finally:
-        if not new_topics_last20_task.done():
-            new_topics_last20_task.cancel()
+        for task in (new_topics_last20_task, export_task):
+            if not task.done():
+                task.cancel()
 
 
 if __name__ == "__main__":

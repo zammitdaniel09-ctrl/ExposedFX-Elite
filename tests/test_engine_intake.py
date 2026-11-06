@@ -332,6 +332,28 @@ class WatchdogTests(unittest.TestCase):
         h.run(go())
         self.assertEqual(waits[:2], [7.0, 30.0])
 
+    def test_a_from_start_route_copies_its_whole_source_oldest_first(self):
+        posts = [post(i, minutes_ago=600) for i in (7, 5, 6)]
+        h = Harness(posts, routes=({**ROUTE, "from_start": True},), start=7)
+
+        async def stop(seconds):
+            await h.intake.sources[SOURCE].queue.join()
+            raise asyncio.CancelledError
+
+        h.intake.sleep = stop
+
+        async def go():
+            with self.assertLogs("engine-intake", "WARNING") as logs:
+                with self.assertRaises(asyncio.CancelledError):
+                    await h.intake.run_source(SOURCE)
+            for task in h.intake.tasks:
+                task.cancel()
+            return logs.output
+
+        output = h.run(go())
+        self.assertTrue(any("[INTAKE READY]" in line and "checkpoint=0" in line for line in output), output)
+        self.assertEqual([d[1] for d in h.delivered], [[5], [6], [7]], "not from the newest post")
+
 
 class RestartGapTests(unittest.TestCase):
     """Posts that arrived while the worker was down (4 Nov 2026: relay post 8522 was lost)."""

@@ -10,6 +10,8 @@ on their next start. REMOVE A ROUTE: delete (or comment out) its line.
         MAIN imports the last N posts once, then copies new ones (owner_routes.py).
     relay("Name", (source_chat, source_topic), relay_topic)
         ALT copies a provider into a VIP RELAY GROUP topic (engine/intake.py).
+    from_start=True on live(...) or relay(...): a new route first copies every
+        post already in its source, oldest first, then continues live.
 
 A new route starts at the newest post (nothing old is sent, except history's
 last N); the account must already be a member of both chats. Edits, replies,
@@ -72,7 +74,13 @@ class RouteSpec:
         return route
 
 
-def live(name: str, source: Chat, dest: Chat, loop_guard: Optional[Tuple[int, ...]] = None) -> RouteSpec:
+def live(
+    name: str,
+    source: Chat,
+    dest: Chat,
+    loop_guard: Optional[Tuple[int, ...]] = None,
+    from_start: bool = False,
+) -> RouteSpec:
     """MAIN: copy new posts as they arrive. loop_guard: chats whose forwards are never copied back."""
     (source_chat, source_topic), (dest_chat, dest_topic) = source, dest
     options: List[Tuple[str, Any]] = [
@@ -85,6 +93,8 @@ def live(name: str, source: Chat, dest: Chat, loop_guard: Optional[Tuple[int, ..
         options.append(("strict_source_topic", True))
     guard = loop_guard if loop_guard is not None else tuple(dict.fromkeys((source_chat, dest_chat)))
     options += [("ordered_private", True), ("loop_guard_peers", guard)]
+    if from_start:
+        options.append(("from_start", True))
     return RouteSpec(name, "MAIN", "intake", source_chat, source_topic, dest_chat, dest_topic, tuple(options))
 
 
@@ -102,9 +112,10 @@ def history(name: str, source: Chat, dest: Chat, last: int = 20) -> RouteSpec:
     return RouteSpec(name, "MAIN", "owner", source_chat, source_topic, dest_chat, dest_topic, options)
 
 
-def relay(name: str, source: Chat, relay_topic: int) -> RouteSpec:
+def relay(name: str, source: Chat, relay_topic: int, from_start: bool = False) -> RouteSpec:
     """ALT: copy a provider into a VIP RELAY GROUP topic."""
-    return RouteSpec(name, "ALT", "relay", source[0], source[1], RELAY, relay_topic)
+    options = (("from_start", True),) if from_start else ()
+    return RouteSpec(name, "ALT", "relay", source[0], source[1], RELAY, relay_topic, options)
 
 
 TABLE: Tuple[RouteSpec, ...] = (
@@ -113,12 +124,14 @@ TABLE: Tuple[RouteSpec, ...] = (
     relay("ARABIC VIP EN -> RELAY115", (-1002211486103, None), 115),  # T4T AE Scalping VIP, translated
     relay("NewAccount Topic5246 To Relay7248", (-1004349952583, 5246), 7248),  # Blackline B+SCALPING
     relay("NewAccount Topic5247 To Relay7250", (-1004349952583, 5247), 7250),  # Blackline B+XAU
+    relay("NewAccount Topic5830 To Relay8323", (-1004349952583, 5830), 8323, from_start=True),  # Blackline
     # MAIN: live copies (relay topics and Market Slayers -> VIP)
     live("Private Live 3838973021 To 9", (-1003838973021, None), (VIP, 9), loop_guard=(VIP,)),
     live("VIP RELAY Topic106 To VIP11", (RELAY, 106), (VIP, 11)),
     live("VIP RELAY Topic2 To VIP1364", (RELAY, 2), (VIP, 1364)),
     live("Relay508 To VIP7", (RELAY, 508), (VIP, 7)),  # restyled in the Imperium VIP format
     live("Relay7248 To VIP10877", (RELAY, 7248), (VIP, 10877)),
+    live("Relay8323 To VIP12289", (RELAY, 8323), (VIP, 12289), from_start=True),  # EXTRA PARTNER [ 5 ]
     # MAIN: live copies with a one-time history import
     history("Owner Relay7250 To VIP12161", (RELAY, 7250), (VIP, 12161), last=50),
     history("Owner VIP1364 To Partner28", (VIP, 1364), (MARKET_MAKERS, 28), last=20),

@@ -414,6 +414,9 @@ class Intake:
 
     async def run_source(self, source: SourceKey) -> None:
         stored = self.checkpoints.get(source)
+        if stored is None and any(route.get("from_start") for route in self.groups[source]):
+            stored = 0  # route_table from_start=True: a new route copies its source from the first post
+            self.checkpoints.set(source, stored)
         while stored is None:
             try:
                 stored = int(await self.initial_checkpoint(source, self.groups[source]))

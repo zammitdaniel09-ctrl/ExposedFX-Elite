@@ -52,17 +52,12 @@ async def main():
     engine = install_alt_engine(_legacy)
     engine.audit_task = asyncio.create_task(run_alt_replay_audit(_legacy, engine))
     new_topics_last20_task = asyncio.create_task(_run_new_topics_last20_guarded())
-    from telegram_worker.engine.topic_reset import reset_when_ready
-
-    # Owner request 6 Nov 2026: relay topic 8323 starts on a fresh slate (runs once).
-    reset_task = asyncio.create_task(reset_when_ready(_legacy.client, -1004367822325, 8323, _legacy.DATA_DIR))
     try:
         await _legacy.main()
         liveness.exit_disconnected("ExposedFX ALT", _legacy.DATA_DIR, _legacy.log)
     finally:
-        for task in (new_topics_last20_task, reset_task):
-            if not task.done():
-                task.cancel()
+        if not new_topics_last20_task.done():
+            new_topics_last20_task.cancel()
 
 
 if __name__ == "__main__":

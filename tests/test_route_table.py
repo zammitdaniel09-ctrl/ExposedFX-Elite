@@ -71,18 +71,22 @@ class TableTests(unittest.TestCase):
         finally:
             importlib.reload(routes)
 
-    def test_alt_routes_are_the_four_relay_feeds(self):
+    def test_alt_routes_are_the_five_relay_feeds(self):
         alt = route_table.routes("ALT")
-        self.assertEqual(len(alt), 4)
+        self.assertEqual(len(alt), 5)
         self.assertEqual({r["dest_chat"] for r in alt}, {RELAY})
-        self.assertEqual(sorted(r["dest_topic"] for r in alt), [2, 115, 7248, 7250])
+        self.assertEqual(sorted(r["dest_topic"] for r in alt), [2, 115, 7248, 7250, 8323])
         self.assertEqual(
             set(alt[0]), {"name", "source_chat", "source_topic", "dest_chat", "dest_topic", "path"}
         )
 
     def test_side_routes_and_lookup(self):
         self.assertEqual(route_table.one("SamGtrades To Exposed VIP").source_chat, -1004281603170)
-        self.assertEqual(len(route_table.routes("MAIN")), 10)
+        self.assertEqual(len(route_table.routes("MAIN")), 11)
+        starts = [
+            r["name"] for r in route_table.routes("MAIN") + route_table.routes("ALT") if r.get("from_start")
+        ]
+        self.assertEqual(starts, ["Relay8323 To VIP12289", "NewAccount Topic5830 To Relay8323"])
         with self.assertRaises(KeyError):
             route_table.one("No Such Route")
 

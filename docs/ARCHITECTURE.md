@@ -36,7 +36,7 @@ Settings → Source → branch `alt-worker`).
 
 ```
 providers ──ALT──▶ VIP RELAY GROUP (-1004367822325) ──MAIN──▶ live destinations
-                         topics 2, 115, 7248, 7250
+                         topics 2, 115, 7248, 7250, 8323
 SamGtrades (-1004281603170) ──MAIN (whole chat, house format)──▶ Exposed | VIP
 Market Slayers VIP (-1003838973021) ──MAIN──▶ IMPERIUM FX VIP topic 9
 ```
@@ -54,17 +54,19 @@ write into a retired topic or repeat another). The tables below mirror it.
 | ALT copies a provider into a relay topic | `relay("Name", (source_chat, source_topic), relay_topic),` |
 
 `source_topic` `None` means the whole chat. A new route starts at the newest
-post (nothing old is sent, except `history`'s last N); the account must already
+post (nothing old is sent, except `history`'s last N, or everything with
+`from_start=True` on `live`/`relay`); the account must already
 be in both chats. Filters, formatting, replies, edits, restart recovery and the
 replay audit apply automatically. **Remove a route:** delete its line.
 
-### ALT routes (4)
+### ALT routes (5)
 | Route | Source | Relay topic |
 |---|---|---|
 | ALT RELAY 1 | Private Circle G Trades | 2 |
 | ARABIC VIP EN -> RELAY115 | T4T AE Scalping VIP (translated to English) | 115 |
 | NewAccount Topic5246 To Relay7248 | Blackline / 5246 | 7248 B+SCALPING |
 | NewAccount Topic5247 To Relay7250 | Blackline / 5247 | 7250 B+XAU |
+| NewAccount Topic5830 To Relay8323 | Blackline / 5830 (whole history, then live) | 8323 |
 
 ### MAIN routes
 | Path | Source | Destination | Format |
@@ -74,6 +76,7 @@ replay audit apply automatically. **Remove a route:** delete its line.
 | engine intake | relay 2 | VIP Extra Partner 2 (1364) | copy |
 | engine intake | relay 508 XAU Exclusive Room | VIP 7 | Imperium VIP format |
 | engine intake | relay 7248 | VIP EXTRA PARTNER 1 (10877) | copy |
+| engine intake | relay 8323 | VIP EXTRA PARTNER [ 5 ] (12289) (whole history, then live) | copy |
 | owner routes (`owner_routes.py`) | relay 7250 | VIP EXTRA PARTNER [ 4 ] (12161) | copy |
 | owner routes | VIP 1364 / 10877 / 12161 | ᴍᴀʀᴋᴇᴛ ᴍᴀᴋᴇʀꜱ 28 / 8 / 24 | copy |
 | `samgtrades_relay.py` | Signals \| SamGtrades | Exposed \| VIP | house library format |

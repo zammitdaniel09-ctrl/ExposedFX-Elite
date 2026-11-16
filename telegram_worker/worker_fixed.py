@@ -860,8 +860,40 @@ def intake_pending(route, unit):
     return isinstance(plan, Send)
 
 
-async def intake_deliver(route, unit, reason):
+# Owner request 16 Nov 2026: VIP topic 10877 is cleared, gets the last 50
+# Market Slayers posts, then Market Slayers live (engine/topic_seed.py, runs
+# once). Until the seed is done the intake holds that route's live posts.
+TOPIC_SEEDS = {"Private Live 3838973021 To 10877": 50}
+SEED_GATES = {name: asyncio.Event() for name in TOPIC_SEEDS}
+
+
+async def live_deliver(route, unit):
+    """Live delivery, shared by the intake and the topic seed."""
     return await fast_vip_deliver_route(route, unit, skip_permanent_errors=True)
+
+
+async def intake_deliver(route, unit, reason):
+    from telegram_worker.engine.topic_seed import wait_for_gate
+
+    await wait_for_gate(SEED_GATES.get(route.get("name")))
+    return await live_deliver(route, unit)
+
+
+def start_topic_seeds():
+    from telegram_worker.engine.topic_seed import clear_then_seed
+
+    tasks = []
+    for name, last in TOPIC_SEEDS.items():
+        route = next((r for r in fast_vip_routes() if r.get("name") == name), None)
+        if route is None:  # route paused or removed: nothing to seed, never hold anything
+            SEED_GATES[name].set()
+            continue
+        tasks.append(
+            asyncio.create_task(
+                clear_then_seed(client, route, last, DATA_DIR, live_deliver, intake_pending, SEED_GATES[name])
+            )
+        )
+    return tasks
 
 
 async def start_engine_intake():
@@ -919,10 +951,16 @@ async def on_message_deleted(event):
     if not MIRROR_DELETED_MESSAGES:
         return
     try:
+        from telegram_worker.engine.topic_reset import is_own_deletion
+
+        chat_id = getattr(event, "chat_id", None)
         deleted_ids = list(getattr(event, "deleted_ids", []) or []) or [
             i for i in [getattr(event, "deleted_id", None)] if i
         ]
-        await MIRROR.on_delete(getattr(event, "chat_id", None), deleted_ids)
+        # A topic reset's own deletions never delete the copies other routes made.
+        deleted_ids = [i for i in deleted_ids if not is_own_deletion(chat_id, i)]
+        if deleted_ids:
+            await MIRROR.on_delete(chat_id, deleted_ids)
     except Exception as exc:
         log.exception(f"[handler crash:on_message_deleted] chat={getattr(event, 'chat_id', None)}: {exc}")
         alert_crash("imperium-telegram-worker:on_message_deleted", exc)
@@ -1115,6 +1153,7 @@ async def main():
         "relay508_edit_reconciler", relay508_mapped_edit_reconcile_loop
     )
     await start_engine_intake()
+    owner_module.TOPIC_SEED_TASKS = start_topic_seeds()
     owner_module.WEEKLY_STATS_TASK = supervised("weekly_stats", lambda: stats.loop(client))
     log.info("Weekly stats reporter running for Sunday 00:00 Europe/Malta")
     await client.run_until_disconnected()

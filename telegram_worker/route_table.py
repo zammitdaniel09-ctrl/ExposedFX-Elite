@@ -130,7 +130,9 @@ TABLE: Tuple[RouteSpec, ...] = (
     live("VIP RELAY Topic106 To VIP11", (RELAY, 106), (VIP, 11)),
     live("VIP RELAY Topic2 To VIP1364", (RELAY, 2), (VIP, 1364)),
     live("Relay508 To VIP7", (RELAY, 508), (VIP, 7)),  # restyled in the Imperium VIP format
-    live("Relay7248 To VIP10877", (RELAY, 7248), (VIP, 10877)),
+    # VIP EXTRA PARTNER 1. 16 Nov 2026: Market Slayers replaced relay 7248 here; the topic
+    # was cleared and seeded with the last 50 posts once (worker_fixed.TOPIC_SEEDS).
+    live("Private Live 3838973021 To 10877", (-1003838973021, None), (VIP, 10877), loop_guard=(VIP,)),
     live("Relay8323 To VIP12289", (RELAY, 8323), (VIP, 12289), from_start=True),  # EXTRA PARTNER [ 5 ]
     # MAIN: live copies with a one-time history import
     history("Owner Relay7250 To VIP12161", (RELAY, 7250), (VIP, 12161), last=50),

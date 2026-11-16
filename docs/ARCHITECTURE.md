@@ -38,7 +38,7 @@ Settings → Source → branch `alt-worker`).
 providers ──ALT──▶ VIP RELAY GROUP (-1004367822325) ──MAIN──▶ live destinations
                          topics 2, 115, 7248, 7250, 8323
 SamGtrades (-1004281603170) ──MAIN (whole chat, house format)──▶ Exposed | VIP
-Market Slayers VIP (-1003838973021) ──MAIN──▶ IMPERIUM FX VIP topic 9
+Market Slayers VIP (-1003838973021) ──MAIN──▶ IMPERIUM FX VIP topics 9 and 10877
 ```
 
 Every live route of both workers is defined once, in
@@ -75,11 +75,24 @@ replay audit apply automatically. **Remove a route:** delete its line.
 | engine intake | relay 106 AKX | VIP 11 | copy |
 | engine intake | relay 2 | VIP Extra Partner 2 (1364) | copy |
 | engine intake | relay 508 XAU Exclusive Room | VIP 7 | Imperium VIP format |
-| engine intake | relay 7248 | VIP EXTRA PARTNER 1 (10877) | copy |
+| engine intake | Market Slayers VIP | VIP EXTRA PARTNER 1 (10877) (cleared, last 50, then live) | copy |
 | engine intake | relay 8323 | VIP EXTRA PARTNER [ 5 ] (12289) (whole history, then live) | copy |
 | owner routes (`owner_routes.py`) | relay 7250 | VIP EXTRA PARTNER [ 4 ] (12161) | copy |
 | owner routes | VIP 1364 / 10877 / 12161 | ᴍᴀʀᴋᴇᴛ ᴍᴀᴋᴇʀꜱ 28 / 8 / 24 | copy |
 | `samgtrades_relay.py` | Signals \| SamGtrades | Exposed \| VIP | house library format |
+
+Relay 7248 (Blackline B+SCALPING) still receives ALT's copies but feeds no VIP topic
+since 16 Nov 2026, when Market Slayers replaced it in 10877.
+
+**Clear a topic and seed it with the last N posts (one time):** add the live route,
+then its name and N to `TOPIC_SEEDS` in `worker_fixed.py`. On the next start
+`engine/topic_seed.py` deletes every post in the destination topic
+(`engine/topic_reset.py`), copies the source's last N posts the route would send,
+oldest first, then lets that route go live; until then (at most 5 minutes) the
+intake holds that route's live posts. Both steps save their result on the volume
+(`topic_reset_*`, `topic_seed_*`), so a restart never repeats them. The reset's own
+deletions never reach the delete mirror, so copies made from the cleared topic
+(for example Market Makers 8 from 10877) are kept.
 
 Formatters: `samgtrades_house_formatter.py` (Exposed | VIP), `imperium_vip_*` (VIP 7).
 Custom emoji ids come from the owner's Saved Messages (`community_emoji_registry.py`):

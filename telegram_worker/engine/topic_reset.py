@@ -1,7 +1,7 @@
 """One-time reset of a forum topic: delete every post in it and keep the topic.
 
 Owner request 6 Nov 2026: relay topic 8323 and VIP topic 12289 start on a fresh
-slate. Each topic is reset once: the result is saved on the volume, so a restart
+slate (16 Nov 2026: VIP topic 10877, see topic_seed.py). Each topic is reset once: the result is saved on the volume, so a restart
 never deletes again. Only posts whose topic is exactly `topic` are deleted, and
 never the topic's own first message.
 """
@@ -13,7 +13,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from telethon.errors import FloodWaitError
 
@@ -21,6 +21,13 @@ log = logging.getLogger("engine-topic-reset")
 BATCH = 100
 FLOOD_ATTEMPTS = 5
 Sleep = Callable[[float], Awaitable[Any]]
+# (chat, id) of every post a reset deleted. The delete mirror ignores these, so
+# clearing a topic never deletes the copies other routes made from it.
+OWN_DELETIONS: Set[Tuple[int, int]] = set()
+
+
+def is_own_deletion(chat: Optional[int], message_id: int) -> bool:
+    return chat is not None and (int(chat), int(message_id)) in OWN_DELETIONS
 
 
 def topic_of(message: Any) -> Optional[int]:
@@ -50,6 +57,7 @@ async def topic_posts(client: Any, chat: int, topic: int) -> List[int]:
 
 
 async def _delete(client: Any, chat: int, ids: List[int], sleep: Sleep) -> None:
+    OWN_DELETIONS.update((int(chat), int(i)) for i in ids)
     await _call(lambda: client.delete_messages(chat, ids), sleep)
 
 

@@ -896,6 +896,22 @@ def start_topic_seeds():
     return tasks
 
 
+async def clear_general_topic_once():
+    """Owner request 16 Nov 2026: delete the posts in VIP General (topic 1), once.
+
+    Starts after the topic seeds: its safety check reads ordinary posts in VIP
+    10877 to prove other topics are recognised before anything is deleted."""
+    from telegram_worker.general_topic1_cleanup import remove_general_topic1_history_once
+
+    await asyncio.gather(*(gate.wait() for gate in SEED_GATES.values()))
+    try:
+        await remove_general_topic1_history_once(__import__("sys").modules[__name__], logger=log)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.error(f"[GENERAL1 CLEANUP FAILED SAFE] {type(exc).__name__}: {exc} OTHER_TOPICS_PRESERVED=True")
+
+
 async def start_engine_intake():
     from telegram_worker.engine.intake import (
         Checkpoints,
@@ -1154,6 +1170,7 @@ async def main():
     )
     await start_engine_intake()
     owner_module.TOPIC_SEED_TASKS = start_topic_seeds()
+    owner_module.GENERAL_CLEANUP_TASK = asyncio.create_task(clear_general_topic_once())
     owner_module.WEEKLY_STATS_TASK = supervised("weekly_stats", lambda: stats.loop(client))
     log.info("Weekly stats reporter running for Sunday 00:00 Europe/Malta")
     await client.run_until_disconnected()

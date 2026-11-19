@@ -156,17 +156,35 @@ def stop_route(route, reason, logger=None):
         )
 
 
+# Forum groups whose General topic the owner stopped (19 Nov 2026: Market Makers).
+# A new post or forward with no topic is refused there; posts into its other
+# topics, and edits, still go through.
+STOPPED_GENERAL_CHATS = frozenset({-1003786932333})
+NEW_POST_REQUESTS = WRITE_REQUESTS - {"EditMessageRequest"}
+
+
+def _into_general(request):
+    if getattr(request, "top_msg_id", None):
+        return False
+    reply = getattr(request, "reply_to", None)
+    return not (getattr(reply, "top_msg_id", None) or getattr(reply, "reply_to_msg_id", None))
+
+
 def blocked_write(request):
-    """True for a send/forward/edit whose destination chat the owner stopped."""
-    if type(request).__name__ not in WRITE_REQUESTS:
+    """True for a send/forward/edit whose destination the owner stopped."""
+    name = type(request).__name__
+    if name not in WRITE_REQUESTS:
         return False
     peer = getattr(request, "to_peer", None) or getattr(request, "peer", None)
     try:
         from telethon import utils
 
-        return int(utils.get_peer_id(peer)) in STOPPED_DEST_CHATS
+        chat = int(utils.get_peer_id(peer))
     except Exception:
         return False
+    if chat in STOPPED_DEST_CHATS:
+        return True
+    return chat in STOPPED_GENERAL_CHATS and name in NEW_POST_REQUESTS and _into_general(request)
 
 
 def install_send_guard(client, logger=None):

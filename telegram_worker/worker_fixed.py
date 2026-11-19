@@ -904,12 +904,31 @@ async def clear_general_topic_once():
     from telegram_worker.general_topic1_cleanup import remove_general_topic1_history_once
 
     await asyncio.gather(*(gate.wait() for gate in SEED_GATES.values()))
-    try:
-        await remove_general_topic1_history_once(__import__("sys").modules[__name__], logger=log)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        log.error(f"[GENERAL1 CLEANUP FAILED SAFE] {type(exc).__name__}: {exc} OTHER_TOPICS_PRESERVED=True")
+    for options in GENERAL_CLEANUPS:
+        try:
+            await remove_general_topic1_history_once(
+                __import__("sys").modules[__name__], logger=log, **options
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.error(
+                f"[GENERAL1 CLEANUP FAILED SAFE] chat={options.get('chat', 'VIP')} "
+                f"{type(exc).__name__}: {exc} OTHER_TOPICS_PRESERVED=True"
+            )
+
+
+# One-time General cleanups, each runs once (state file on the volume).
+# VIP: 16 Nov 2026 (done). Market Makers: 19 Nov 2026; topic 8 holds the
+# ordinary posts the safety check reads.
+GENERAL_CLEANUPS = (
+    {},
+    {
+        "chat": -1003786932333,
+        "known_topic": 8,
+        "state_filename": "general_topic1_market_makers_delete_20261119_v1.json",
+    },
+)
 
 
 async def start_engine_intake():

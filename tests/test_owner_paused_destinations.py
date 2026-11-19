@@ -62,6 +62,31 @@ class PausedDestinationTests(unittest.TestCase):
         ):
             self.assertFalse(policy.blocked_write(request), request)
 
+    def test_market_makers_general_is_stopped_but_its_topics_are_not(self):
+        from telethon.tl.functions.messages import SendMediaRequest, SendMultiMediaRequest
+        from telethon.tl.types import InputMediaEmpty, InputReplyToMessage
+
+        mm = InputPeerChannel(3786932333, 0)
+        topic8 = InputReplyToMessage(reply_to_msg_id=8)
+        topic24 = InputReplyToMessage(reply_to_msg_id=5000, top_msg_id=24)
+        for request in (
+            SendMessageRequest(mm, "x"),
+            SendMediaRequest(mm, InputMediaEmpty(), "x"),
+            SendMultiMediaRequest(mm, []),
+            ForwardMessagesRequest(VIP, [1], mm),
+        ):
+            self.assertTrue(policy.blocked_write(request), request)
+        for request in (
+            SendMessageRequest(mm, "x", reply_to=topic8),
+            SendMessageRequest(mm, "x", reply_to=topic24),
+            SendMultiMediaRequest(mm, [], reply_to=topic8),
+            ForwardMessagesRequest(VIP, [1], mm, top_msg_id=28),
+            EditMessageRequest(mm, 1117, message="x"),
+            DeleteMessagesRequest([1]),
+        ):
+            self.assertFalse(policy.blocked_write(request), request)
+        self.assertTrue(any(int(r["dest_chat"]) == -1003786932333 for r in ROUTES), "topic routes stay")
+
     def test_guard_refuses_before_reaching_telegram(self):
         client = FakeClient()
         policy.install_send_guard(client)

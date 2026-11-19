@@ -84,12 +84,30 @@ async def _request(call, logger, description):
             await asyncio.sleep(pause)
 
 
-async def remove_general_topic1_history_once(main_module, logger=None):
+def sender_key(msg):
+    """Who a General post came from: the forwarded origin if any, else the sender (for the report)."""
+    fwd = getattr(msg, "fwd_from", None)
+    origin = getattr(fwd, "from_id", None) if fwd is not None else None
+    if origin is not None:
+        for attr in ("channel_id", "user_id", "chat_id"):
+            if getattr(origin, attr, None) is not None:
+                return f"fwd:{getattr(origin, attr)}"
+    if getattr(msg, "via_bot_id", None):
+        return f"via_bot:{msg.via_bot_id}"
+    sender = getattr(msg, "sender_id", None)
+    return f"sender:{sender}" if sender is not None else "unknown"
+
+
+async def remove_general_topic1_history_once(
+    main_module, logger=None, chat=CHAT, known_topic=KNOWN_NON_GENERAL, state_filename=STATE_FILENAME
+):
+    """Delete the General posts of `chat` once. `known_topic` must be another topic of the
+    same group that holds ordinary posts: it proves topic posts are recognised first."""
     log = logger or main_module.log
     client = main_module.client
     directory = Path(main_module.DATA_DIR)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / STATE_FILENAME
+    path = directory / state_filename
     state = _load(path)
 
     if state.get("status") == "done":
@@ -101,7 +119,7 @@ async def remove_general_topic1_history_once(main_module, logger=None):
         return state
 
     # Important: General is NOT a thread. Scanning reply_to=1 is incorrect.
-    entity = await _request(lambda: client.get_entity(CHAT), log, "group-entity")
+    entity = await _request(lambda: client.get_entity(chat), log, "group-entity")
     if not getattr(entity, "forum", False):
         raise RuntimeError("target chat does not advertise Telegram forum=True; no deletion")
 
@@ -109,9 +127,7 @@ async def remove_general_topic1_history_once(main_module, logger=None):
     # messages from a KNOWN different topic. Without this negative control,
     # a missing forum_topic flag might cause collateral deletion.
     test_messages = await _request(
-        lambda: client.get_messages(CHAT, reply_to=KNOWN_NON_GENERAL, limit=15),
-        log,
-        "non-general-marker-test",
+        lambda: client.get_messages(chat, reply_to=known_topic, limit=15), log, "non-general-marker-test"
     )
     ordinary_test_messages = [
         message
@@ -127,12 +143,12 @@ async def remove_general_topic1_history_once(main_module, logger=None):
 
     if not state:
         newest = await _request(
-            lambda: client.get_messages(CHAT, limit=1), log, "snapshot-current-history-top"
+            lambda: client.get_messages(chat, limit=1), log, "snapshot-current-history-top"
         )
         cutoff = max((int(msg.id) for msg in (newest or []) if msg is not None), default=0)
         state = {
             "status": "running",
-            "chat": CHAT,
+            "chat": chat,
             "topic": GENERAL,
             "cutoff": cutoff,
             "cursor": cutoff + 1,
@@ -144,13 +160,13 @@ async def remove_general_topic1_history_once(main_module, logger=None):
         }
         _save(path, state)
 
-    if (state.get("chat"), state.get("topic")) != (CHAT, GENERAL):
+    if (state.get("chat"), state.get("topic")) != (chat, GENERAL):
         raise RuntimeError("persistent cleanup target mismatch; no deletion")
 
     log.warning(
         "[GENERAL1 CLEANUP BEGIN] chat=%s topic=%s cutoff=%s cursor=%s "
         "OTHER_TOPIC_MESSAGES_PROTECTED=True",
-        CHAT,
+        chat,
         GENERAL,
         state["cutoff"],
         state["cursor"],
@@ -159,7 +175,7 @@ async def remove_general_topic1_history_once(main_module, logger=None):
     while True:
         cursor = int(state["cursor"])
         page = await _request(
-            lambda c=cursor: client.get_messages(CHAT, limit=PAGE_SIZE, offset_id=c), log, "page-scan"
+            lambda c=cursor: client.get_messages(chat, limit=PAGE_SIZE, offset_id=c), log, "page-scan"
         )
         page = [msg for msg in (page or []) if msg is not None and getattr(msg, "id", None) is not None]
 
@@ -171,7 +187,7 @@ async def remove_general_topic1_history_once(main_module, logger=None):
                 "[GENERAL1 CLEANUP DONE] chat=%s topic=%s "
                 "scanned=%s deleted=%s protected=%s pages=%s "
                 "cutoff=%s OTHER_TOPICS_UNCHANGED=True",
-                CHAT,
+                chat,
                 GENERAL,
                 state["scanned"],
                 state["deleted"],
@@ -179,6 +195,8 @@ async def remove_general_topic1_history_once(main_module, logger=None):
                 state["pages"],
                 state["cutoff"],
             )
+            top = sorted(state.get("senders", {}).items(), key=lambda kv: -kv[1])[:10]
+            log.warning("[GENERAL1 SENDERS] chat=%s top=%s", chat, top)
             return state
 
         page_ids = [int(msg.id) for msg in page if int(msg.id) > 0]
@@ -192,7 +210,7 @@ async def remove_general_topic1_history_once(main_module, logger=None):
         # recheck markers just before the destructive operation.
         for start in range(0, len(to_check), DELETE_BATCH):
             ids = to_check[start : start + DELETE_BATCH]
-            raw = await _request(lambda batch=ids: client.get_messages(CHAT, ids=batch), log, "double-check")
+            raw = await _request(lambda batch=ids: client.get_messages(chat, ids=batch), log, "double-check")
             verified = sorted(
                 {int(msg.id) for msg in (raw or []) if _belongs_to_general(msg) and int(msg.id) in ids}
             )
@@ -205,14 +223,14 @@ async def remove_general_topic1_history_once(main_module, logger=None):
                 raise RuntimeError("General topic membership changed or became ambiguous")
 
             await _request(
-                lambda batch=verified: client.delete_messages(CHAT, batch, revoke=True),
+                lambda batch=verified: client.delete_messages(chat, batch, revoke=True),
                 log,
                 "delete-confirmed-general",
             )
             # Explicitly verify server-side removals before updating
             # persistent progress and continuing to older history.
             after = await _request(
-                lambda batch=verified: client.get_messages(CHAT, ids=batch), log, "verify-removed"
+                lambda batch=verified: client.get_messages(chat, ids=batch), log, "verify-removed"
             )
             survivors = [
                 int(msg.id)
@@ -226,10 +244,15 @@ async def remove_general_topic1_history_once(main_module, logger=None):
                 raise RuntimeError("Telegram still returns some supposedly deleted messages")
 
             state["deleted"] = int(state.get("deleted", 0)) + len(verified)
+            senders = state.setdefault("senders", {})
+            for msg in raw or []:
+                if msg is not None and int(msg.id) in verified:
+                    key = sender_key(msg)
+                    senders[key] = int(senders.get(key, 0)) + 1
             _save(path, state)
             log.warning(
                 "[GENERAL1 DELETED BATCH] chat=%s topic=1 " "count=%s total_deleted=%s range=%s..%s",
-                CHAT,
+                chat,
                 len(verified),
                 state["deleted"],
                 min(verified),

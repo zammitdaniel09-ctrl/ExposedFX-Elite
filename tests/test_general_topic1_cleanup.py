@@ -15,6 +15,7 @@ package.__path__ = [str(ROOT / "telegram_worker")]
 from telegram_worker import general_topic1_cleanup as cleanup
 
 CHAT = cleanup.CHAT
+MARKET_MAKERS = -1003786932333
 DATE = object()
 
 
@@ -33,16 +34,17 @@ def service(mid, action="MessageActionTopicCreate"):
 
 
 class Client:
-    def __init__(self, messages, forum=True):
+    def __init__(self, messages, forum=True, chat=CHAT):
         self.messages = {m.id: m for m in messages}
-        self.forum = forum
+        self.forum, self.chat = forum, chat
         self.deleted = []
 
     async def get_entity(self, chat):
+        assert chat == self.chat
         return SimpleNamespace(forum=self.forum)
 
     async def get_messages(self, chat, limit=None, offset_id=None, ids=None, reply_to=None):
-        assert chat == CHAT
+        assert chat == self.chat
         if ids is not None:
             return [self.messages.get(i) for i in ids]
         if reply_to is not None:
@@ -136,12 +138,18 @@ class WorkerWiringTests(unittest.IsolatedAsyncioTestCase):
         )
         calls = []
 
-        async def fake_remove(module, logger=None):
-            calls.append(module)
+        async def fake_remove(module, logger=None, **options):
+            calls.append(options)
             raise RuntimeError("cannot validate")
 
         gate = asyncio.Event()
-        ns = {"asyncio": asyncio, "SEED_GATES": {"seed": gate}, "log": logging.getLogger("general-test")}
+        mm = {"chat": MARKET_MAKERS, "known_topic": 8, "state_filename": "mm.json"}
+        ns = {
+            "asyncio": asyncio,
+            "SEED_GATES": {"seed": gate},
+            "GENERAL_CLEANUPS": ({}, mm),
+            "log": logging.getLogger("general-test"),
+        }
         exec(compile(ast.Module(body=[node], type_ignores=[]), "<worker>", "exec"), ns)
         original = cleanup.remove_general_topic1_history_once
         cleanup.remove_general_topic1_history_once = fake_remove
@@ -154,8 +162,46 @@ class WorkerWiringTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(task, 1)
         finally:
             cleanup.remove_general_topic1_history_once = original
-        self.assertEqual(len(calls), 1)
-        self.assertIn("[GENERAL1 CLEANUP FAILED SAFE] RuntimeError: cannot validate", logs.output[0])
+        self.assertEqual(calls, [{}, mm], "a failure on one group never stops the next")
+        self.assertIn("[GENERAL1 CLEANUP FAILED SAFE] chat=VIP RuntimeError: cannot validate", logs.output[0])
+        self.assertIn(f"chat={MARKET_MAKERS} RuntimeError", logs.output[1])
+        self.assertIn('"chat": -1003786932333', source)
+        self.assertIn('"known_topic": 8', source)
+        self.assertIn('"state_filename": "general_topic1_market_makers_delete_20261119_v1.json"', source)
+
+
+class MarketMakersTests(unittest.IsolatedAsyncioTestCase):
+    async def test_clears_market_makers_general_only_and_reports_senders(self):
+        fwd = SimpleNamespace(from_id=SimpleNamespace(channel_id=555))
+        posts = [
+            SimpleNamespace(id=2000, date=DATE, action=None, reply_to=None, fwd_from=fwd, sender_id=-1001),
+            SimpleNamespace(id=2001, date=DATE, action=None, reply_to=None, fwd_from=None, sender_id=42),
+            SimpleNamespace(
+                id=2002, date=DATE, action=None, reply_to=None, fwd_from=None, sender_id=7, via_bot_id=99
+            ),
+        ]
+        keep = [service(8), in_topic(2003, 8), in_topic(2004, 24), service(28)]
+        client = Client(posts + keep, chat=MARKET_MAKERS)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        module = SimpleNamespace(client=client, DATA_DIR=tmp.name, log=logging.getLogger("general-test"))
+        with self.assertLogs("general-test", "WARNING") as logs:
+            state = await cleanup.remove_general_topic1_history_once(
+                module, chat=MARKET_MAKERS, known_topic=8, state_filename="mm.json"
+            )
+        self.assertEqual(sorted(client.messages), [8, 28, 2003, 2004], "topic posts and topic roots kept")
+        self.assertEqual((state["chat"], state["deleted"]), (MARKET_MAKERS, 3))
+        self.assertEqual(state["senders"], {"fwd:555": 1, "sender:42": 1, "via_bot:99": 1})
+        self.assertTrue(any("[GENERAL1 SENDERS]" in line for line in logs.output))
+        self.assertTrue((Path(tmp.name) / "mm.json").exists())
+        self.assertFalse((Path(tmp.name) / cleanup.STATE_FILENAME).exists(), "VIP state untouched")
+
+    def test_sender_key_falls_back(self):
+        self.assertEqual(cleanup.sender_key(SimpleNamespace()), "unknown")
+        user_fwd = SimpleNamespace(fwd_from=SimpleNamespace(from_id=SimpleNamespace(user_id=5)))
+        self.assertEqual(cleanup.sender_key(user_fwd), "fwd:5")
+        hidden = SimpleNamespace(fwd_from=SimpleNamespace(from_id=None), sender_id=3)
+        self.assertEqual(cleanup.sender_key(hidden), "sender:3")
 
 
 if __name__ == "__main__":

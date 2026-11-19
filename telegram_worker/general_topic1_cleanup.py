@@ -126,16 +126,23 @@ async def remove_general_topic1_history_once(
     # Before any deletion, prove that this Telethon session correctly marks
     # messages from a KNOWN different topic. Without this negative control,
     # a missing forum_topic flag might cause collateral deletion.
-    test_messages = await _request(
-        lambda: client.get_messages(chat, reply_to=known_topic, limit=15), log, "non-general-marker-test"
-    )
-    ordinary_test_messages = [
-        message
-        for message in (test_messages or [])
-        if message is not None
-        and getattr(message, "date", None) is not None
-        and getattr(message, "action", None) is None
-    ]
+    # `known_topic` may be one topic id or several: every topic is read and
+    # counted (logged, so an empty topic shows up), and every post found must
+    # be recognised as not-General.
+    ordinary_test_messages = []
+    for topic in known_topic if isinstance(known_topic, (list, tuple)) else (known_topic,):
+        test_messages = await _request(
+            lambda t=topic: client.get_messages(chat, reply_to=t, limit=15), log, "non-general-marker-test"
+        )
+        found = [
+            message
+            for message in (test_messages or [])
+            if message is not None
+            and getattr(message, "date", None) is not None
+            and getattr(message, "action", None) is None
+        ]
+        log.warning("[GENERAL1 TOPIC CHECK] chat=%s topic=%s ordinary_posts=%s", chat, topic, len(found))
+        ordinary_test_messages.extend(found)
     if not ordinary_test_messages:
         raise RuntimeError("cannot validate forum-topic exclusion markers; no deletion")
     if any(_belongs_to_general(msg) for msg in ordinary_test_messages):

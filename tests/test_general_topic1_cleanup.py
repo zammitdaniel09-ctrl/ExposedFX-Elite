@@ -166,7 +166,7 @@ class WorkerWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[GENERAL1 CLEANUP FAILED SAFE] chat=VIP RuntimeError: cannot validate", logs.output[0])
         self.assertIn(f"chat={MARKET_MAKERS} RuntimeError", logs.output[1])
         self.assertIn('"chat": -1003786932333', source)
-        self.assertIn('"known_topic": 8', source)
+        self.assertIn('"known_topic": (8, 24, 28)', source)
         self.assertIn('"state_filename": "general_topic1_market_makers_delete_20261119_v1.json"', source)
 
 
@@ -180,16 +180,20 @@ class MarketMakersTests(unittest.IsolatedAsyncioTestCase):
                 id=2002, date=DATE, action=None, reply_to=None, fwd_from=None, sender_id=7, via_bot_id=99
             ),
         ]
-        keep = [service(8), in_topic(2003, 8), in_topic(2004, 24), service(28)]
+        keep = [service(8), in_topic(2003, 24), in_topic(2004, 28), service(28)]  # topic 8 has no posts
         client = Client(posts + keep, chat=MARKET_MAKERS)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         module = SimpleNamespace(client=client, DATA_DIR=tmp.name, log=logging.getLogger("general-test"))
         with self.assertLogs("general-test", "WARNING") as logs:
             state = await cleanup.remove_general_topic1_history_once(
-                module, chat=MARKET_MAKERS, known_topic=8, state_filename="mm.json"
+                module, chat=MARKET_MAKERS, known_topic=(8, 24, 28), state_filename="mm.json"
             )
         self.assertEqual(sorted(client.messages), [8, 28, 2003, 2004], "topic posts and topic roots kept")
+        checks = [line for line in logs.output if "[GENERAL1 TOPIC CHECK]" in line]
+        self.assertEqual(len(checks), 3)
+        self.assertIn("topic=8 ordinary_posts=0", checks[0])
+        self.assertIn("topic=24 ordinary_posts=1", checks[1])
         self.assertEqual((state["chat"], state["deleted"]), (MARKET_MAKERS, 3))
         self.assertEqual(state["senders"], {"fwd:555": 1, "sender:42": 1, "via_bot:99": 1})
         self.assertTrue(any("[GENERAL1 SENDERS]" in line for line in logs.output))

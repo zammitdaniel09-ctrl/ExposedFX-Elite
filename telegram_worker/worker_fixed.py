@@ -919,13 +919,13 @@ async def clear_general_topic_once():
 
 
 # One-time General cleanups, each runs once (state file on the volume).
-# VIP: 16 Nov 2026 (done). Market Makers: 19 Nov 2026; topic 8 holds the
-# ordinary posts the safety check reads.
+# VIP: 16 Nov 2026 (done). Market Makers: 19 Nov 2026; the safety check reads
+# topics 8, 24 and 28 (topic 8 alone returned no posts on the first try).
 GENERAL_CLEANUPS = (
     {},
     {
         "chat": -1003786932333,
-        "known_topic": 8,
+        "known_topic": (8, 24, 28),
         "state_filename": "general_topic1_market_makers_delete_20261119_v1.json",
     },
 )
